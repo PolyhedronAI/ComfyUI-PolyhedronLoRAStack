@@ -14,7 +14,10 @@ execute() DELEGATES to the proven legacy ULSResolveInspector.analyze() — ident
 behaviour, single source of truth, kept byte-identical as the fallback. Lazy import.
 """
 
-from comfy_api.latest import io
+try:  # v577: ONE door to the versioned API (nodes/ph_comfyapi.py).
+    from .ph_comfyapi import io
+except ImportError:  # pragma: no cover - direct module load (tools)
+    from ph_comfyapi import io
 
 
 class ULSResolveInspectorV3(io.ComfyNode):

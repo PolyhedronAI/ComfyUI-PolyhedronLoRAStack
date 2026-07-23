@@ -50,6 +50,39 @@ const PAUSE_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="
 // gracefully (wrapping bar, shrinkable selection) as a second line of defense.
 const MIN_NODE_W = 360;
 const MIN_NODE_H = 320;
+// v683: one page of tiles. Shared by renderGrid and _syncDims so the
+// dimensions fetched are exactly the tiles that get drawn.
+const GRID_PAGE = 20;
+
+// v684 (L2) — how far outside the visible strip a tile still counts as
+// "about to be seen". Enough that scrolling never shows an empty cell,
+// small enough that a folder page is not fetched wholesale.
+const THUMB_MARGIN = "160px";
+
+/** v684: reveal the thumbnails whose tiles have come into view. PURE apart
+ *  from the two effects it exists for -- assigning src and unobserving --
+ *  so a guard can drive it with fabricated entries.
+ *
+ *  A revealed image is unobserved IMMEDIATELY: the fetch must happen once,
+ *  never again when the tile scrolls back into view. Anything without a
+ *  pending source is unobserved too (it has already been revealed), so the
+ *  observer's set only ever shrinks. */
+function _thumbReveal(entries, unobserve) {
+    let revealed = 0;
+    for (const e of (entries || [])) {
+        if (!e || !e.isIntersecting) continue;
+        const img = e.target;
+        if (!img) continue;
+        const src = img.dataset ? img.dataset.phSrc : null;
+        if (src) {
+            img.src = src;
+            delete img.dataset.phSrc;
+            revealed++;
+        }
+        try { unobserve(img); } catch (err) { /* observer already gone */ }
+    }
+    return revealed;
+}
 
 // Tile grid sizing — computed deterministically in _layoutGrid (explicit pixel
 // columns AND row height, so the old aspect-ratio/auto-row overlap can't happen).
@@ -139,6 +172,15 @@ function injectCSS() {
     border:3px solid #444; border-top-color:#ff8c00; animation:ph-busy-spin 0.9s linear infinite; }
 .ph-media-busy .ph-busy-label { color:#bbb; font-size:12px; }
 @keyframes ph-busy-spin { to { transform:rotate(360deg); } }
+/* v692: a tile waits for its thumbnail -- since v684 the URL is only assigned
+   when the tile comes near view, and the server still has to decode the file
+   to make one. Until then the tile was simply EMPTY, which reads as "nothing is
+   happening". Same amber ring as the folder-level spinner, pure CSS on a class:
+   no timer, no observer, nothing to leak. Removed on load or error. */
+.ph-media-tile.ph-thumb-wait::after { content:""; position:absolute; left:50%; top:50%;
+    width:18px; height:18px; margin:-9px 0 0 -9px; border-radius:50%;
+    border:2px solid #3a3a3a; border-top-color:#ff8c00;
+    animation:ph-busy-spin 0.9s linear infinite; pointer-events:none; z-index:2; }
 /* v664: the drop CHOICE. A drag over the node raises two zones — aiming at one
    IS the decision, so nothing has to be known or held down. The zones exist only
    while a drag is in flight; the node's face is unchanged otherwise. They wrap
@@ -1915,12 +1957,37 @@ class MediaLoaderUI {
     }
 
     _dropSelect(name, tries = 0) {
-        // select via the tile's OWN click path (zero duplicated logic); the
-        // grid loads async, so retry briefly until the tile exists.
-        const esc = (window.CSS && CSS.escape) ? CSS.escape(name) : name;
-        const t = this.gridEl && this.gridEl.querySelector('.ph-media-tile[data-file="' + esc + '"]');
-        if (t) { t.click(); return; }
-        if (tries < 20) setTimeout(() => this._dropSelect(name, tries + 1), 150);
+        // v692 -- this used to look for the TILE in the DOM and click it. Two
+        // reasons that silently failed, both of them normal states:
+        //   * renderGrid builds ONE PAGE of GRID_PAGE tiles, and a drop resets
+        //     to page 1. In a folder of 204 files the new file is only findable
+        //     when it happens to sort into the first twenty.
+        //   * in Solo the grid is not built AT ALL (v683 L1), so there is never
+        //     a tile to click.
+        // Both ended in twenty silent retries and a node that just did not
+        // change. The list is the truth, not the DOM: find the file there, page
+        // the grid to where it lives so the user SEES the selection, and go
+        // through select() -- which is exactly what the tile's own click calls,
+        // so no logic is duplicated.
+        const files = this._files || [];
+        const idx = files.findIndex((f) => f && f.name === name);
+        if (idx >= 0) {
+            const page = Math.floor(idx / GRID_PAGE);
+            if (this._page !== page) {
+                this._page = page;
+                // In Solo there is no grid to redraw; the page is remembered and
+                // the swap back renders it (renderGrid sets _gridStale itself).
+                if (!this.view.solo) this.renderGrid();
+            }
+            this.select(files[idx]);
+            return;
+        }
+        // The listing may still be in flight -- keep the old retry window.
+        if (tries < 20) { setTimeout(() => this._dropSelect(name, tries + 1), 150); return; }
+        // v692: never fail silently again. If it is not in the list after three
+        // seconds, say so instead of leaving a node that looks broken.
+        this._dropNote("\u26a0 " + name + " was not found in the folder listing \u2014 "
+                       + "it is not selected. Use \u27f3 to re-read the folder.", "#e0b060");
     }
 
     setFolder(path) {
@@ -3130,6 +3197,23 @@ class MediaLoaderUI {
         el.textContent = this._dimTextPx(w, h);
     }
 
+    // v684 (L2): one IntersectionObserver per loader UI, created lazily and
+    // rooted in the grid's own scroller. Returns null where the API is absent
+    // -- every call site then assigns src directly, i.e. the old behaviour.
+    _thumbObserver() {
+        if (this._thumbObs !== undefined) return this._thumbObs;
+        let obs = null;
+        try {
+            if (typeof IntersectionObserver === "function" && this.gridEl) {
+                obs = new IntersectionObserver(
+                    (entries) => _thumbReveal(entries, (el) => obs.unobserve(el)),
+                    { root: this.gridEl, rootMargin: THUMB_MARGIN, threshold: 0 });
+            }
+        } catch (e) { obs = null; }
+        this._thumbObs = obs;
+        return obs;
+    }
+
     _makeTile(f) {
         const marks = this._gridMarks;                       // {name: indexInBatch} in batch mode, else null
         const inBatch = !!(marks && (f.name in marks));
@@ -3160,8 +3244,22 @@ class MediaLoaderUI {
             const b = document.createElement("div"); b.className = "ph-aud"; b.textContent = "♪"; tile.appendChild(b);
         } else {
             const img = document.createElement("img");
-            img.loading = "lazy"; img.src = this._isGif(f) ? this._fileURL(f) : this._thumbURL(f);
+            img.loading = "lazy";
+            // v684 (L2): the URL is PARKED, not assigned. Native loading="lazy"
+            // does not help inside this scroller (the node's DOM widget is
+            // absolutely positioned on the canvas, so the browser treats the
+            // whole page as visible and fetches every tile at once). The
+            // observer below assigns src when the tile is actually near view;
+            // without an observer the URL is assigned straight away, so an old
+            // browser simply behaves as before.
+            const url = this._isGif(f) ? this._fileURL(f) : this._thumbURL(f);
+            const obs = this._thumbObserver();
+            if (obs) { img.dataset.phSrc = url; obs.observe(img); }
+            else { img.src = url; }
+            tile.classList.add("ph-thumb-wait");            // v692: show that work is pending
+            img.onload = () => tile.classList.remove("ph-thumb-wait");
             img.onerror = () => {
+                tile.classList.remove("ph-thumb-wait");     // v692: stop spinning on a dead thumb
                 img.style.display = "none";
                 const ph = document.createElement("div"); ph.className = "ph-ph";
                 ph.textContent = f.kind === "video" ? "🎞" : "🖼";
@@ -3307,7 +3405,7 @@ class MediaLoaderUI {
         try {
             let d = null;
             try {
-                const r = await api.fetchApi("/uls/media/list?folder=" + encodeURIComponent(target));
+                const r = await api.fetchApi("/uls/media/list?dims=0&folder=" + encodeURIComponent(target));
                 if (r && r.ok) d = await r.json();
             } catch (e) { /* ignore */ }
             if (seq !== this._listSeq) return;    // a newer listing fetch started -> this one is stale
@@ -3337,7 +3435,7 @@ class MediaLoaderUI {
         const seq = (this._listSeq = (this._listSeq || 0) + 1);   // v657: same ticket rule as refreshGrid
         let d = null;
         try {
-            const r = await api.fetchApi("/uls/media/list?folder=" + encodeURIComponent(target));
+            const r = await api.fetchApi("/uls/media/list?dims=0&folder=" + encodeURIComponent(target));
             if (r && r.ok) d = await r.json();
         } catch (e) { return; }
         if (seq !== this._listSeq) return;   // a newer listing fetch started -> stale, drop
@@ -3346,6 +3444,54 @@ class MediaLoaderUI {
         this._files = d.files || [];
         this._filesFolder = target;
         this.renderGrid();   // page + name-based selection survive on their own
+    }
+
+    // v683 — DEFERRED DIMENSIONS. The listing itself no longer opens a single
+    // file (see uls_routes._scan_media_fast): a folder of a thousand items used
+    // to cost a thousand file opens before anything appeared, in Solo view too,
+    // where nothing but the selected file is visible. So the sizes are fetched
+    // for what is ACTUALLY on screen -- the selected file always, the current
+    // page only when the grid is showing -- and filled in afterwards.
+    //
+    // TERMINATION: every name asked for is marked _dimsTried, and only untried
+    // names are ever requested. A failed probe therefore costs one attempt, not
+    // an endless re-render loop (renderGrid calls back into here).
+    async _syncDims() {
+        if (!this.folder || !Array.isArray(this._files) || !this._files.length) return;
+        const target = this.folder;
+        const byName = new Map(this._files.map((f) => [f.name, f]));
+        const want = new Set();
+        const sel = this.state && this.state.file;
+        if (sel) want.add(sel);                       // the selection needs w/h AND fps (fixed trim)
+        if (!this.view.solo) {                        // the grid is drawn -> the page on screen
+            const start = this._page * GRID_PAGE;
+            for (const f of this._files.slice(start, start + GRID_PAGE)) want.add(f.name);
+        }
+        const names = [...want].filter((n) => {
+            const f = byName.get(n);
+            return f && f.w == null && !f._dimsTried;
+        });
+        if (!names.length) return;
+        for (const n of names) { const f = byName.get(n); if (f) f._dimsTried = true; }
+        const seq = this._listSeq;
+        let d = null;
+        try {
+            const r = await api.fetchApi("/uls/media/dims?folder=" + encodeURIComponent(target) +
+                                         "&files=" + encodeURIComponent(names.join("|")));
+            if (r && r.ok) d = await r.json();
+        } catch (e) { return; }
+        if (seq !== this._listSeq || target !== this.folder) return;   // stale, drop (v657 ticket rule)
+        if (!d || !d.ok || !d.dims) return;
+        let changed = false;
+        for (const [name, dim] of Object.entries(d.dims)) {
+            const f = byName.get(name);
+            if (!f || !dim) continue;
+            if (dim.w != null) { f.w = dim.w; f.h = dim.h; changed = true; }
+            if (dim.fps != null) { f.fps = dim.fps; changed = true; }
+        }
+        if (!changed) return;
+        this.renderGrid();                    // badges on the tiles
+        try { this._renderPreview(); } catch (e) { /* preview may not be up yet */ }
     }
 
     // which frames the active batch will load, as {name: indexInBatch}; null when
@@ -3373,9 +3519,16 @@ class MediaLoaderUI {
     }
 
     renderGrid() {
-        const PAGE = 20;
+        const PAGE = GRID_PAGE;
         const files = this._files || [];
         const total = files.length;
+        // v683 (L1) — in Solo the grid is display:none, but it was still BUILT:
+        // every tile constructed, every thumbnail requested from the server.
+        // Now it is not built at all; the flag makes the swap back rebuild it.
+        // _files stays the truth, so filters, checkmarks and the batch config
+        // keep working off it while the DOM is absent.
+        if (this.view.solo) { this._gridStale = true; this._syncDims(); return; }
+        this._gridStale = false;
         this._gridMarks = this._gridBatchMarks();   // {name: idx} when batch is on & grid is on-source, else null
         if (!total) {
             this.gridEl.innerHTML = `<div class="ph-media-empty">No images or videos in this folder.</div>`;
@@ -3385,6 +3538,10 @@ class MediaLoaderUI {
         if (this._page >= pages) this._page = pages - 1;
         if (this._page < 0) this._page = 0;
         const start = this._page * PAGE;
+        // v684: the tiles about to be discarded are still being watched --
+        // drop the whole watch set before the DOM under it disappears, or
+        // the observer keeps every removed <img> reachable (v624 leak law).
+        try { this._thumbObs?.disconnect(); } catch (e) { /* ignore */ }
         this.gridEl.innerHTML = "";
         for (const f of files.slice(start, start + PAGE)) this.gridEl.appendChild(this._makeTile(f));
         this.gridEl.scrollTop = 0;
@@ -3407,6 +3564,10 @@ class MediaLoaderUI {
             info.textContent = `${total} file${total === 1 ? "" : "s"}`;
             this.pagerEl.appendChild(info);
         }
+        // v683: renderGrid is the funnel EVERY path goes through (refresh,
+        // focus probe, page turn, filter, solo swap-back), so the deferred
+        // dimension fetch hangs here once instead of at six call sites.
+        this._syncDims();
     }
 
     _layoutGrid() {
@@ -3572,6 +3733,13 @@ class MediaLoaderUI {
         const r = _viewSwap(this.view, !this.view.solo, this.node.size);
         this.view = r.view;
         this._applyViewClass();
+        // v683: coming BACK to tiles, the grid may never have been built (L1).
+        // _files is the truth, so a plain re-render restores everything --
+        // page, filter highlight, checkmarks, batch marks -- and _syncDims
+        // then fetches the sizes for the page that just appeared.
+        if (!this.view.solo && this._gridStale && this.folder && this._files) {
+            this.renderGrid();
+        }
         if (r.size) {   // restore the size this mode was last used at (floor-clamped)
             let floor = MIN_NODE_H;
             try { floor = Math.max(floor, this._minNodeHeight()); } catch (e) { /* measure may not be ready */ }
@@ -3594,6 +3762,7 @@ class MediaLoaderUI {
 
     _destroy() {
         try { this._ro?.disconnect(); } catch (e) { /* ignore */ }
+        try { this._thumbObs?.disconnect(); } catch (e) { /* ignore */ }   // v684
         if (this._layoutRAF) { cancelAnimationFrame(this._layoutRAF); this._layoutRAF = 0; }
         // v624: the ○-selection keydown handler is registered on document (capture
         // phase). Without this remove, every deleted loader node left a live handler

@@ -194,6 +194,14 @@ class ULSWanSigmaSchedule:
       • rho       — passthrough FLOAT
     """
 
+    # v578: the REAL mechanism, not a marker typed into the label.
+    # ComfyUI hides DEPRECATED nodes from the search box but keeps them
+    # fully alive in existing workflows - which is exactly what a retired
+    # node needs, and exactly the road any future node_id rename must take
+    # (register the new id, keep the old one here with this flag).
+    # An older ComfyUI that does not know the flag simply ignores it.
+    DEPRECATED = True
+
     @classmethod
     def INPUT_TYPES(cls):
         return {

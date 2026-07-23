@@ -45,11 +45,22 @@ app.registerExtension({
                 const info = Array.isArray(arr) ? arr[0] : arr;
                 if (!info) return;
 
+                // v492: de-duplicate. onExecuted fires every run; the over_limit toast
+                // is life:0 (sticky), so without a guard identical notices stack up. One
+                // signature per (state, worst, limit); re-notify only when it changes (a
+                // changed token count, or over->ok->over). Per-node state, reset on reload
+                // (one fresh warning per session is intended).
+                const worst = Math.max(info.pos, info.neg);
+                const sig = info.over_limit ? `over:${worst}:${info.limit}`
+                          : info.near_limit ? `near:${worst}:${info.limit}`
+                          : "ok";
+                if (sig === this._plsLastTokenSig) return;
+                this._plsLastTokenSig = sig;
+
                 if (info.over_limit) {
-                    const worst = Math.max(info.pos, info.neg);
                     const over = worst - info.limit;
                     toast(
-                        "error",
+                        "warn",
                         "Token limit exceeded",
                         `Prompt is ${worst}/${info.limit} tokens (over by ${over}). ` +
                         `It may be silently truncated or crash kijai's WanVideoSampler. ` +
@@ -57,7 +68,6 @@ app.registerExtension({
                         0,   // life 0 = sticky: an over-limit run must not auto-vanish
                     );
                 } else if (info.near_limit) {
-                    const worst = Math.max(info.pos, info.neg);
                     toast(
                         "warn",
                         "Token budget almost full",

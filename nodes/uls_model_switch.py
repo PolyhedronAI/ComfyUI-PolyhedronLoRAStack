@@ -87,6 +87,11 @@ class ULSModelSwitch:
     RETURN_NAMES = ("model_name",)
     FUNCTION = "select_model"
     CATEGORY = "Polyhedron/Loaders"
+    DESCRIPTION = ("Six model filenames and a selector. The pick is forwarded as a name, "
+                   "not as a loaded model, so nothing is read from disk until a loader "
+                   "downstream asks for it - swapping models costs a dropdown, not a "
+                   "reload. Every slot lists all known model folders in one dropdown, GGUF "
+                   "included.")
 
     def select_model(self, select, model_1=None, model_2=None,
                      model_3=None, model_4=None,

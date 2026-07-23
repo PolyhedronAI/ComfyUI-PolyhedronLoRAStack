@@ -21,7 +21,10 @@ The execute() body is a verbatim port of the legacy pick() logic; behaviour is
 identical (middle frame on -1, clamp otherwise, pass-through on an empty batch).
 """
 
-from comfy_api.latest import io
+try:  # v577: ONE door to the versioned API (nodes/ph_comfyapi.py).
+    from .ph_comfyapi import io
+except ImportError:  # pragma: no cover - direct module load (tools)
+    from ph_comfyapi import io
 
 
 # Kept byte-identical to the legacy node's tooltip / description text so the UI

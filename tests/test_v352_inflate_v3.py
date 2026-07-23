@@ -66,8 +66,13 @@ def main():
           "def comfy_entrypoint" not in pf)
     check(2, "pick_frame no longer defines an extension",
           "PolyhedronV3Extension" not in pf)
-    check(2, "pick_frame import narrowed (no ComfyExtension)",
-          ("from comfy_api.latest import io" in pf) and ("ComfyExtension" not in pf))
+    # v364: the invariant is the NARROWING -- io comes in, ComfyExtension does
+    # not. HOW io arrives is not the invariant: since v577 it may come through
+    # the one door (nodes/ph_comfyapi.py) instead of comfy_api.latest directly.
+    # Pinning the spelling made this check go red on a change that kept the
+    # invariant perfectly intact.
+    check(2, "pick_frame import narrowed (io only, no ComfyExtension)",
+          ("import io" in pf) and ("ComfyExtension" not in pf))
 
     # ---- [3] inflate_v3 structure + custom type ---------------------------
     inf = _read("nodes", "wan_frame_inflate_v3.py")
@@ -104,12 +109,12 @@ def main():
            'V3_NODE_CLASSES["ULSImagePickFrame"] if _V3_OK else ULSImagePickFrame') in init)
 
     # ---- [5] v352 triple --------------------------------------------------
-    check(5, 'pyproject version = "3.62.0"',
-          'version = "3.62.0"' in _read("pyproject.toml"))
-    check(5, "banner 'Polyhedron Suite  v362' (two spaces)",
-          "Polyhedron Suite  v362" in init)
-    check(5, 'uls_compat PLUGIN_VERSION = "v362"',
-          'const PLUGIN_VERSION = "v362";' in _read("web", "js", "uls_compat.js"))
+    check(5, 'pyproject version = "3.64.0"',
+          'version = "3.64.0"' in _read("pyproject.toml"))
+    check(5, "banner 'Polyhedron Suite  v364' (two spaces)",
+          "Polyhedron Suite  v364" in init)
+    check(5, 'uls_compat PLUGIN_VERSION = "v364"',
+          'const PLUGIN_VERSION = "v364";' in _read("web", "js", "uls_compat.js"))
 
     # ---- [6] behaviour of the verbatim-ported inflate() logic --------------
     from nodes.wan_frame_inflate import ULSWanFrameInflate

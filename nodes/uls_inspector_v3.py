@@ -16,7 +16,10 @@ source of truth and is kept byte-identical as the fallback. The legacy import is
 lazy (inside execute) so importing this module only needs comfy_api.
 """
 
-from comfy_api.latest import io
+try:  # v577: ONE door to the versioned API (nodes/ph_comfyapi.py).
+    from .ph_comfyapi import io
+except ImportError:  # pragma: no cover - direct module load (tools)
+    from ph_comfyapi import io
 
 
 class ULSInspectorV3(io.ComfyNode):

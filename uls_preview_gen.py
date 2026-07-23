@@ -429,7 +429,7 @@ def process_lora(
     needs_meta   = not has_manual_meta
 
     if not needs_image and not needs_meta:
-        print(f"    ✓ Alles vorhanden — überspringe")
+        print("    ✓ Alles vorhanden — überspringe")
         status["source"] = "manual"
         return status
 
@@ -439,7 +439,7 @@ def process_lora(
     # ── 2. Civitai API ─────────────────────────────────────────────────────
     civitai_data = None
     if HAS_REQUESTS and (needs_image or needs_meta):
-        print(f"    🔍 SHA256 berechnen...")
+        print("    🔍 SHA256 berechnen...")
         file_hash = sha256_of_file(lora_path)
         print(f"    🌐 Civitai-Abfrage... ({file_hash[:12]}...)")
         time.sleep(civitai_delay)
@@ -476,7 +476,7 @@ def process_lora(
                     status["preview_video"] = vid_out
 
         else:
-            print(f"    – Nicht auf Civitai gefunden")
+            print("    – Nicht auf Civitai gefunden")
 
     if civitai_only:
         return status
@@ -487,7 +487,7 @@ def process_lora(
         if thumb_bytes:
             img_out = base + ".preview.png"
             if save_bytes_as_image(thumb_bytes, img_out):
-                print(f"    🖼  Eingebettetes Thumbnail extrahiert")
+                print("    🖼  Eingebettetes Thumbnail extrahiert")
                 status["preview_image"] = img_out
                 status["source"] = "embedded"
                 needs_image = False
@@ -498,7 +498,7 @@ def process_lora(
         if existing_vid:
             img_out = base + ".preview.png"
             if extract_video_thumbnail(existing_vid, img_out):
-                print(f"    🎬 Video-Thumbnail extrahiert")
+                print("    🎬 Video-Thumbnail extrahiert")
                 status["preview_image"] = img_out
                 status["source"] = "video_thumb"
                 needs_image = False
@@ -508,7 +508,7 @@ def process_lora(
         img_out = base + ".preview.png"
         uls_meta_current = load_uls_meta(base)
         if create_info_card(name, sf_meta, uls_meta_current, img_out):
-            print(f"    📋 Info-Card erstellt")
+            print("    📋 Info-Card erstellt")
             status["preview_image"] = img_out
             status["source"] = "info_card"
 

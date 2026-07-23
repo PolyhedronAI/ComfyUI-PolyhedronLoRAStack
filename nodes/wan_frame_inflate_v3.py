@@ -24,7 +24,10 @@ The execute() body is a verbatim port of the legacy inflate() logic.
 
 import copy
 
-from comfy_api.latest import io
+try:  # v577: ONE door to the versioned API (nodes/ph_comfyapi.py).
+    from .ph_comfyapi import io
+except ImportError:  # pragma: no cover - direct module load (tools)
+    from ph_comfyapi import io
 
 
 VAE_STRIDE_T = 4  # WAN VAE temporal stride: 4 image frames per latent frame

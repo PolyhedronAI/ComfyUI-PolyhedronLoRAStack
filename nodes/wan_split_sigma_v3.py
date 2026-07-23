@@ -14,7 +14,10 @@ ULSWanSplitNoiseSchedule.compute() — identical behaviour, single source of tru
 kept byte-identical as the fallback. Heavy compute import is lazy.
 """
 
-from comfy_api.latest import io
+try:  # v577: ONE door to the versioned API (nodes/ph_comfyapi.py).
+    from .ph_comfyapi import io
+except ImportError:  # pragma: no cover - direct module load (tools)
+    from ph_comfyapi import io
 
 from .wan_sigma_schedule import SIGMA_SCHEDULE_NAMES
 
@@ -26,7 +29,13 @@ class ULSWanSplitNoiseScheduleV3(io.ComfyNode):
             node_id="ULSWanSplitNoiseSchedule",
             display_name="\u2b21 Polyhedron Dual Sigma Curve",
             category="Polyhedron/Sigma",
-            description="Split HIGH/LOW sigma schedule for the WAN dual-pass pipeline.",
+            description=(
+                "Splits one noise schedule into a HIGH and a LOW half at the "
+                "expert boundary, giving each pass of a dual-expert (MoE) run "
+                "its own curve. The two experts are not doing the same job - one "
+                "sets structure, the other finishes it - so handing both the same "
+                "schedule wastes steps at one end and starves the other."
+            ),
             inputs=[
                 io.Combo.Input("schedule_high", options=SIGMA_SCHEDULE_NAMES,
                                default="karras",

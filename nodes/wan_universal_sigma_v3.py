@@ -14,7 +14,10 @@ ULSUniversalSigmaCurve.compute() — identical behaviour, single source of truth
 kept byte-identical as the fallback. Heavy compute import is lazy.
 """
 
-from comfy_api.latest import io
+try:  # v577: ONE door to the versioned API (nodes/ph_comfyapi.py).
+    from .ph_comfyapi import io
+except ImportError:  # pragma: no cover - direct module load (tools)
+    from ph_comfyapi import io
 
 from .wan_sigma_schedule import SIGMA_SCHEDULE_NAMES
 
@@ -26,7 +29,13 @@ class ULSUniversalSigmaCurveV3(io.ComfyNode):
             node_id="ULSUniversalSigmaCurve",
             display_name="\u2b21 Polyhedron Sigma Curve",
             category="Polyhedron/Sigma",
-            description="A single named sigma schedule -> one SIGMAS output.",
+            description=(
+                "One named sigma schedule, emitted as a SIGMAS curve the sampler "
+                "can take directly. The schedule decides how the noise level "
+                "falls across the steps - the same step count under a different "
+                "curve spends its budget somewhere else entirely, which is why "
+                "this is a wire and not a hidden default."
+            ),
             inputs=[
                 io.Combo.Input("sigma_schedule", options=SIGMA_SCHEDULE_NAMES,
                                default="karras",

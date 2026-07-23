@@ -29,16 +29,23 @@ Migrated so far:
   • ULSWanFrameInflate       (v352)  — nodes/wan_frame_inflate_v3.py
   • ULSInspector             (v353)  — nodes/uls_inspector_v3.py
   • ULSResolveInspector      (v353)  — nodes/uls_resolve_inspector_v3.py
+  • ULSMeshRender            (v353)  — nodes/ph_mesh_render_v3.py
+  • ULSMeshToFile3D          (v353)  — nodes/ph_mesh3d_v3.py
   • ULSWanSplitNoiseSchedule (v353)  — nodes/wan_split_sigma_v3.py
   • ULSUniversalSigmaCurve   (v353)  — nodes/wan_universal_sigma_v3.py
+  • ULSCamera                (v355)  — nodes/ph_camera_v3.py  (frontend-node pilot;
+                                       gizmo rebuilt as a Vue component)
 """
 
 from .uls_pick_frame_v3 import ULSImagePickFrameV3
 from .wan_frame_inflate_v3 import ULSWanFrameInflateV3
 from .uls_inspector_v3 import ULSInspectorV3
 from .uls_resolve_inspector_v3 import ULSResolveInspectorV3
+from .ph_mesh_render_v3 import ULSMeshRenderV3
+from .ph_mesh3d_v3 import ULSMeshToFile3DV3
 from .wan_split_sigma_v3 import ULSWanSplitNoiseScheduleV3
 from .wan_universal_sigma_v3 import ULSUniversalSigmaCurveV3
+from .ph_camera_v3 import ULSCameraV3
 
 
 # node_id -> V3 class. Keys match the legacy NODE_CLASS_MAPPINGS keys exactly, so
@@ -49,6 +56,9 @@ V3_NODE_CLASSES = {
     "ULSWanFrameInflate":       ULSWanFrameInflateV3,
     "ULSInspector":             ULSInspectorV3,
     "ULSResolveInspector":      ULSResolveInspectorV3,
+    "ULSMeshRender":            ULSMeshRenderV3,
+    "ULSMeshToFile3D":          ULSMeshToFile3DV3,
     "ULSWanSplitNoiseSchedule": ULSWanSplitNoiseScheduleV3,
     "ULSUniversalSigmaCurve":   ULSUniversalSigmaCurveV3,
+    "ULSCamera":                ULSCameraV3,
 }

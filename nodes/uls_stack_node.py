@@ -224,6 +224,58 @@ def _read_meta(path: str) -> dict:
         return {}
 
 
+# ── v579: ss_tag_frequency is NOT a trigger list ─────────────────────────────
+# It is kohya's DATASET CAPTION STATISTICS - every tag that ever appeared in a
+# training caption, with its count. Treating it as trigger words was a category
+# error, and it was MEASURED in the field:
+#
+#   Frank's HIGH wire, 11 LoRAs whose headers carry tag frequencies:
+#       TRIGGERS : 1710 / 512  (334.0%)   <- 20 caption fragments x 11 LoRAs
+#   The SAME 11 LoRAs on the LOW wire, whose headers carry none, so the
+#   FILENAME fallback spoke:
+#       TRIGGERS :   38 / 512  (  7.4%)   <- "golden hour", "god rays", ...
+#
+# The tag soup BEAT the correct answer, because step 3 of the ladder
+# short-circuited step 4. And the Inspector HID it: it printed triggers[0]
+# truncated to the column, so a 20-tag soup showed up as the innocent word
+# "hour". The Token Counter was the only node that told the truth.
+#
+# The discriminator is simple, because a trigger list is SHORT. Anything wider
+# is caption statistics wearing a trigger's coat.
+_TRIG_MAX_TAGS  = 6      # a real trigger list is a handful, not a table
+_TRIG_MAX_CHARS = 96
+_TRIG_HARD_TAGS = 20     # nothing may EVER escape the flattener above this
+_TAG_SOUP_SEEN  = set()  # bounded by the LoRA library: say it once per file
+
+
+def _cap_tags(s):
+    """No way out of the flattener may be unbounded. Two of them were: a
+    non-JSON string and a non-dict value came back VERBATIM, so a fat
+    ss_tag_frequency blob became the 'trigger words' in full."""
+    tags = [t.strip() for t in str(s or "").split(",") if t.strip()]
+    return ", ".join(tags[:_TRIG_HARD_TAGS])
+
+
+def _looks_like_trigger_list(s):
+    """(is_a_trigger_list, n_tags) - pure, guard-executed."""
+    tags = [t.strip() for t in str(s or "").split(",") if t.strip()]
+    ok = (0 < len(tags) <= _TRIG_MAX_TAGS) and len(str(s or "")) <= _TRIG_MAX_CHARS
+    return ok, len(tags)
+
+
+def _warn_tag_soup_once(lora_name, n_tags):
+    """Say it ONCE per LoRA per process, then be quiet. Silence is how the
+    1710-token string got all the way into a 512-token budget unnoticed."""
+    key = str(lora_name)
+    if key in _TAG_SOUP_SEEN:
+        return
+    _TAG_SOUP_SEEN.add(key)
+    print(f"[PLS] Trigger: '{os.path.basename(key)}' carries {n_tags} tags in its "
+          f"ss_tag_frequency - that is a dataset caption table, not a trigger "
+          f"list. Using the filename instead. To pin a real trigger, type it "
+          f"into the row's trigger field (it wins over everything).")
+
+
 def _flatten_tag_frequency(tw):
     """Normalize ss_tag_frequency into a comma-separated trigger string.
 
@@ -248,12 +300,12 @@ def _flatten_tag_frequency(tw):
             try:
                 tw = json.loads(s)
             except (ValueError, json.JSONDecodeError):
-                return s   # not valid JSON — return as-is
+                return _cap_tags(s)   # v579: not valid JSON - capped, not verbatim
         else:
-            return s       # plain comma-separated string
+            return _cap_tags(s)   # v579: capped, not verbatim
 
     if not isinstance(tw, dict):
-        return str(tw)
+        return _cap_tags(tw)   # v579: capped, not verbatim
 
     # Detect nested format (dict of dicts)
     sample_val = next(iter(tw.values()), None)
@@ -1030,37 +1082,113 @@ def _read_uls_meta_trigger(lora_name: str) -> str:
     return ""
 
 
-def _get_trigger(lora_name: str) -> str:
-    """All trigger words for a LoRA as comma-separated string.
-    Priority: .uls-meta.json (user-curated) → .txt (read-only) →
-              safetensors header → filename fallback."""
+_STAMP_RE = re.compile(r'_(high|low|hd|ld)_noise$', re.IGNORECASE)
+_SIDE_RE  = re.compile(r'_(high|low)$',             re.IGNORECASE)
+# A "coined" token carries BOTH letters and digits: du8ne, lac8e, oxyge8n,
+# rai8n, r8ing, fer8n. That is a deliberate anti-collision spelling -- a word
+# a base model has never seen -- so when one is present it IS the trigger.
+_COINED_RE = re.compile(r'^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9]+$')
+
+
+def _trigger_from_filename(lora_name: str) -> str:
+    """Stage 4. Pure, guard-executed against Frank's 459 real filenames.
+
+    v580 -- THIS WAS BROKEN, AND THE SCAN PROVED IT. Two wounds, both measured:
+
+      1. THE STAMP REPEATS. Half the WAN library carries it twice, one file
+         three times:
+             polyhedron_wan2.2_golden_hour_low_noise_low_noise
+             polyhedron_wan2.2_rings_low_noise__low_noise_low_noise_r8ing
+         The old regex was anchored at `$` and ran ONCE, so it peeled one stamp
+         and left `..._low_noise` standing. Now it peels in a loop.
+
+      2. IT RETURNED parts[-1] -- the LAST WORD. `golden_hour` yielded "hour",
+         `god_rays` yielded "rays", `apple_tree` yielded "tree", and
+         `1_fern_fer8n_2` yielded "2". The whole phrase IS the trigger; the
+         last word is a fragment of it.
+
+    Order matters: a coined token wins over the phrase, because when Frank
+    spells a trigger `lac8e` he means `lac8e` and not "lace lac8e".
+
+    This RETURNS A GUESS. The caller tags it `name` and the Inspector prints
+    that tag, so a guess never passes itself off as a fact. To pin a real one,
+    type it into the row's trigger field -- it beats every rung of this ladder.
+    """
+    base = os.path.basename(lora_name).replace(".safetensors", "")
+    s = base
+    for _ in range(6):                      # bounded: no runaway on odd names
+        nxt = _SIDE_RE.sub('', _STAMP_RE.sub('', s)).rstrip('_')
+        if nxt == s:
+            break
+        s = nxt
+    s = re.sub(r'wan\d+[\._]\d+_?', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'polyhedron_?',     '', s, flags=re.IGNORECASE)
+    s = re.sub(r'v\d+$',            '', s, flags=re.IGNORECASE)
+    s = re.sub(r'_+', '_', s).strip('_')
+    parts = [p for p in s.split('_') if p]
+    if not parts:
+        return ""
+    coined = [p for p in parts if _COINED_RE.match(p) and not p.isdigit()]
+    if coined:
+        return coined[-1]
+    words = [p for p in parts if not p.isdigit()]
+    return " ".join(words) if words else ""
+
+
+def _warn_hand_trigger_once(lora_name, tw, where):
+    """A companion file is INTENT -- the trigger law says intent is not capped,
+    and v580 keeps that. But 26 of Frank's 290 `.txt` files hold whole image
+    captions (up to 480 chars), and stage 2 never looked. So: take it, and say
+    it once. The value still ships; the surprise does not."""
+    ok, n_tags = _looks_like_trigger_list(tw)
+    if ok:
+        return
+    key = "hand:" + str(lora_name)
+    if key in _TAG_SOUP_SEEN:
+        return
+    _TAG_SOUP_SEEN.add(key)
+    print(f"[PLS] Trigger: '{os.path.basename(str(lora_name))}' takes its trigger from "
+          f"{where} -- {n_tags} tags, {len(tw)} chars. That is long for a trigger "
+          f"list, and it goes into the prompt VERBATIM (your file, your call). If "
+          f"that was not the plan, edit the file or pin the row's trigger field.")
+
+
+def _get_trigger(lora_name: str) -> tuple:
+    """(trigger, source) -- source is 'meta' | 'txt' | 'header' | 'name' | ''.
+
+    v580: the source travels WITH the value. Stage 4 guesses; before, the guess
+    arrived looking exactly like a fact, and the Inspector printed it as one.
+    Priority: .uls-meta.json (curated) -> .txt -> safetensors header -> filename.
+    """
     # 1. User-curated trigger words from the frontend overlay
     tw = _read_uls_meta_trigger(lora_name)
     if tw:
-        return tw
+        _warn_hand_trigger_once(lora_name, tw, ".uls-meta.json")
+        return tw, "meta"
     # 2. Companion .txt file (often shipped with Civitai LoRAs)
     tw = _read_txt_trigger(lora_name)
     if tw:
-        return tw
+        _warn_hand_trigger_once(lora_name, tw, ".txt")
+        return tw, "txt"
     # 3. Embedded safetensors metadata (ss_tag_frequency / trigger_words)
+    #    v579: ACCEPTED ONLY IF IT LOOKS LIKE A TRIGGER LIST. ss_tag_frequency is
+    #    a dataset caption table, and a soup of it used to SHORT-CIRCUIT step 4
+    #    below - which, for a name like "polyhedron_wan2.2_golden_hour_low_noise",
+    #    yields exactly "golden hour". The garbage was beating the right answer.
+    #    Measured: 1710 trigger tokens against a 512 budget on the wire whose
+    #    headers had tag tables; 38 on the wire whose headers had none.
     path = folder_paths.get_full_path("loras", lora_name)
     if path:
         info = _extract_lora_info(path)
         tw = info.get("trigger_words", "")
         if tw:
-            return tw
-    # 4. Last resort — derive from filename
-    base = os.path.basename(lora_name).replace(".safetensors", "")
-    cleaned = re.sub(r'_(high|low|hd|ld)_noise$', '', base, flags=re.IGNORECASE)
-    cleaned = re.sub(r'_(high|low)$',             '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'wan\d+[\._]\d+_?',         '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'polyhedron_?',             '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'v\d+$',                    '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'_+', '_', cleaned).strip('_')
-    parts = [p for p in cleaned.split('_') if p]
-    if parts:
-        return parts[-1]
-    return base.split('_')[0] or base
+            ok, n_tags = _looks_like_trigger_list(tw)
+            if ok:
+                return tw, "header"
+            _warn_tag_soup_once(lora_name, n_tags)   # and fall through to 4
+    # 4. Last resort — derive from filename. A GUESS, and it says so.
+    guess = _trigger_from_filename(lora_name)
+    return guess, ("name" if guess else "")
 
 
 # ─── Group Sorting ─────────────────────────────────────────────────────────
@@ -1168,9 +1296,25 @@ class UltimateLoraStack:
     RETURN_NAMES  = ("MODEL", "CLIP", "debug_info", "uls_config_out", "trigger_words")
     FUNCTION      = "apply"
     CATEGORY      = "Polyhedron/Loaders"
+    DESCRIPTION = ("Applies many LoRAs to MODEL (and optionally CLIP) in a deterministic, "
+                   "group-ordered sequence, with a merge mode chosen per group. Groups are "
+                   "the point: stacking fifteen or more LoRAs sequentially produces "
+                   "multi-LoRA interference, and a rank-concatenated or sign-elected group "
+                   "holds its members apart instead of letting them average each other "
+                   "away. Emits its collected trigger words and its own config as text. For "
+                   "dual-noise architectures, run two side by side, one per expert.")
     OUTPUT_NODE   = False
 
     def apply(self, model, clip=None, uls_config='{"rows":[],"mult":1.0}', node_id=None):
+        # v540 fail-loud: a filename STRING on 'model' (⬡ Select Model Switch wired
+        # directly instead of through a loader) poisoned every consumer downstream
+        # until an unrelated node crashed. Name the mistake here, at the source.
+        if isinstance(model, str):
+            raise ValueError(
+                f"[PLS] LoRA Stack: 'model' received the STRING '{model}' -- a filename, "
+                f"not a MODEL. \u2b21 Select Model Switch feeds a LOADER's combo input "
+                f"(unet_name); wire that loader's MODEL output here."
+            )
         if not uls_config or not uls_config.strip():
             uls_config = '{"rows":[],"mult":1.0}'
         try:
@@ -1295,7 +1439,7 @@ class UltimateLoraStack:
         for group, grp_rows, grp_weights in ordered:
             for row, w in zip(grp_rows, grp_weights, strict=True):
                 name = row.get("name", "")
-                tw = _get_trigger(name)
+                tw, src = _get_trigger(name)     # v580: the source rides along
                 if tw and tw not in triggers:
                     triggers.append(tw)
                 lora_info.append({
@@ -1303,6 +1447,7 @@ class UltimateLoraStack:
                     "weight":        w,
                     "group":         group,
                     "trigger_words": tw,
+                    "trigger_src":   src,
                 })
         trigger_words = ", ".join(triggers)
 
@@ -1366,9 +1511,21 @@ class ULSAccelerator:
     RETURN_NAMES  = ("MODEL", "CLIP", "debug_info")
     FUNCTION      = "apply"
     CATEGORY      = "Polyhedron/Loaders"
+    DESCRIPTION = ("Applies engine-class LoRAs (Lightning, Turbo, LCM, FusionX, CausVid and "
+                   "the like) ahead of the creative stack. These change HOW the model "
+                   "computes - the inference trajectory - rather than WHAT it depicts, "
+                   "which is why they get their own node: a flat list, one global merge "
+                   "mode, no groups to reason about.")
     OUTPUT_NODE   = False
 
     def apply(self, model, clip=None, engine_config='{"rows":[],"mode":"SEQ"}', node_id=None):
+        # v540 fail-loud: see LoRA Stack guard above -- same filename-STRING trap.
+        if isinstance(model, str):
+            raise ValueError(
+                f"[PLS] LoRA Engine: 'model' received the STRING '{model}' -- a filename, "
+                f"not a MODEL. \u2b21 Select Model Switch feeds a LOADER's combo input "
+                f"(unet_name); wire that loader's MODEL output here."
+            )
         if not engine_config or not engine_config.strip():
             engine_config = '{"rows":[],"mode":"SEQ"}'
         try:
@@ -1528,25 +1685,39 @@ class ULSInspector:
         col_name = 32
         col_lora = 8
         col_trig = 24
+        col_src  = 6
 
-        header = f"  {'LoRA':<{col_name}} {'Weight':>{col_lora}}   {'Trigger':<{col_trig}}  {'In Prompt'}"
+        # v580: WHERE a trigger came from is as important as what it says. Six
+        # of Frank's WAN LoRAs carry no trigger anywhere, so stage 4 GUESSES one
+        # off the filename -- and the guess used to print in the same column,
+        # same font, same confidence as a curated one. It cannot any more.
+        _SRC_LABEL = {"meta": "meta", "txt": "txt", "header": "hdr",
+                      "name": "name?", "": "—"}
+
+        header = (f"  {'LoRA':<{col_name}} {'Weight':>{col_lora}}   "
+                  f"{'Trigger':<{col_trig}} {'From':<{col_src}} {'In Prompt'}")
         lines.append(header)
-        lines.append("  " + "─" * (col_name + col_lora + col_trig + 20))
+        lines.append("  " + "─" * (col_name + col_lora + col_trig + col_src + 20))
 
         found_count = 0
         missing_triggers = []
+        guessed_count = 0
 
         for entry in lora_info:
             name    = entry.get("name", "?")[:col_name]
             weight  = entry.get("weight", 0.0)
             tw_raw  = entry.get("trigger_words", "")
+            src     = _SRC_LABEL.get(str(entry.get("trigger_src", "")), "—")
+            if src == "name?":
+                guessed_count += 1
 
             if not tw_raw:
                 # No trigger words known for this LoRA
                 lora_col  = f"×{weight:.2f}"
                 trig_col  = "(none)"
                 match_col = "—"
-                lines.append(f"  {name:<{col_name}} {lora_col:>{col_lora}}   {trig_col:<{col_trig}}  {match_col}")
+                lines.append(f"  {name:<{col_name}} {lora_col:>{col_lora}}   "
+                             f"{trig_col:<{col_trig}} {src:<{col_src}} {match_col}")
                 continue
 
             # Split trigger words and check each
@@ -1570,7 +1741,14 @@ class ULSInspector:
                     break
 
             lora_col = f"×{weight:.2f}"
-            trig_col = triggers[0][:col_trig]  # show primary trigger
+            # v579: SAY how many there are. The old line printed triggers[0]
+            # truncated to the column, so a 20-tag caption soup showed up as the
+            # innocent word "hour" - and the report that exists to surface
+            # trigger problems was the one hiding this one.
+            shown = best_match or triggers[0]
+            if len(triggers) > 1:
+                shown = f"{shown} (+{len(triggers) - 1})"
+            trig_col = shown[:col_trig]
 
             if best_match:
                 found_count += 1
@@ -1579,12 +1757,18 @@ class ULSInspector:
                 missing_triggers.append(name)
                 match_col = "✗  NOT IN PROMPT"
 
-            lines.append(f"  {name:<{col_name}} {lora_col:>{col_lora}}   {trig_col:<{col_trig}}  {match_col}")
+            lines.append(f"  {name:<{col_name}} {lora_col:>{col_lora}}   "
+                         f"{trig_col:<{col_trig}} {src:<{col_src}} {match_col}")
 
-        lines.append("  " + "─" * (col_name + col_lora + col_trig + 20))
+        lines.append("  " + "─" * (col_name + col_lora + col_trig + col_src + 20))
         missing = len(lora_info) - found_count
         no_trigger = sum(1 for e in lora_info if not e.get("trigger_words"))
         lines.append(f"  ✓ {found_count} matched   ✗ {missing - no_trigger} missing   — {no_trigger} no trigger defined")
+        lines.append("  From: meta=.uls-meta.json · txt=companion file · hdr=safetensors header")
+        if guessed_count:
+            lines.append(f"        name? = GUESSED from the filename ({guessed_count} here) — "
+                         f"no trigger is stored anywhere for these.")
+            lines.append("        To pin one, type it into the row's trigger field: it beats every rung.")
 
         if missing_triggers:
             lines.append("  Missing:")
@@ -1603,6 +1787,65 @@ class ULSInspector:
 # back to a heuristic if transformers / tokenizer files are not available.
 # We import lazily inside the count function so import-time stays cheap and
 # the node also loads on systems without `transformers` installed.
+# v580 -- THE WIRE THAT WAS THERE AND STILL WRONG.
+#
+# Frank's HIGH counter read TRIGGERS: 1710 / 512 (334%). His LOW counter, same
+# eleven LoRAs, read 38. For three rounds that number was treated as evidence:
+# a "tag soup" was diagnosed, a fix was built for it, a guard was written, a law
+# was written into the handover. All of it was fiction.
+#
+# The workflow JSON settled it in one read:
+#     #155 Token Counter . trigger_words  <-  #256 Stack HIGH . uls_config_out
+#     #156 Token Counter . trigger_words  <-  #257 Stack LOW  . trigger_words
+#
+# The HIGH counter was measuring the serialised Stack config -- 15 rows of JSON,
+# ~6000 chars. STRING fits into STRING, so LiteGraph passed it without a word.
+#
+# The v568 wire law guards "unwired". Nothing guarded "wired, but to the wrong
+# socket" -- and a socket NAME is a label, not a contract. So the counter now
+# looks at what it was handed. A trigger list is a handful of short words. A
+# config object announces itself in the first character.
+_TRIG_SANE_CHARS = 600      # 11 LoRAs of real triggers measured 129 chars
+
+
+def _wrap_note(text, width):
+    """Soft-wrap on word boundaries. Pure; no textwrap import for four lines."""
+    out, line = [], ""
+    for word in str(text).split():
+        if line and len(line) + 1 + len(word) > width:
+            out.append(line)
+            line = word
+        else:
+            line = f"{line} {word}".strip()
+    if line:
+        out.append(line)
+    return out
+
+
+def _mis_wired_trigger_input(s, n_tokens):
+    """'' if plausible, else the reason. Pure -- the guard executes this."""
+    t = str(s or "").strip()
+    if not t:
+        return ""
+    head = t[:1]
+    if head in "{[":
+        return (f"the 'trigger_words' input is being handed JSON, not triggers "
+                f"({n_tokens} tokens, {len(t)} chars, starts with '{head}'). That is "
+                f"almost certainly the Stack's 'uls_config_out' socket on the wrong "
+                f"input -- rewire it to 'trigger_words'. The count below is meaningless.")
+    for probe in ('"rows"', '"lora_info"', '"uls_config"', '"widgets_values"'):
+        if probe in t:
+            return (f"the 'trigger_words' input contains {probe} -- that is a config "
+                    f"object, not a trigger list. Rewire it to the Stack's "
+                    f"'trigger_words' socket. The count below is meaningless.")
+    if len(t) > _TRIG_SANE_CHARS:
+        return (f"the 'trigger_words' input is {len(t)} chars / {n_tokens} tokens long. "
+                f"A real trigger list is a handful of words (Frank's 11-LoRA stack "
+                f"measures 129 chars). Check what is wired here, and check the "
+                f"companion .txt of the LoRAs in the stack.")
+    return ""
+
+
 _UMT5_TOKENIZER = None  # cached after first successful load
 _UMT5_LOAD_ATTEMPTED = False
 
@@ -1770,6 +2013,12 @@ class ULSTokenCounter:
     RETURN_NAMES  = ("report", "positive_tokens", "negative_tokens", "over_limit", "trigger_tokens")
     FUNCTION      = "count"
     CATEGORY      = "Polyhedron/Utils"
+    DESCRIPTION = ("Counts the prompt against the text encoder's hard token limit and says "
+                   "how close it is. Over the limit, the native path truncates in silence: "
+                   "no crash, the end of the prompt simply never reaches the model. It also "
+                   "distrusts its own trigger_words input - if that socket is handed a "
+                   "serialised config instead of triggers, it says so on the number itself "
+                   "rather than printing a count it does not believe.")
     OUTPUT_NODE   = False
 
     def count(self,
@@ -1784,8 +2033,12 @@ class ULSTokenCounter:
         # Trigger words are diagnostic only — see the report note and the
         # RETURN comment. Always defined so the trigger_tokens output is stable.
         trig_count = 0
+        trig_alarm = ""
         if trigger_words and trigger_words.strip():
             trig_count, _ = _count_tokens(trigger_words)
+            trig_alarm = _mis_wired_trigger_input(trigger_words, trig_count)
+            if trig_alarm:
+                print(f"[PLS] Token Counter: {trig_alarm}")
 
         # Use the same method label if both are exact, otherwise show mixed
         method = pos_method if pos_method == neg_method else "mixed"
@@ -1841,7 +2094,15 @@ class ULSTokenCounter:
             lines.append("")
             lines.append(f"  TRIGGERS    : {trig_count:>4} / {model_limit}  ({trig_pct:5.1f}%)  (auto-collected)")
             lines.append(f"                {_make_bar(trig_count, model_limit)}")
-            lines.append("                ℹ usually already inside POSITIVE — informational, not added to over-limit")
+            if trig_alarm:
+                # v580: the alarm sits ON the number it distrusts. Frank's 1710
+                # was believed for three rounds because nothing next to it ever
+                # asked whether a trigger list could look like that.
+                lines.append("                ⚠ THIS NUMBER IS NOT A TRIGGER COUNT:")
+                for chunk in _wrap_note(trig_alarm, 60):
+                    lines.append(f"                  {chunk}")
+            else:
+                lines.append("                ℹ usually already inside POSITIVE — informational, not added to over-limit")
         lines.append("─────────────────────────────────")
 
         # Actionable hints
