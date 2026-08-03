@@ -1,11 +1,13 @@
 # ⬡ Polyhedron Suite
 
-**One pack, two halves: media in and out, and group-aware LoRA management.**
+**One pack: media in and out, group-aware LoRA management, prompt encoding and sampling.**
 
 | Part | Nodes |
 | --- | --- |
 | [Media I/O](#-polyhedron-media-loader--polyhedron-save) | ⬡ Polyhedron Media Loader · ⬡ Polyhedron Save |
 | [LoRA Stack](#-polyhedron-lora-stack) | ⬡ Polyhedron LoRA Stack · LoRA Engine · LoRA Inspector · Token Counter · Select Model Switch · Merge Analyzer · Wan Frame Inflate · Pick Frame · Sigma Curves · Wan Bridge |
+| [CLIP Text Encode](#-polyhedron-clip-text-encode) | ⬡ Polyhedron CLIP Text Encode |
+| [Sampler](#-polyhedron-sampler) | ⬡ Polyhedron Sampler |
 
 Installed as one custom-node pack — the node names, the package id
 (`polyhedron-lora-stack`) and every saved workflow are unchanged.
@@ -195,6 +197,29 @@ mode**, so you can keep Solo large and the tile view compact. The button
 turns into **⬛ Tiles** to bring the grid back.
 
 ![Solo view: the selection fills the node, the grid is hidden](assets/ml_solo_view.png)
+
+### ⤓ Mini — the ultra-short node
+
+The button at the left of the Selection header folds the node down to the
+essentials. **⤓ Mini** collapses it; the same button, now **⤒ Full**, brings
+everything back.
+
+Mini hides the button bar, the batch status line, the tile grid, the footer with
+its page controls and folder path, and — where they apply — the video trim
+strip, the caption line and the audio bar. What stays is the picture: the
+Selection preview keeps the whole width of the node, so a loader parked in a
+finished graph still shows what it is feeding downstream.
+
+Five widgets travel with the fold — `frame_load_cap`, `frame_skip`,
+`force_fps`, `keep_input_fps` and `on_empty`. They are hidden, not reset.
+
+The node drops to its minimum height on the way in and returns to its previous
+height on the way out. The state is stored on the node itself, so it survives
+saving the workflow and is carried along when you copy the node. Mini is a
+display state and nothing else — nothing is disconnected, no value changes, and
+a run behaves exactly as it would with the node fully open.
+
+![Mini: the node folded down to its outputs and the picture](assets/ml_mini_view.png)
 
 ## 3. Video
 
@@ -855,16 +880,231 @@ preview image and trigger words from the Civitai API (SFW-strict filtering, capp
 
 ---
 
+# ⬡ Polyhedron CLIP Text Encode
+
+One node in place of a small chain. The positive prompt is assembled from
+several fields instead of one wall of text, so a trigger block, the subject and
+a style block can be edited without hunting through a paragraph. A negative
+prompt sits in the same node and can be switched off. Both are encoded through
+ComfyUI's own encoder — reused, never re-implemented — and the composed
+strings come back out as text, so what the encoder saw is what you can read.
+
+![Two positive segments, the negative below them, the cleanup switches on top and the live footer](assets/cte_overview.png)
+
+## Inputs and outputs
+
+| Pin | Direction | Carries |
+| --- | --- | --- |
+| `clip` | in | The CLIP / text encoder — the same pin as the core node. |
+| `pos_external` | in | Optional text from elsewhere: a captioner, a Stack's trigger words, any `STRING` source. |
+| `neg_external` | in | Optional external text for the negative prompt. |
+| `positive` | out | The encoded positive conditioning. |
+| `negative` | out | The encoded negative conditioning — valid even when the negative is switched off. |
+| `positive_text` | out | The composed positive prompt, exactly as encoded. |
+| `negative_text` | out | The composed negative prompt, exactly as encoded. |
+| `full_text` | out | Both prompts in one string — for logging, or a Save node's metadata. |
+
+## Segments
+
+`segments` decides how many positive fields take part. Turn it up and another
+empty field appears; turn it down and the field disappears from the node.
+
+Hiding is not deleting. The text of a hidden segment stays with the node,
+survives saving and comes back untouched when you turn the count up again. But
+while it is hidden it is also **out of the prompt** — the encoder only ever
+sees the fields that are showing. Park a block of styling in segment 3, turn the
+count down to 2, and you have switched it off without losing a word.
+
+`separator` decides how the fields are joined: `comma` puts `, ` between them,
+`newline` keeps them on separate lines, `space` runs them together, `none`
+concatenates with nothing in between.
+
+The boxes grow with the text — each visible field sizes itself to its content
+and the node follows, so a long prompt is readable without scrolling inside a
+two-line window.
+
+![segments turned down to 1: the second block is out of sight and out of the prompt](assets/cte_segments_1.png)
+
+## Comments — headings that cost nothing
+
+`strip_comments` lets you keep section headings in the box that never reach the
+model: everything from a comment marker to the end of that line is removed
+before encoding.
+
+That serves two purposes. **Structure** — `// SCENE & CAMERA`, `// SUBJECT`,
+`// HANDS` give a long prompt a table of contents, so you scroll to the section
+you want instead of re-reading a paragraph. And **notes to yourself** — the
+seed that worked, the LoRA this wording was written for, a line you took out but
+might want back. They travel with the workflow and cost nothing at generation
+time.
+
+This is not cosmetic: every word in the prompt competes for the encoder's
+attention. A heading like `SUBJECT` or a stray `TODO: try 0.8` left in the text
+is read as content.
+
+`comment_markers` decides what counts as a marker. The default is `//`. Enter a
+space-separated list to use several — `// # ***` gives you three. A marker
+counts at the start of a line or after a space, which is why
+`https://example.com` survives untouched; an empty field strips nothing. A
+comment always runs to the end of its line — there is no block comment.
+
+Comments are removed **before** `strip_newlines` flattens the remaining line
+breaks. The order matters: flatten first and a heading would swallow the line
+that follows it.
+
+![The same prompt with strip_comments off: 127 words instead of 99](assets/cte_comments_off.png)
+
+## The negative
+
+`use_negative` switches the negative prompt off. The box disappears and the
+footer drops to zero words — but the `negative` output still carries a valid
+conditioning (an encoding of an empty prompt), so anything wired to it keeps
+working. Useful for distilled and Lightning setups that want an empty negative
+and CFG at 1.0.
+
+![use_negative off: the box is gone, the footer reads neg 0 words](assets/cte_negative_off.png)
+
+## External text
+
+`pos_external` and `neg_external` take text from other nodes — anything with a
+`STRING` output. The obvious source is a prompt fragment kept elsewhere; the
+more interesting one is a node that **writes the text for you**. A captioner
+such as **Florence2** looks at an image and returns a description of it; wire
+that into `pos_external` and it becomes part of the prompt without typing a
+word. The same works for WD14-style taggers, LLM nodes that expand a sketch into
+a full prompt, or a node reading a caption sidecar.
+
+`external_mode` decides where it lands:
+
+| Mode | Result |
+| --- | --- |
+| `append` | Behind your segments — your wording sets the frame, the description follows. The usual choice for image-to-image and style transfer. |
+| `prepend` | In front — useful for trigger words a LoRA wants to see early. |
+| `replace` | It takes over entirely. The segments stay in the node, untouched, but the prompt is the external text alone — batch work over a folder. |
+
+Wire an input and a field for it appears in the node; after the first run it
+shows the text that actually arrived, and the footer counts it. **Note:**
+`neg_external` only works while the negative is switched on — with
+`use_negative` off the negative prompt is not assembled at all.
+
+![Two text nodes feeding the external inputs in append mode](assets/cte_external.png)
+
+## The footer
+
+The strip along the bottom is the honest account of what will be encoded:
+`pos 99 words · neg 60 words · 649 chars · last run: pos 155 · neg 119 tokens
+(exact)`.
+
+Words and characters are counted **as you type** and already respect your
+cleanup settings. The token figure comes from the **last run**, because only the
+tokenizer belonging to your text encoder can count tokens and it lives in the
+backend — so after every edit the field falls back to `run to count tokens`.
+The count comes from the same function behind the Token Counter, so the two
+never disagree.
+
+---
+
+# ⬡ Polyhedron Sampler
+
+One node for both sampling architectures. In **Single** it is a superset of
+KSampler and KSampler (Advanced): a real `denoise` field alongside
+`start_at_step` / `end_at_step` and `return_with_leftover_noise`, the full
+sampler and scheduler lists, and `add_noise`. Switch the **Mode** pill to
+**High + Low** and the same node runs a noise-split two-expert denoise — the
+architecture Wan 2.2 ships. Nothing is rebuilt in between: what does not apply
+goes dim, everything else stays where your eye expects it.
+
+![The node in High + Low; the Single-only controls are dimmed, not hidden](assets/sampler_dual_overview.png)
+
+## Inputs and outputs
+
+| Pin | Direction | Carries |
+| --- | --- | --- |
+| `model` | in | The model. In High + Low this is the **high-noise** expert. |
+| `positive` / `negative` | in | Conditioning to include and to exclude. |
+| `latent_image` | in | The latent to denoise — image or video. |
+| `model_low` | in | Optional. The **low-noise** expert. |
+| `sigmas` / `sigmas_high` / `sigmas_low` | in | Optional external schedules; they override the built-in one. |
+| `noise` | in | Optional external noise source. |
+| `LATENT` | out | The denoised latent. |
+
+## Single
+
+`seed`, `steps`, `cfg`, `sampler_name`, `scheduler` and `denoise` work as you
+know them. `add_noise` decides whether the run starts by adding noise at all;
+`start_at_step` and `end_at_step` cut a window out of the schedule;
+`return_with_leftover_noise` hands the latent on unfinished on purpose, for a
+second sampler to complete.
+
+`sigma_shift` applies a flow-matching shift to the model before the schedule is
+built. `0.00` means **off** — correct when an upstream `ModelSamplingSD3` node
+or the model itself already provides one. Wan 2.2 needs a shift: `8.0` matches
+the Wan MoE KSampler, and without it a short run leaves residual noise as fine
+RGB speckle. A positive value here **overrides** rather than adds. In High + Low
+the shift applies to both experts alike — if you need different ones, keep
+using separate `ModelSamplingSD3` nodes in front.
+
+## High + Low
+
+Some model families ship as a **pair**: one expert for the loud, early part of
+the denoise, one for the quiet, detailed end. Wan 2.2 is the prominent example.
+`model` becomes the high-noise expert, `model_low` takes the second one.
+
+The **Handoff** is the one number that matters. It is a *noise level*, not a
+step count: every step whose sigma is at or above it runs on the high expert,
+the rest on the low one. There is no automatic value — the Wan 2.2 conventions
+are **0.875** for text-to-video and **0.900** for image-to-video.
+
+`cfg_low` gives the second expert its own guidance value (distilled and
+Lightning LoRAs typically run the low pass at 1.0); `sampler_low` and
+`scheduler_low` do the same for sampler and schedule and default to *same as
+high*.
+
+`handoff_mode` decides what happens at the seam. **Continuous** runs both
+experts as one unbroken denoise — the high expert stops while leftover noise is
+still present and the low expert picks it straight up. **Wan MoE parity**
+reproduces the Wan MoE KSampler exactly: the switch happens one step earlier,
+the high expert finishes on a clean estimate, and the low expert re-noises it
+with the same seed noise before denoising to the end.
+
+![The Handoff is a noise level, not a step](assets/sampler_handoff_tip.png)
+
+## Live preview
+
+`preview_mode` picks the decoder for the picture inside the node —
+visualisation only, the output latent is identical whatever you choose.
+
+**Still ·** shows a single frame that refreshes each step, as the KSampler does.
+**Video ·** animates *every frame* of the predicted latent, so on a video you
+watch the motion settle long before the run ends. The two `Video · TAE` modes
+decode through a small approximate decoder: slower per step, far closer to the
+finished picture. They carry their download size in the label because they are
+files that have to be on disk; pick a missing one and the node offers to fetch
+it through the pack's one download door (staged, checksum-verified, atomic).
+
+![Six decoders; the two TAE entries carry their download size](assets/sampler_preview_modes.png)
+
+The mode can be changed **while a render is running** — the change is picked up
+on the next step.
+
+![Three moments of the same run in a Video mode: the whole clip plays while it denoises](assets/sampler_preview_triptych.png)
+
+---
+
 ## Documentation
 
 The full illustrated user manual ships in this repository:
-[`docs/Polyhedron_Suite_Documentation_v362.pdf`](docs/Polyhedron_Suite_Documentation_v362.pdf)
-— 58 pages in two parts:
+[`docs/Polyhedron_Suite_Documentation_v365.pdf`](docs/Polyhedron_Suite_Documentation_v365.pdf)
+— 74 pages in four parts:
 
 - **Part I — Media Loader & Save** (21 pages): the two media I/O nodes, every
   panel, pin and switch, fully illustrated.
 - **Part II — LoRA Stack** (35 pages): every Stack node, panel and switch.
   The per-row CLIP strength feature is section 3.13.
+- **Part III — CLIP Text Encode** (9 pages): segments, comments, the negative,
+  external text and the token footer.
+- **Part IV — Sampler** (7 pages): Single, High + Low with the Handoff, and the
+  live preview decoders.
 
 The Nodes 2.0 compatibility layer is described in the Compatibility section
 above; the release history lives in `docs/changelog-archive/`.

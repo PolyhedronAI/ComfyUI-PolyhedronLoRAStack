@@ -28,9 +28,7 @@ results are a Trim-strength issue, not a re-pack issue. Measurement math is
 untouched; all numbers are identical to v264/v265.
 """
 
-import os
 import json
-import math
 import time
 import hashlib
 

@@ -120,6 +120,53 @@ function pushRecentFolder(path) {
 // PER MODE: leaving a mode records the current size under that mode's slot;
 // entering a mode returns its remembered size (null on the first visit — the
 // caller then keeps the current size).
+/* v785: the ultra-short node, Frank's request. TWO pure helpers so the
+ * guard can drive them.
+ *
+ * _miniWidgets applies the HOUSE hide form (ph_clip_encode v556:
+ * computeSize [0,-4] + hidden + element display none) to the five
+ * LiteGraph widgets, and restores the originals on the way back.
+ *
+ * _miniSlots hides the UNCONNECTED outputs -- VISUALLY ONLY. The slot
+ * indices are law (the links live on them) and are never touched; whether
+ * the frontend honours `hidden` is the declared field probe, and ignoring
+ * it is harmless (the slots simply stay visible). A connected output is
+ * NEVER hidden. */
+const MINI_WIDGETS = ["frame_load_cap", "frame_skip", "force_fps",
+                      "keep_input_fps", "on_empty"];
+
+function _miniWidgets(widgets, names, on) {
+    for (const w of widgets || []) {
+        if (!names.includes(w.name)) continue;
+        if (on) {
+            if (w._plsMiniHid) continue;
+            w._plsMiniHid = true;
+            w._plsMiniHadCS = Object.prototype.hasOwnProperty.call(
+                w, "computeSize");
+            w._plsMiniCS = w.computeSize;
+            w.computeSize = () => [0, -4];
+            w.hidden = true;
+            if (w.element) w.element.style.display = "none";
+        } else if (w._plsMiniHid) {
+            w._plsMiniHid = false;
+            if (w._plsMiniHadCS) w.computeSize = w._plsMiniCS;
+            else delete w.computeSize;
+            w.hidden = false;
+            if (w.element) w.element.style.display = "";
+        }
+    }
+}
+
+function _miniSlots(outputs, on) {
+    let hid = 0;
+    for (const o of outputs || []) {
+        const linked = !!(o.links && o.links.length);
+        o.hidden = !!on && !linked;
+        if (o.hidden) hid += 1;
+    }
+    return hid;
+}
+
 function _viewSwap(view, goSolo, curSize) {
     const v = Object.assign({ solo: false, tilesSize: null, soloSize: null }, view || {});
     v[v.solo ? "soloSize" : "tilesSize"] = [curSize[0], curSize[1]];
@@ -153,6 +200,24 @@ function injectCSS() {
 .ph-media { display:flex; flex-direction:column; gap:6px; width:100%; height:100%;
     box-sizing:border-box; font-size:11px; color:#cfcfcf; }
 .ph-media-bar { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+/* v785, Frank's ultra-short node: only the image and the connected
+ * outputs stay. ONE class on the root hides every other pane; the DOM
+ * height floor follows on its own, because _computeDomMin only measures
+ * VISIBLE panes. */
+.ph-media.ph-media-mini .ph-media-bar,
+.ph-media.ph-media-mini .ph-batch-status,
+.ph-media.ph-media-mini .ph-media-grid,
+.ph-media.ph-media-mini .ph-media-foot,
+.ph-media.ph-media-mini .ph-media-prev-vtrim,
+.ph-media.ph-media-mini .ph-media-prev-cap,
+.ph-media.ph-media-mini .ph-media-prev-audio,
+.ph-media.ph-media-mini .ph-solo-toggle { display:none; }
+.ph-media.ph-media-mini .ph-media-preview { max-width:none; flex:1 1 auto; }
+.ph-mini-toggle { margin-right:auto; background:#1c1c1c; color:#bbb;
+  border:1px solid #444; border-radius:4px; font:10px system-ui,sans-serif;
+  padding:1px 6px; cursor:pointer; }
+.ph-mini-toggle:hover { color:#ff8c00; border-color:#ff8c00; }
+.ph-media-mini .ph-media-prev-lbl > span { display:none; }
 .ph-media-btn { background:#2a2a2a; border:1px solid #444; color:#ddd; border-radius:5px;
     padding:3px 8px; cursor:pointer; white-space:nowrap; }
 .ph-media-btn:hover { background:#383838; }
@@ -704,7 +769,7 @@ class MediaLoaderUI {
             </div>
             <div class="ph-media-grid"></div>
             <div class="ph-media-preview">
-              <div class="ph-media-prev-lbl"><span>Selection</span><button class="ph-solo-toggle" title="Hide the tile grid — the Selection fills the whole node like a plain Load node (resize freely; sizes are remembered per mode). Click again to bring the tiles back.">⛶ Solo</button></div>
+              <div class="ph-media-prev-lbl"><button class="ph-mini-toggle" title="Ultra-short node: hide everything but the image and the connected outputs. Click again for the full node."></button><span>Selection</span><button class="ph-solo-toggle" title="Hide the tile grid — the Selection fills the whole node like a plain Load node (resize freely; sizes are remembered per mode). Click again to bring the tiles back.">⛶ Solo</button></div>
               <div class="ph-media-prev-media"></div>
               <div class="ph-media-prev-vtrim"></div>
               <div class="ph-media-prev-cap"></div>
@@ -726,7 +791,10 @@ class MediaLoaderUI {
         this.barEl = root.querySelector(".ph-media-bar");                 // v461: measured live for the height floor (it wraps with width)
         this.soloBtn = root.querySelector(".ph-solo-toggle");              // v624: Solo-Selection toggle
         this.soloBtn.onclick = () => this._toggleSolo();
+        this.miniBtn = root.querySelector(".ph-mini-toggle");              // v785: ultra-short toggle
+        this.miniBtn.onclick = () => this._toggleMini();
         this._applyViewClass();                                            // v624: cloned nodes may already carry ph_media_view
+        this._applyMini();                                                 // v785: cloned nodes may already carry ph_media_mini
 
         root.querySelector(".ph-folder").onclick = () =>
             openFolderPicker(this.folder, (p, file) => {
@@ -3723,6 +3791,45 @@ class MediaLoaderUI {
     get view() { return (this.node.properties && this.node.properties.ph_media_view) || { solo: false, tilesSize: null, soloSize: null }; }
     set view(v) { this.node.properties = this.node.properties || {}; this.node.properties.ph_media_view = v; }
 
+    // v785: the ultra-short state lives in its OWN key too (same law as
+    // ph_media_view -- ph_media_state is REPLACED on trim commit).
+    get mini() { return !!(this.node.properties && this.node.properties.ph_media_mini); }
+    set mini(v) { this.node.properties = this.node.properties || {}; this.node.properties.ph_media_mini = !!v; }
+
+    _applyMini() {
+        const on = this.mini;
+        this.root.classList.toggle("ph-media-mini", on);
+        _miniWidgets(this.node.widgets, MINI_WIDGETS, on);
+        _miniSlots(this.node.outputs, on);
+        if (this.miniBtn) {
+            this.miniBtn.textContent = on ? "\u2912 Full" : "\u2913 Mini";
+            this.miniBtn.title = on
+                ? "Back to the full node (all panes, all outputs)."
+                : "Ultra-short node: hide everything but the image and the "
+                  + "connected outputs. Click again for the full node.";
+        }
+        this.node.setDirtyCanvas?.(true, true);
+    }
+
+    _toggleMini() {
+        const goMini = !this.mini;
+        if (goMini) this._fullH = this.node.size?.[1] || 0;   // session memory
+        this.mini = goMini;
+        this._applyMini();
+        // The node itself gets SHORT on the way in (Frank: "klick:
+        // ultra-kurze Node") and back to its old height on the way out --
+        // both floor-clamped by onResize, the v624 restore form.
+        try {
+            const w = this.node.size[0];
+            if (goMini) {
+                this.node.setSize([w, MIN_NODE_H]);
+            } else {
+                const f = Math.max(this._minNodeHeight?.() || 0, MIN_NODE_H);
+                this.node.setSize([w, Math.max(this._fullH || 0, f)]);
+            }
+        } catch (e) { /* size may not be ready */ }
+    }
+
     _applyViewClass() {
         const solo = !!this.view.solo;
         this.root.classList.toggle("ph-solo", solo);
@@ -3937,6 +4044,7 @@ class MediaLoaderUI {
         this._renderBatchStatus();
         this._syncAudioToggle();
         if (this.folder) this.refreshGrid();
+        try { this._applyMini(); } catch (e) { /* v785 */ }
     }
 }
 
@@ -3981,6 +4089,17 @@ app.registerExtension({
         nodeType.prototype.onRemoved = function () {
             try { this._mlUI?._destroy(); } catch (e) { /* ignore */ }
             onRemoved?.apply(this, arguments);
+        };
+
+        // v785: while the node is ultra-short, plugging or unplugging an
+        // output must show/hide that slot at once -- the mini view always
+        // shows exactly the CONNECTED outputs.
+        const onConn = nodeType.prototype.onConnectionsChange;
+        nodeType.prototype.onConnectionsChange = function () {
+            onConn?.apply(this, arguments);
+            try {
+                if (this._mlUI?.mini) _miniSlots(this.outputs, true);
+            } catch (e) { /* ignore */ }
         };
     },
 });

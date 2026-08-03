@@ -241,7 +241,8 @@ def _selection_names(folder, selection, sort_mode, kind_check):
         existing = {e.name for e in os.scandir(folder)
                     if e.is_file() and kind_check(e.name)}
     except OSError as ex:
-        raise RuntimeError(f"[PLS] MediaLoader: cannot read folder '{folder}': {ex}")
+        raise RuntimeError(f"[PLS] MediaLoader: cannot read "
+                               f"folder '{folder}': {ex}") from ex
     names = [n for n in selection if n in existing]
     times = {}
     if sort_mode in ("mtime (oldest first)", "created"):
@@ -613,7 +614,8 @@ def _load_image_batch(folder, sort_mode, name_filter, frame_skip, every_nth,
             all_names = [e.name for e in os.scandir(folder)
                          if e.is_file() and _is_batch_image(e.name)]
         except OSError as ex:
-            raise RuntimeError(f"[PLS] MediaLoader: cannot read folder '{folder}': {ex}")
+            raise RuntimeError(f"[PLS] MediaLoader: cannot read "
+                               f"folder '{folder}': {ex}") from ex
         if not all_names:
             raise _NothingToLoad(f"[PLS] MediaLoader: image-batch found no images in "
                                f"'{folder}'.")
@@ -1338,7 +1340,8 @@ class ULSMediaLoader:
         try:
             ref = json.loads(media_ref)
         except Exception:
-            raise ValueError("[PLS] MediaLoader: malformed selection (media_ref is not valid JSON).")
+            raise ValueError("[PLS] MediaLoader: malformed selection "
+                             "(media_ref is not valid JSON).") from None
         folder = str(ref.get("folder", ""))
         file = str(ref.get("file", ""))
         if not folder or not file:

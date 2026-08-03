@@ -74,6 +74,28 @@ except Exception as e:
     print(f"[PLS] ✗ Save unavailable — import failed: {e!r}")
 
 
+# ── Sampling group (v365) ───────────────────────────
+# Polyhedron Sampler + Polyhedron CLIP Text Encode. Their OWN group, following
+# the Media I/O rule above: the blocks before this one stay the Stack's
+# untouched registration. The Sampler delegates the sampling loop to ComfyUI
+# core (comfy.sample / comfy.samplers / latent_preview, all always present) and
+# keeps its server routes in its own module (nodes/ph_sampler_routes.py), so
+# neither uls_routes.py nor ph_media_routes.py is re-opened. The encoder reuses
+# the CORE encoder plus the Token Counter's own _count_tokens (one truth).
+_SAMPLER_OK = _CTE_OK = False
+try:
+    from .nodes.uls_sampler import ULSSampler
+    _SAMPLER_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron Sampler unavailable — import failed: {e!r}")
+    print("[PLS]   (usually a changed ComfyUI Core sampling API). Other nodes still load.")
+try:
+    from .nodes.ph_clip_encode import ULSCLIPTextEncode
+    _CTE_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron CLIP Text Encode unavailable — import failed: {e!r}")
+    print("[PLS]   (usually a changed ComfyUI Core node API). Other nodes still load.")
+
 # Bridge — fragile, depends on ComfyUI/kijai internals. Already isolated.
 _BRIDGE_OK = False
 try:
@@ -166,6 +188,14 @@ if _SAVE_OK:
     NODE_CLASS_MAPPINGS["ULSSave"] = ULSSave
     NODE_DISPLAY_NAME_MAPPINGS["ULSSave"] = "⬡ Polyhedron Save"
 
+if _SAMPLER_OK:
+    NODE_CLASS_MAPPINGS["ULSSampler"] = ULSSampler
+    NODE_DISPLAY_NAME_MAPPINGS["ULSSampler"] = "⬡ Polyhedron Sampler"
+
+if _CTE_OK:
+    NODE_CLASS_MAPPINGS["ULSCLIPTextEncode"] = ULSCLIPTextEncode
+    NODE_DISPLAY_NAME_MAPPINGS["ULSCLIPTextEncode"] = "⬡ Polyhedron CLIP Text Encode"
+
 WEB_DIRECTORY = "./web/js"
 
 try:
@@ -183,11 +213,20 @@ if _MEDIA_OK:
     except Exception as e:
         print(f"[PLS] ⚠ Media routes not registered: {e}")
 
+# Polyhedron Sampler routes: again a separate module and a separate call, so
+# neither the Stack's route file nor the Media Loader's is touched.
+if _SAMPLER_OK:
+    try:
+        from .nodes.ph_sampler_routes import register_sampler_routes
+        register_sampler_routes()
+    except Exception as e:
+        print(f"[PLS] ⚠ Sampler routes not registered: {e}")
+
 _node_count = len(NODE_CLASS_MAPPINGS)
 _bridge_str = "✅" if _BRIDGE_OK else "⚠ unavailable"
 print(f"""
 ⚡ ============================================================
-   Polyhedron Suite  v364
+   Polyhedron Suite  v365
    {_node_count} Nodes  |  Bridge: {_bridge_str}
 ⚡ ============================================================
 """)

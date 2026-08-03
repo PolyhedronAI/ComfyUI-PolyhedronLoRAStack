@@ -16,8 +16,9 @@ to; this is a LOCAL tool, so browsing the machine's filesystem is intentional.
 Every thumb/upload target is realpath-checked to resolve inside its stated
 folder (`_within`), and uploads keep the streaming byte cap.
 
-Routes (13), each registered under the bare path AND the /api alias:
+Routes (14), each registered under the bare path AND the /api alias:
     GET  /uls/media/folders      GET  /uls/media/list
+    GET  /uls/media/dims
     GET  /uls/media/thumb        GET  /uls/media/file
     GET  /uls/media/native_pick  POST /uls/media/upload
     POST /uls/media/locate       GET  /uls/media/resolve
@@ -28,6 +29,7 @@ Routes (13), each registered under the bare path AND the /api alias:
 
 import os
 import json
+import time
 import asyncio
 import shutil
 import subprocess
@@ -276,10 +278,13 @@ def _media_vid_dims(path):
     return (None, None, None)
 
 
-def _scan_media_with_dims(rp):
+def _scan_media_fast(rp):
     """Blocking folder scan -> entries (newest first) with name/size/mtime/kind
-    PLUS pixel w/h. Runs in a worker thread (see handle_media_list) so the
-    per-file dimension probes never block the asyncio event loop."""
+    and NO pixel dimensions. This is the cheap half of the listing: os.scandir
+    plus a stat per entry, no file is ever OPENED. v683 exists because the
+    expensive half (a Pillow header read or a cv2 probe PER FILE) ran for every
+    file in the folder before the UI could show anything -- in Solo view too,
+    where nothing but the selected file is even visible."""
     entries = []
     with os.scandir(rp) as it:
         for e in it:
@@ -290,35 +295,60 @@ def _scan_media_with_dims(rp):
                 st = e.stat()
             except OSError:
                 continue
-            path = os.path.join(rp, e.name)
-            fps = None
-            if kind == "image":
-                w, h = _media_img_dims(path)
-            elif kind == "video":
-                w, h, fps = _media_vid_dims(path)
-            else:
-                w, h = (None, None)
             entries.append({"name": e.name, "size": st.st_size,
-                            "mtime": st.st_mtime, "kind": kind, "w": w, "h": h,
-                            "fps": fps})
+                            "mtime": st.st_mtime, "kind": kind,
+                            "w": None, "h": None, "fps": None})
     entries.sort(key=lambda d: d["mtime"], reverse=True)
     return entries
 
 
+def _scan_media_with_dims(rp):
+    """Blocking folder scan -> entries (newest first) with name/size/mtime/kind
+    PLUS pixel w/h. Runs in a worker thread (see handle_media_list) so the
+    per-file dimension probes never block the asyncio event loop.
+
+    MEASURED COST (v683): the scandir half is milliseconds; the probe half is
+    one file OPEN per entry and dominates everything. Callers that do not need
+    every dimension up front should ask for ?dims=0 and fetch what they display
+    from /uls/media/dims."""
+    t0 = time.time()
+    entries = _scan_media_fast(rp)
+    t1 = time.time()
+    for d in entries:
+        path = os.path.join(rp, d["name"])
+        if d["kind"] == "image":
+            d["w"], d["h"] = _media_img_dims(path)
+        elif d["kind"] == "video":
+            d["w"], d["h"], d["fps"] = _media_vid_dims(path)
+    t2 = time.time()
+    print("[PLS] media list: %d files, scan %d ms, dimension probe %d ms"
+          % (len(entries), int((t1 - t0) * 1000), int((t2 - t1) * 1000)))
+    return entries
+
+
 async def handle_media_list(request: web.Request) -> web.Response:
-    """GET ?folder=<abs> -> image/video files in folder, NEWEST FIRST, each with
-    name/size/mtime/kind and pixel w/h. Dimensions are probed in a worker thread
-    (image header read / cv2 FFMPEG header probe, NO full decode) so the listing
-    stays responsive; w/h is null when a probe is unavailable (e.g. cv2 missing),
-    in which case the frontend fills it from the browser when the media loads."""
+    """GET ?folder=<abs>[&dims=0] -> image/video files in folder, NEWEST FIRST,
+    each with name/size/mtime/kind and pixel w/h. Dimensions are probed in a
+    worker thread (image header read / cv2 FFMPEG header probe, NO full decode)
+    so the listing stays responsive; w/h is null when a probe is unavailable
+    (e.g. cv2 missing), in which case the frontend fills it from the browser
+    when the media loads.
+
+    v683: `dims=0` returns the listing WITHOUT probing any file -- milliseconds
+    instead of one open per file. w/h/fps come back as null and the caller
+    fetches the ones it actually displays from /uls/media/dims. The DEFAULT is
+    unchanged (dims on), so every other caller keeps its old contract."""
     folder = (request.query.get("folder", "") or "").strip()
+    want_dims = (request.query.get("dims", "1") or "1").strip() not in ("0", "false", "no")
     try:
         rp = os.path.realpath(folder)
         if not os.path.isdir(rp):
             return web.json_response({"ok": False, "error": "not a folder", "files": []}, status=404)
         loop = asyncio.get_running_loop()   # v577: get_event_loop() is deprecated (3.12+)
-        entries = await loop.run_in_executor(None, _scan_media_with_dims, rp)
-        return web.json_response({"ok": True, "folder": rp, "files": entries})
+        scan = _scan_media_with_dims if want_dims else _scan_media_fast
+        entries = await loop.run_in_executor(None, scan, rp)
+        return web.json_response({"ok": True, "folder": rp, "files": entries,
+                                  "dims": bool(want_dims)})
     except Exception as e:
         return web.json_response({"ok": False, "error": str(e), "files": []}, status=500)
 
@@ -1031,6 +1061,51 @@ async def handle_media_proc_count(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": str(e)[:300], "total": 0}, status=500)
 
 
+def _media_dims_for(rp, names):
+    """Probe pixel dimensions for the NAMED files only (the deferred half of
+    the listing). Unknown or unreadable names are simply absent from the
+    result -- dimensions stay best-effort, never fatal."""
+    out = {}
+    for name in names:
+        kind = _media_kind(name)
+        if not kind:
+            continue
+        path = os.path.realpath(os.path.join(rp, name))
+        if not _within(rp, path) or not os.path.isfile(path):
+            continue
+        fps = None
+        if kind == "image":
+            w, h = _media_img_dims(path)
+        elif kind == "video":
+            w, h, fps = _media_vid_dims(path)
+        else:
+            w, h = (None, None)
+        out[name] = {"w": w, "h": h, "fps": fps}
+    return out
+
+
+async def handle_media_dims(request: web.Request) -> web.Response:
+    """GET ?folder=<abs>&files=<name>|<name>|... -> {name: {w, h, fps}} for the
+    NAMED files only (v683, the deferred half of the listing). The frontend asks
+    for the page it is about to draw plus the selected file, so a thousand-file
+    folder costs the probes of the dozen tiles on screen instead of a thousand.
+    Names are matched inside the folder and never escape it."""
+    folder = (request.query.get("folder", "") or "").strip()
+    raw = (request.query.get("files", "") or "").strip()
+    names = [n for n in raw.split("|") if n][:512]
+    try:
+        rp = os.path.realpath(folder)
+        if not os.path.isdir(rp):
+            return web.json_response({"ok": False, "error": "not a folder", "dims": {}}, status=404)
+        if not names:
+            return web.json_response({"ok": True, "folder": rp, "dims": {}})
+        loop = asyncio.get_running_loop()
+        dims = await loop.run_in_executor(None, _media_dims_for, rp, names)
+        return web.json_response({"ok": True, "folder": rp, "dims": dims})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e), "dims": {}}, status=500)
+
+
 def register_media_routes():
     """Register the Media Loader endpoints on the ComfyUI PromptServer.
 
@@ -1050,6 +1125,7 @@ def register_media_routes():
     routes = [
         ("GET",  "/uls/media/folders",     handle_media_folders),
         ("GET",  "/uls/media/list",        handle_media_list),
+        ("GET",  "/uls/media/dims",        handle_media_dims),
         ("GET",  "/uls/media/thumb",       handle_media_thumb),
         ("GET",  "/uls/media/file",        handle_media_file),
         ("GET",  "/uls/media/native_pick", handle_media_native_pick),
