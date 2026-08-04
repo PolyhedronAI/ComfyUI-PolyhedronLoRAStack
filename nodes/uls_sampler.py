@@ -840,6 +840,21 @@ def _low_or(value, high):
     return high if v == SAME_AS_HIGH else v
 
 
+def _resolve_low_shift(shift, shift_low):
+    """v839: resolve the LOW expert's sigma shift. The widget's -1 sentinel
+    ("same as high", the default) -> the HIGH value, so an untouched node runs
+    byte-identical to v838. 0 -> OFF for the LOW expert (its model_sampling is
+    left alone even when sigma_shift is set). Positive -> the LOW expert's own
+    shift. Junk heals to the sentinel, mirroring the widget-heal doctrine."""
+    try:
+        sl = float(shift_low)
+    except (TypeError, ValueError):
+        sl = -1.0
+    if sl < 0:
+        return shift
+    return sl
+
+
 # ---------------------------------------------------------------------------
 # v685 -- external NOISE source
 # ---------------------------------------------------------------------------
@@ -1469,8 +1484,9 @@ class ULSSampler:
                                                      "node, or the model's native shift. WAN 2.2 flow sampling NEEDS a "
                                                      "shift: set 8.0 to match the Wan MoE KSampler. Without it a short "
                                                      "run cannot converge and leaves residual noise (RGB speckle). "
-                                                     "Applied to BOTH experts in High + Low, before the schedule and "
-                                                     "the boundary split are computed. When driving with an external "
+                                                     "Applied to BOTH experts in High + Low (before the schedule and "
+                                                     "the boundary split are computed) unless sigma_shift_low gives "
+                                                     "the LOW expert its own value. When driving with an external "
                                                      "SIGMAS curve, leave this at 0 (the curve owns the schedule). "
                                                      "Leave at 0 for non-flow models (SD/SDXL) — a flow shift only "
                                                      "makes sense for flow-matching models like WAN."}),
@@ -1519,6 +1535,27 @@ class ULSSampler:
                                               "is IGNORED and the console says so. Inert when an "
                                               "external SIGMAS curve drives the run — the curve "
                                               "owns the schedule."}),
+                # ── v839: per-expert sigma shift — kept LAST in required for
+                #    serialised index stability (appended after scheduler_low, like
+                #    every widget since v413). -1 = "same as high" sentinel (default;
+                #    a run is byte-identical to v838), 0 = OFF for the LOW expert,
+                #    positive = the LOW expert's own shift. ──
+                "sigma_shift_low": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 20.0, "step": 0.01, "round": 0.01,
+                                              "tooltip": "Flow-matching sigma shift for the LOW-noise expert "
+                                                         "(High + Low). -1 = same as high (default): the LOW "
+                                                         "expert follows sigma_shift. 0 = OFF for the LOW "
+                                                         "expert: its model_sampling is left untouched even "
+                                                         "when sigma_shift is set. Any positive value gives "
+                                                         "the LOW expert its OWN shift -- e.g. sigma_shift 8.0 "
+                                                         "with sigma_shift_low 5.0 replaces a graph that used "
+                                                         "two upstream ModelSamplingSD3 nodes (8 high / 5 low). "
+                                                         "Only bites with handoff_mode = 'Wan MoE parity', "
+                                                         "where the LOW segment's schedule is built from the "
+                                                         "LOW expert; in 'Continuous' both experts share ONE "
+                                                         "schedule (built from the HIGH expert) and this is "
+                                                         "inert -- the console says so. Ignored in Single mode "
+                                                         "and when an external SIGMAS curve drives the "
+                                                         "schedule."}),
             },
             "optional": {
                 "model_low": ("MODEL", {"tooltip": "High + Low: the LOW-noise expert. The 'model' input is the "
@@ -1584,6 +1621,7 @@ class ULSSampler:
                dual_moe, boundary, cfg_low, preview_mode="latent2rgb (smooth)",
                sigma_shift=0.0, handoff_mode="Continuous",
                sampler_low=SAME_AS_HIGH, scheduler_low=SAME_AS_HIGH,
+               sigma_shift_low=-1.0,
                model_low=None, sigmas=None, sigmas_high=None, sigmas_low=None,
                noise=None):
         # v685: park the NOISE source for the whole run. EVERY path below --
@@ -1598,6 +1636,7 @@ class ULSSampler:
                              dual_moe, boundary, cfg_low, preview_mode=preview_mode,
                              sigma_shift=sigma_shift, handoff_mode=handoff_mode,
                              sampler_low=sampler_low, scheduler_low=scheduler_low,
+                             sigma_shift_low=sigma_shift_low,
                              model_low=model_low, sigmas=sigmas,
                              sigmas_high=sigmas_high, sigmas_low=sigmas_low)
 
@@ -1607,6 +1646,7 @@ class ULSSampler:
              dual_moe, boundary, cfg_low, preview_mode="latent2rgb (smooth)",
              sigma_shift=0.0, handoff_mode="Continuous",
              sampler_low=SAME_AS_HIGH, scheduler_low=SAME_AS_HIGH,
+             sigma_shift_low=-1.0,
              model_low=None, sigmas=None, sigmas_high=None, sigmas_low=None):
         # Id of THIS node, so the live preview attaches to it (None -> no preview).
         node_id = _current_node_id()
@@ -1617,7 +1657,11 @@ class ULSSampler:
         # built, so BOTH the sampling sigmas AND the High + Low boundary step-count (which
         # rebuilds sigmas from the HIGH model in _moe_sample) see the shift. 0 => untouched
         # (upstream ModelSamplingSD3 / native). Clones only; the input models are not mutated.
-        if sigma_shift and sigma_shift > 0:
+        # v839: the LOW expert may carry its OWN shift. The -1 sentinel ("same as
+        # high", the widget default) resolves to sigma_shift, so an untouched node
+        # keeps the v838 behaviour of shifting both experts alike.
+        _low_shift = _resolve_low_shift(sigma_shift, sigma_shift_low)
+        if (sigma_shift and sigma_shift > 0) or (_low_shift and _low_shift > 0):
             # v495: an ENGAGED external sigma path owns the whole schedule, and the shift
             # only affects schedule GENERATION (timestep(sigma) is shift-independent for
             # flow models) -- patching here would be a runtime no-op that misleads (the
@@ -1626,9 +1670,21 @@ class ULSSampler:
             _ext_sigmas = ((sigmas_high is not None and sigmas_low is not None)
                            or (sigmas is not None)) if dual_moe else (sigmas is not None)
             if not _ext_sigmas:
-                model = _apply_sigma_shift(model, sigma_shift)
-                if model_low is not None:
-                    model_low = _apply_sigma_shift(model_low, sigma_shift)
+                if sigma_shift and sigma_shift > 0:
+                    model = _apply_sigma_shift(model, sigma_shift)
+                if model_low is not None and _low_shift and _low_shift > 0:
+                    model_low = _apply_sigma_shift(model_low, _low_shift)
+        # v839: mirror the scheduler_low honesty line -- an OWN low shift cannot
+        # bite in 'Continuous', where ONE schedule is built from the HIGH expert.
+        try:
+            _sl_own = (float(sigma_shift_low) >= 0
+                       and float(sigma_shift_low) != float(sigma_shift or 0.0))
+        except (TypeError, ValueError):
+            _sl_own = False
+        if dual_moe and _sl_own and str(handoff_mode) == "Continuous":
+            print("[PLS] Sampler: sigma_shift_low is inert in 'Continuous' (both experts "
+                  "share ONE schedule, built from the HIGH expert) -- it bites in "
+                  "'Wan MoE parity'.")
         if dual_moe:
             # High + Low: the boundary drives the HIGH/LOW split internally, so the
             # manual start/end_at_step + leftover controls are not used here.

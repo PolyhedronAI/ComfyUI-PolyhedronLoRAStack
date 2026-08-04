@@ -878,6 +878,11 @@ preview image and trigger words from the Civitai API (SFW-strict filtering, capp
 | `GET/POST /uls/group_modes` | Per-group merge modes |
 | `POST /uls/civitai_fetch` | Hash-based Civitai preview + trigger download |
 
+> **Running with `--listen`?** The Media Loader's browse/upload routes are
+> locked (403) while ComfyUI is bound beyond localhost, so LAN clients cannot
+> read arbitrary folders on the host. Set `ULS_ALLOW_LAN_BROWSE=1` to open
+> them deliberately. On a normal localhost setup nothing changes.
+
 ---
 
 # ⬡ Polyhedron CLIP Text Encode
@@ -1041,8 +1046,18 @@ built. `0.00` means **off** — correct when an upstream `ModelSamplingSD3` node
 or the model itself already provides one. Wan 2.2 needs a shift: `8.0` matches
 the Wan MoE KSampler, and without it a short run leaves residual noise as fine
 RGB speckle. A positive value here **overrides** rather than adds. In High + Low
-the shift applies to both experts alike — if you need different ones, keep
-using separate `ModelSamplingSD3` nodes in front.
+the shift applies to both experts — unless `sigma_shift_low` gives the low
+expert its own value.
+
+`sigma_shift_low` is the low expert's twin, sitting directly underneath.
+Its default of **−1** means *same as high*: the low expert simply follows
+`sigma_shift`, and existing workflows behave exactly as before. Set **0** to
+leave the low expert untouched, or a positive value to give it its own
+shift — `sigma_shift` 8.0 with `sigma_shift_low` 5.0 replaces a graph that
+fed the two experts through two separate `ModelSamplingSD3` nodes. Like
+`scheduler_low`, it only bites in **Wan MoE parity**, where the low
+segment's schedule is built from the low expert; in **Continuous** both
+experts share one schedule and the widget greys out.
 
 ## High + Low
 
@@ -1094,8 +1109,8 @@ on the next step.
 ## Documentation
 
 The full illustrated user manual ships in this repository:
-[`docs/Polyhedron_Suite_Documentation_v365.pdf`](docs/Polyhedron_Suite_Documentation_v365.pdf)
-— 74 pages in four parts:
+[`docs/Polyhedron_Suite_Documentation_v367.pdf`](docs/Polyhedron_Suite_Documentation_v367.pdf)
+— 75 pages in four parts and an appendix:
 
 - **Part I — Media Loader & Save** (21 pages): the two media I/O nodes, every
   panel, pin and switch, fully illustrated.
@@ -1103,8 +1118,9 @@ The full illustrated user manual ships in this repository:
   The per-row CLIP strength feature is section 3.13.
 - **Part III — CLIP Text Encode** (9 pages): segments, comments, the negative,
   external text and the token footer.
-- **Part IV — Sampler** (7 pages): Single, High + Low with the Handoff, and the
-  live preview decoders.
+- **Part IV — Sampler** (7 pages): Single, High + Low with the Handoff, the
+  per-expert shifts and the live preview decoders.
+- **Appendix** (1 page): running with `--listen` and the browse lock.
 
 The Nodes 2.0 compatibility layer is described in the Compatibility section
 above; the release history lives in `docs/changelog-archive/`.

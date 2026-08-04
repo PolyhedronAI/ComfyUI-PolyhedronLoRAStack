@@ -46,7 +46,7 @@ import { app } from "../../scripts/app.js";
 // change — they are deliberately NOT in this set.
 const POLY_CANVAS_NODES = new Set(["UltimateLoraStack", "ULSAccelerator"]);
 
-const PLUGIN_VERSION = "v365";
+const PLUGIN_VERSION = "v367";
 // v303: 8s — 3s false-positived on large workflows / slow first draws.
 // LiteGraph culls offscreen nodes (onDrawForeground never runs for them), so
 // the notice can still appear for an offscreen-but-healthy node; the draw

@@ -203,10 +203,53 @@ def _media_names_in(rp, cap=60):
     return names[:cap], total
 
 
+# ── v367: LAN browse lock (internal v840; audit B1 -- opt-in flag) ───────────
+# These routes anchor on a CLIENT-supplied folder/path. On the default
+# localhost bind that is the feature (browse anywhere); bound to the LAN
+# (--listen) it would let every client on the network read arbitrary
+# directories, upload into them, and pop native dialogs on this machine.
+# Local behaviour stays untouched; under a non-local bind the path-anchored
+# routes refuse with 403 unless ULS_ALLOW_LAN_BROWSE=1 opens them
+# deliberately. Own copy on purpose -- this module imports nothing from the
+# stack side (MAINTAINING.md rule 1).
+_LAN_BROWSE_ENV = "ULS_ALLOW_LAN_BROWSE"
+
+
+def _lan_browse_locked():
+    """True when the path-anchored media routes must refuse: the server is
+    bound beyond localhost AND the env override is not set. An UNKNOWN bind
+    (comfy args unavailable) reads as LOCAL -- fail-open by design: this
+    lock is an opt-in hardening for the --listen case and must never be able
+    to break a localhost setup (stability first)."""
+    if str(os.environ.get(_LAN_BROWSE_ENV, "")).strip().lower() in ("1", "true", "yes", "on"):
+        return False
+    try:
+        from comfy.cli_args import args as _cli_args
+        bind = str(getattr(_cli_args, "listen", "") or "")
+    except Exception:
+        return False
+    _local = ("", "127.0.0.1", "localhost", "::1")
+    return any(h.strip() not in _local for h in bind.split(",") if h.strip())
+
+
+def _lan_deny(request):
+    """The ONE refusal door: a 403 naming the override, or None when open."""
+    if not _lan_browse_locked():
+        return None
+    return web.json_response(
+        {"error": "media browsing is locked while ComfyUI is bound beyond "
+                  "localhost (--listen). Set %s=1 to allow it on your "
+                  "network." % _LAN_BROWSE_ENV},
+        status=403)
+
+
 async def handle_media_folders(request: web.Request) -> web.Response:
     """GET ?path=<abs> -> immediate SUBFOLDERS of path (for the picker), plus a
     PEEK at the folder's own media files (sorted names + total count) so the
     picker can show what a pin would load. Empty path -> top-level roots."""
+    _deny = _lan_deny(request)          # v367: LAN browse lock (audit B1)
+    if _deny is not None:
+        return _deny
     path = (request.query.get("path", "") or "").strip()
     try:
         if not path:
@@ -338,6 +381,9 @@ async def handle_media_list(request: web.Request) -> web.Response:
     instead of one open per file. w/h/fps come back as null and the caller
     fetches the ones it actually displays from /uls/media/dims. The DEFAULT is
     unchanged (dims on), so every other caller keeps its old contract."""
+    _deny = _lan_deny(request)          # v367: LAN browse lock (audit B1)
+    if _deny is not None:
+        return _deny
     folder = (request.query.get("folder", "") or "").strip()
     want_dims = (request.query.get("dims", "1") or "1").strip() not in ("0", "false", "no")
     try:
@@ -357,6 +403,9 @@ async def handle_media_thumb(request: web.Request) -> web.Response:
     """GET ?folder=&file= -> a downscaled JPEG thumbnail. Images via Pillow; a
     video's first frame via OpenCV. 404 if no thumbnail can be made (the UI then
     shows a placeholder tile)."""
+    _deny = _lan_deny(request)          # v367: LAN browse lock (audit B1)
+    if _deny is not None:
+        return _deny
     folder = (request.query.get("folder", "") or "").strip()
     file = (request.query.get("file", "") or "").strip()
     if not folder or not file:
@@ -398,6 +447,9 @@ async def handle_media_file(request: web.Request) -> web.Response:
     """GET ?folder=&file= -> the raw media file WITH Range-Request support, so a
     <video> can stream/seek for hover-play (the thumb route only yields a still
     frame). Mirrors handle_preview_video's Range handling; _within-guarded."""
+    _deny = _lan_deny(request)          # v367: LAN browse lock (audit B1)
+    if _deny is not None:
+        return _deny
     folder = (request.query.get("folder", "") or "").strip()
     file = (request.query.get("file", "") or "").strip()
     if not folder or not file:
@@ -625,6 +677,9 @@ async def handle_media_native_pick(request: web.Request) -> web.Response:
     platforms try tkinter (needs a display). Returns {ok, path} on a pick,
     {ok:false, cancelled:true} on cancel, or {ok:false, reason:...} when no native
     dialog can be opened — the frontend then falls back to the list/recent/paste."""
+    _deny = _lan_deny(request)          # v367: LAN browse lock (audit B1)
+    if _deny is not None:
+        return _deny
     try:
         if os.name == "nt":
             # base64 UTF-16LE -> -EncodedCommand so the multi-line C# interop crosses
@@ -669,6 +724,9 @@ async def handle_media_native_pick(request: web.Request) -> web.Response:
 async def handle_media_upload(request: web.Request) -> web.Response:
     """POST ?folder=<abs> multipart -> save image/video file(s) into folder.
     Returns {ok, folder, names:[...]}."""
+    _deny = _lan_deny(request)          # v367: LAN browse lock (audit B1)
+    if _deny is not None:
+        return _deny
     folder = (request.query.get("folder", "") or "").strip()
     rp = os.path.realpath(folder) if folder else ""
     if not rp or not os.path.isdir(rp):
@@ -809,6 +867,9 @@ async def handle_media_seq_build(request: web.Request) -> web.Response:
     If <name> already exists and overwrite is not set, returns {ok:False,
     exists:True} so the UI can confirm; overwrite=1 rebuilds it (clear + rebuild,
     guarded). skip_first/cap are load-time trims and are NOT baked in here."""
+    _deny = _lan_deny(request)          # v367: LAN browse lock (audit B1)
+    if _deny is not None:
+        return _deny
     source = (request.query.get("source", "") or "").strip()
     rs = os.path.realpath(source) if source else ""
     if not rs or not os.path.isdir(rs):
@@ -911,6 +972,9 @@ async def handle_media_resolve(request: web.Request) -> web.Response:
     can pin the ORIGIN folder and select the file. Only real files with a
     known image/video/audio extension resolve; anything else is a 400 -- the
     drop is a convenience, never a guess."""
+    _deny = _lan_deny(request)          # v367: LAN browse lock (audit B1)
+    if _deny is not None:
+        return _deny
     path = (request.query.get("path", "") or "").strip().strip('"')
     if not path:
         return web.json_response({"ok": False, "error": "no path"}, status=400)
@@ -941,6 +1005,9 @@ async def handle_media_locate(request: web.Request) -> web.Response:
       several folders match -> {'reason': 'ambiguous'} (an honest refusal beats a
       coin flip); none -> {'reason': 'not_found'}. Verification against known
       ground, not a guess."""
+    _deny = _lan_deny(request)          # v367: LAN browse lock (audit B1)
+    if _deny is not None:
+        return _deny
     try:
         data = await request.json()
     except Exception as e:
@@ -997,6 +1064,9 @@ async def handle_media_open_folder(request: web.Request) -> web.Response:
     window. macOS/Linux Popen the platform file manager. The path must be an existing
     directory and travels in an environment variable, never on a command line, so it
     can never be reinterpreted as a shell command."""
+    _deny = _lan_deny(request)          # v367: LAN browse lock (audit B1)
+    if _deny is not None:
+        return _deny
     path = (request.query.get("path", "") or "").strip()
     if not path:
         return web.json_response({"ok": False, "error": "no path given"}, status=400)
@@ -1090,6 +1160,9 @@ async def handle_media_dims(request: web.Request) -> web.Response:
     for the page it is about to draw plus the selected file, so a thousand-file
     folder costs the probes of the dozen tiles on screen instead of a thousand.
     Names are matched inside the folder and never escape it."""
+    _deny = _lan_deny(request)          # v367: LAN browse lock (audit B1)
+    if _deny is not None:
+        return _deny
     folder = (request.query.get("folder", "") or "").strip()
     raw = (request.query.get("files", "") or "").strip()
     names = [n for n in raw.split("|") if n][:512]

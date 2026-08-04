@@ -55,10 +55,17 @@ const NODE_TYPE = "ULSSampler";
 // handoff_mode: whether scheduler_low is honoured).
 const STATE_WIDGETS = ["dual_moe", "handoff_mode"];
 
-const DUAL_ONLY = ["boundary", "cfg_low", "handoff_mode", "sampler_low", "scheduler_low"];   // v495: handoff greys in Single too
+const DUAL_ONLY = ["boundary", "cfg_low", "handoff_mode", "sampler_low", "scheduler_low",
+                   "sigma_shift_low"];   // v495: handoff greys in Single too; v839: + the LOW shift
 // live only in Single — manual HIGH/LOW step slicing
 const SINGLE_ONLY = ["start_at_step", "end_at_step", "return_with_leftover_noise"];
 // v416: schedule generators an external sigma schedule overrides (in either mode)
+// v839 NOTE: sigma_shift_low is NOT here on purpose. This list is applied with
+// _setDisabled(w, sigActive), which RE-ENABLES its members when no external
+// curve is wired -- that pass would overwrite the DUAL_ONLY greying in Single.
+// The LOW shift follows the scheduler_low pattern instead: greyed by DUAL_ONLY
+// in Single, and by the disable-only dual block below in 'Continuous' or with
+// an engaged external curve.
 const SIGMA_INERT = ["scheduler", "steps", "denoise", "sigma_shift"];   // v495: + sigma_shift (cannot shift an external curve)
 
 // Leading marker on the DISABLED path's field labels (renderer-independent cue;
@@ -76,6 +83,8 @@ const ORDER_V404 = [
     // v544: per-expert sampler / scheduler. Appended at the END like every widget
     // since v413 -- every existing slot keeps its index, old saves stay readable.
     "sampler_low", "scheduler_low",
+    // v839: per-expert sigma shift. Appended at the END the same way.
+    "sigma_shift_low",
 ];
 
 // Default for the v413 preview_mode widget (MUST match nodes INPUT_TYPES default).
@@ -92,6 +101,10 @@ const DEFAULT_HANDOFF_MODE = "Continuous";
 const SAME_AS_HIGH = "same as high";
 const DEFAULT_SAMPLER_LOW = SAME_AS_HIGH;
 const DEFAULT_SCHEDULER_LOW = SAME_AS_HIGH;
+
+// Default for the v839 sigma_shift_low widget (MUST match nodes INPUT_TYPES:
+// -1 = the "same as high" sentinel -> the LOW expert follows sigma_shift).
+const DEFAULT_SIGMA_SHIFT_LOW = -1.0;
 
 // Index of preview_mode in the current 17-field order (14 — sigma_shift then handoff_mode
 // trail it). The v420 rename keys off THIS slot, not the last field, since they trail it.
@@ -128,9 +141,10 @@ const HANDOFF_MODE_RENAMES = {
 const DISPLAY_ORDER = [
     "dual_moe", "boundary", "handoff_mode", "seed", "control_after_generate",
     // v544: every LOW twin sits directly under its HIGH partner -- cfg_low under cfg,
-    // sampler_low under sampler_name, scheduler_low under scheduler.
+    // sampler_low under sampler_name, scheduler_low under scheduler (v839:
+    // sigma_shift_low under sigma_shift, the same rule).
     "steps", "cfg", "cfg_low", "sampler_name", "sampler_low", "scheduler", "scheduler_low",
-    "sigma_shift", "denoise", "add_noise",
+    "sigma_shift", "sigma_shift_low", "denoise", "add_noise",
     "start_at_step", "end_at_step", "return_with_leftover_noise", "preview_mode",
 ];
 // canonical index shown at each DISPLAY position, and the DISPLAY position of each canonical field
@@ -175,6 +189,7 @@ const LEN_PHANTOM = 15;       // v406/v407 phantom-preset save (previously deriv
 const LEN_V413_CURRENT = 15;  // v413..v490 current: has preview_mode, lacks sigma_shift; wv[1] = boundary (number)
 const LEN_V491_CURRENT = 16;  // v491 current: has preview_mode+sigma_shift, lacks handoff_mode; wv[1] = boundary (number)
 const LEN_V492_CURRENT = 17;  // v492..v543 current: lacks sampler_low/scheduler_low; wv[1] = boundary (number)
+const LEN_V544_CURRENT = 19;  // v544..v838 current: lacks sigma_shift_low; wv[1] = boundary (number)
 
 // ── Legacy "Tune for" preset values (the widget is gone — these strings are
 // kept ONLY to recognise and heal the phantom slot in v406/v407 saves) ───────
@@ -204,6 +219,9 @@ function _healPhantomPreset(wv) {
     out.push(DEFAULT_PREVIEW_MODE);   // append the v413 preview_mode default → 15 fields
     out.push(DEFAULT_SIGMA_SHIFT);    // append the v491 sigma_shift default → 16 fields
     out.push(DEFAULT_HANDOFF_MODE);   // append the v492 handoff_mode default → 17 fields
+    out.push(DEFAULT_SAMPLER_LOW);    // v544 → 18 (v839 straggler fix: this heal
+    out.push(DEFAULT_SCHEDULER_LOW);  // v544 → 19  had stopped at 17 since v544)
+    out.push(DEFAULT_SIGMA_SHIFT_LOW); // v839 → 20
     return out;
 }
 
@@ -227,6 +245,11 @@ function _migratePreV404(wv) {
         if (name === "preview_mode") return DEFAULT_PREVIEW_MODE;
         if (name === "sigma_shift") return DEFAULT_SIGMA_SHIFT;
         if (name === "handoff_mode") return DEFAULT_HANDOFF_MODE;
+        // v839 straggler fix: the two v544 twins were missing here, so a
+        // pre-v404 save migrated with two undefined tail values.
+        if (name === "sampler_low") return DEFAULT_SAMPLER_LOW;
+        if (name === "scheduler_low") return DEFAULT_SCHEDULER_LOW;
+        if (name === "sigma_shift_low") return DEFAULT_SIGMA_SHIFT_LOW;
         return byName[name];
     });
 }
@@ -246,6 +269,7 @@ function _healOldCurrent(wv) {
     out.push(DEFAULT_HANDOFF_MODE);   // append the v492 handoff_mode default → 17 fields
     out.push(DEFAULT_SAMPLER_LOW);    // v544 → 18
     out.push(DEFAULT_SCHEDULER_LOW);  // v544 → 19
+    out.push(DEFAULT_SIGMA_SHIFT_LOW); // v839 → 20
     return out;
 }
 
@@ -264,6 +288,7 @@ function _healV413Current(wv) {
     out.push(DEFAULT_HANDOFF_MODE);   // append the v492 handoff_mode default → 17 fields
     out.push(DEFAULT_SAMPLER_LOW);    // v544 → 18
     out.push(DEFAULT_SCHEDULER_LOW);  // v544 → 19
+    out.push(DEFAULT_SIGMA_SHIFT_LOW); // v839 → 20
     return out;
 }
 
@@ -282,6 +307,7 @@ function _healV491Current(wv) {
     out.push(DEFAULT_HANDOFF_MODE);   // append the v492 handoff_mode default → 17 fields
     out.push(DEFAULT_SAMPLER_LOW);    // v544 → 18
     out.push(DEFAULT_SCHEDULER_LOW);  // v544 → 19
+    out.push(DEFAULT_SIGMA_SHIFT_LOW); // v839 → 20
     return out;
 }
 
@@ -299,6 +325,23 @@ function _healV492Current(wv) {
     const out = wv.slice();
     out.push(DEFAULT_SAMPLER_LOW);    // v544 → 18
     out.push(DEFAULT_SCHEDULER_LOW);  // v544 → 19
+    out.push(DEFAULT_SIGMA_SHIFT_LOW); // v839 → 20
+    return out;
+}
+
+function _looksV544Current(wv) {
+    // v544..v838 current save: frozen length 19, NO sigma_shift_low.
+    // wv[1] = boundary (a number), same disambiguation as the sibling heals.
+    // Healed by appending the -1 "same as high" default → 20 fields, which
+    // reproduces the v838 run exactly (the LOW expert follows sigma_shift).
+    return Array.isArray(wv)
+        && wv.length === LEN_V544_CURRENT
+        && typeof wv[1] === "number";
+}
+
+function _healV544Current(wv) {
+    const out = wv.slice();
+    out.push(DEFAULT_SIGMA_SHIFT_LOW);  // v839 → 20
     return out;
 }
 
@@ -359,7 +402,12 @@ function _applyModeState(node) {
     if (dual) {
         const hm = _findWidget(node, "handoff_mode");
         const parity = hm && /moe|rebase/i.test(String(hm.value || ""));
-        if (!parity || sigActive) _setDisabled(_findWidget(node, "scheduler_low"), true);
+        if (!parity || sigActive) {
+            _setDisabled(_findWidget(node, "scheduler_low"), true);
+            // v839: same truth for the LOW shift -- in 'Continuous' ONE schedule is
+            // built from the HIGH expert, so an own LOW shift cannot bite.
+            _setDisabled(_findWidget(node, "sigma_shift_low"), true);
+        }
     }
     if (!dual && sigSingle) {                                 // the array owns the slice
         for (const name of SINGLE_ONLY) _setDisabled(_findWidget(node, name), true);
@@ -546,6 +594,9 @@ app.registerExtension({
                 } else if (_looksV492Current(info.widgets_values)) {
                     // v492..v543 save (17): append the two v544 "same as high" defaults.
                     info.widgets_values = _healV492Current(info.widgets_values);
+                } else if (_looksV544Current(info.widgets_values)) {
+                    // v544..v838 save (19): append the -1 "same as high" low-shift default.
+                    info.widgets_values = _healV544Current(info.widgets_values);
                 }
                 // v420: translate a renamed preview_mode value so a saved graph keeps its
                 // mode after the Still·/Video· rename. v491/v492: preview_mode is not the

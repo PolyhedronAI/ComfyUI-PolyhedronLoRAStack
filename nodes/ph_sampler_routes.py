@@ -94,7 +94,7 @@ async def handle_sampler_tae_install(request: web.Request) -> web.Response:
     try:
         import asyncio
         from .uls_sampler import tae_install
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()   # v367: house rule (get_event_loop deprecated 3.12+)
         path = await loop.run_in_executor(None, tae_install, name)
     except Exception as e:
         return web.json_response({"ok": False, "error": str(e)[:300]},
