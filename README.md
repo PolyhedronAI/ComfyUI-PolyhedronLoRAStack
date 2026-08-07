@@ -937,6 +937,17 @@ two-line window.
 model: everything from a comment marker to the end of that line is removed
 before encoding.
 
+**What you write:**
+
+![What you write — the // lines are yours](assets/cte_comments_before.png)
+
+**What the encoder receives:**
+
+![What the encoder receives — every marked line gone, the rest joined by the separator](assets/cte_comments_after.png)
+
+Every marked line is gone and what is left is joined by the separator. Nothing
+else was touched — and nothing you wrote for yourself became a token.
+
 That serves two purposes. **Structure** — `// SCENE & CAMERA`, `// SUBJECT`,
 `// HANDS` give a long prompt a table of contents, so you scroll to the section
 you want instead of re-reading a paragraph. And **notes to yourself** — the
@@ -1182,8 +1193,8 @@ into the usual ComfyUI model folders on first use.
 ## Documentation
 
 The full illustrated user manual ships in this repository:
-[`docs/Polyhedron_Suite_Documentation_v368.pdf`](docs/Polyhedron_Suite_Documentation_v368.pdf)
-— 82 pages in five parts and an appendix:
+[`docs/Polyhedron_Suite_Documentation_v369.pdf`](docs/Polyhedron_Suite_Documentation_v369.pdf)
+— 83 pages in five parts and an appendix:
 
 - **Part I — Media Loader & Save** (21 pages): the two media I/O nodes, every
   panel, pin and switch, fully illustrated.
