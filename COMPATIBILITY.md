@@ -64,3 +64,10 @@ Niedrige Stabilität (beobachten): Canvas-Render-Pfad (Vue/Nodes-2.0),
 kijai-WanVideoWrapper-Interna, `comfy.lora.*`. Hohe Stabilität: `folder_paths.*`,
 das versteckte Persistenz-Widget, `api.fetchApi`/`api.apiURL` (Routen sind unter
 nacktem **und** `/api`-Pfad registriert).
+
+## Vendored third-party code
+
+`nodes/vfi/rife_arch.py` — the IFNet frame-interpolation network from
+**Practical-RIFE** (hzwer), by way of **ComfyUI-Frame-Interpolation**
+(Fannovel16). MIT licence, copied verbatim, not modified. Attribution and
+reasoning in `nodes/vfi/NOTICE.md`. Used by ⬡ Polyhedron Interpolate.

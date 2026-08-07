@@ -30,7 +30,7 @@ Guards, all must hold, mutation-tested:
                  route, so a missing registration is a dead panel.
 
   REGISTRY    -- both nodes are registered under their guarded flags, the pack
-                 exports 17 nodes, and the version triple agrees
+                 exports 20 nodes, and the version triple agrees
                  (pyproject / __init__ banner / uls_compat PLUGIN_VERSION).
 
   ASCII       -- the two new house modules are pure ASCII (house rule).
@@ -145,7 +145,13 @@ if "/uls/media/dims" not in LJS:
 INIT = _read("__init__.py")
 for flag, cls, disp in (("_SAMPLER_OK", "ULSSampler", "Polyhedron Sampler"),
                         ("_CTE_OK", "ULSCLIPTextEncode",
-                         "Polyhedron CLIP Text Encode")):
+                         "Polyhedron CLIP Text Encode"),
+                        ("_PUP_OK", "ULSPowerUpscale",
+                         "Polyhedron Power Upscale"),
+                        ("_FUP_OK", "ULSFastUpscale",
+                         "Polyhedron Fast Upscale"),
+                        ("_INTERP_OK", "ULSInterpolate",
+                         "Polyhedron Interpolate")):
     if ("if %s:" % flag) not in INIT:
         _fail("__init__.py does not guard %s behind %s" % (cls, flag))
     if 'NODE_CLASS_MAPPINGS["%s"]' % cls not in INIT:
@@ -158,9 +164,23 @@ if "register_sampler_routes()" not in INIT:
 
 n_nodes = len(set(re.findall(r'NODE_CLASS_MAPPINGS\["(\w+)"\]', INIT))
               | set(re.findall(r'"(\w+)":\s+\w+,', INIT)))
-if n_nodes != 17:
-    _fail("the pack registers %d nodes, expected 17 (15 published + Sampler + "
-          "CLIP Text Encode)" % n_nodes)
+if n_nodes != 20:
+    _fail("the pack registers %d nodes, expected 20 (15 published + Sampler + "
+          "CLIP Text Encode + Power Upscale + Fast Upscale + Interpolate)"
+          % n_nodes)
+
+# v368: the three new nodes open NO server route. Power Upscale reports tile
+# progress through PromptServer.send_sync, which needs no endpoint. This is a
+# promise worth pinning: the day one of them grows a route handler, it must be
+# a DECLARED act in its own module -- not a quiet reopening of a shared file.
+for fname in ("ph_power_upscale.py", "ph_fast_upscale.py", "ph_interpolate.py"):
+    src = _read("nodes", fname)
+    for needle in ("routes.get(", "routes.post(", "@server.PromptServer",
+                   "add_routes("):
+        if needle in src:
+            _fail("%s registers a server route (%r) - the v368 cut promised "
+                  "these three nodes need none. A new route belongs in its own "
+                  "module, declared in the changelog." % (fname, needle))
 
 PY = _read("pyproject.toml")
 CO = _read("web", "js", "uls_compat.js")
@@ -180,5 +200,5 @@ for rel in (("nodes", "ph_sampler_routes.py"),):
         _fail("%s is not pure ASCII" % "/".join(rel))
 
 print("[test_v365_public_build] OK -- uls_routes.py untouched (%s), the sampler "
-      "owns its 3 routes lazily, /uls/media/dims served, 17 nodes at %s"
+      "owns its 3 routes lazily, /uls/media/dims served, 20 nodes, the three v368 nodes routeless, at %s"
       % (ULS_ROUTES_MD5[:8], triple))

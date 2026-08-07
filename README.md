@@ -8,6 +8,7 @@
 | [LoRA Stack](#-polyhedron-lora-stack) | ⬡ Polyhedron LoRA Stack · LoRA Engine · LoRA Inspector · Token Counter · Select Model Switch · Merge Analyzer · Wan Frame Inflate · Pick Frame · Sigma Curves · Wan Bridge |
 | [CLIP Text Encode](#-polyhedron-clip-text-encode) | ⬡ Polyhedron CLIP Text Encode |
 | [Sampler](#-polyhedron-sampler) | ⬡ Polyhedron Sampler |
+| [Upscale & Interpolate](#-polyhedron-power-upscale) | ⬡ Polyhedron Power Upscale · ⬡ Polyhedron Fast Upscale · ⬡ Polyhedron Interpolate |
 
 Installed as one custom-node pack — the node names, the package id
 (`polyhedron-lora-stack`) and every saved workflow are unchanged.
@@ -1106,11 +1107,83 @@ on the next step.
 
 ---
 
+# ⬡ Polyhedron Power Upscale
+
+![The node in High + Low — every stage parameter appears twice](assets/pu5_power_overview.png)
+
+A tiled upscaler that knows about two-expert models. It cuts the image into
+overlapping tiles, upscales and re-samples each one, and blends them back with
+a clean-room tile geometry whose weights are guard-proved to sum to exactly 1 —
+so no seam is brighter or darker than its surroundings.
+
+The **ESRGAN pass, the sampling loop and the Wan sigma shift are delegated to
+ComfyUI core** and to this pack's own Sampler rather than re-implemented, which
+is why the node follows core's behaviour when core changes.
+
+**Dual MoE.** With `dual_moe` on, the node carries a full second parameter set
+(`upscale_by_low`, `denoise_low`, `steps_low`, `cfg_low`), so the high-noise and
+low-noise experts each get their own refine — the same split the Sampler makes.
+
+**Working through long clips.** Tiles are processed in batches so a long video
+does not have to fit in VRAM at once. Progress is reported per tile: the node
+pushes a `polyhedron.pu_tile` event and the panel draws the tile grid filling
+in. That reporting needs **no server route** — it rides on the event channel
+ComfyUI already has.
+
+# ⬡ Polyhedron Fast Upscale
+
+![Fast Upscale, whole — the mask comes back scaled by the same rule as the image](assets/pu5_fast_overview.png)
+
+The fast path beside Power Upscale: optional ESRGAN model, then a resize. **No
+diffusion refine** — a 65-frame clip finishes in seconds rather than minutes.
+Use it when you want size and clean edges, not new detail.
+
+It handles **IMAGE, VIDEO and MASK together**, and the mask follows the image
+instead of drifting out of register — the one thing that most often goes wrong
+when an upscale and a mask are done by separate nodes.
+
+- `resize_method` covers the usual filters. **`lanczos` runs on the CPU** (it is
+  a PIL path) and is labelled `lanczos (cpu)`; asking it for a GPU device fails
+  loudly instead of quietly ignoring you.
+- `divisible_by` snaps the result to the divisor the samplers downstream expect.
+- `per_batch` works through long batches in chunks, so VRAM is not the limit.
+- NVIDIA **Maxine VideoSuperRes** is available where the `nvvfx` library is
+  installed; when it is missing the node says so plainly.
+
+Its helpers are **imported from Power Upscale** rather than copied, so the two
+nodes cannot drift apart.
+
+# ⬡ Polyhedron Interpolate
+
+![Interpolate at 2x, with both fps fields filled in](assets/pu5_interp_overview.png)
+
+Frame interpolation: it invents intermediate frames to raise a clip's frame
+rate, or to smooth motion at the same rate.
+
+Set a rate either as a **multiplier** (2×, 4×) or by naming `source_fps` and
+`target_fps` and letting the node work out the ratio. `ensemble` and
+`scale_factor` trade time against quality; `fast_mode` favours speed;
+`static_skip` leaves near-identical frames alone instead of spending work on
+them; `cut_guard` stops the interpolator from inventing a smooth transition
+**across a hard cut**, which is the artefact that gives machine interpolation
+away most quickly.
+
+**On the engine.** `nodes/vfi/rife_arch.py` is the MIT-licensed IFNet from
+[Practical-RIFE](https://github.com/hzwer/Practical-RIFE) (hzwer), by way of
+[ComfyUI-Frame-Interpolation](https://github.com/Fannovel16/ComfyUI-Frame-Interpolation)
+(Fannovel16), copied byte-for-byte on purpose — see
+[`nodes/vfi/NOTICE.md`](nodes/vfi/NOTICE.md). It is not ours and it is not
+modified: every correction this pack makes lives outside the engine, in
+`nodes/ph_interpolate.py`, where it can be guarded. Model weights are fetched
+into the usual ComfyUI model folders on first use.
+
+---
+
 ## Documentation
 
 The full illustrated user manual ships in this repository:
-[`docs/Polyhedron_Suite_Documentation_v367.pdf`](docs/Polyhedron_Suite_Documentation_v367.pdf)
-— 75 pages in four parts and an appendix:
+[`docs/Polyhedron_Suite_Documentation_v368.pdf`](docs/Polyhedron_Suite_Documentation_v368.pdf)
+— 82 pages in five parts and an appendix:
 
 - **Part I — Media Loader & Save** (21 pages): the two media I/O nodes, every
   panel, pin and switch, fully illustrated.

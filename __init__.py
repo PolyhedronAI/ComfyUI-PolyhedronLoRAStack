@@ -96,6 +96,36 @@ except Exception as e:
     print(f"[PLS] ✗ Polyhedron CLIP Text Encode unavailable — import failed: {e!r}")
     print("[PLS]   (usually a changed ComfyUI Core node API). Other nodes still load.")
 
+# ── Upscale / Interpolate group (v368) ──────────────────────
+# Three nodes, one group, its own files. Power Upscale owns the shared
+# helpers (_resolve_input / _build_video / _MODEL_UPSCALER / _MuteInfoLogs)
+# and the clean-room tile geometry in nodes/uls_tile_math.py; Fast Upscale
+# imports them from there, so there is one source of truth. Interpolate
+# carries the vendored MIT IFNet in nodes/vfi/ (see NOTICE in that package).
+# None of the three registers a server route — Power Upscale reports tile
+# progress through PromptServer.send_sync, which needs no endpoint, so
+# uls_routes.py, ph_media_routes.py and ph_sampler_routes.py all stay shut.
+# Each import is isolated: a changed Core API must not abort the pack.
+_PUP_OK = _FUP_OK = _INTERP_OK = False
+try:
+    from .nodes.ph_power_upscale import ULSPowerUpscale
+    _PUP_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron Power Upscale unavailable — import failed: {e!r}")
+    print("[PLS]   (usually a changed ComfyUI Core sampling/upscale API). Other nodes still load.")
+try:
+    from .nodes.ph_fast_upscale import ULSFastUpscale
+    _FUP_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron Fast Upscale unavailable — import failed: {e!r}")
+    print("[PLS]   (it shares the Power Upscale helpers; usually the same Core cause). Other nodes still load.")
+try:
+    from .nodes.ph_interpolate import ULSInterpolate
+    _INTERP_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron Interpolate unavailable — import failed: {e!r}")
+    print("[PLS]   (usually torch or a changed Core device API). Other nodes still load.")
+
 # Bridge — fragile, depends on ComfyUI/kijai internals. Already isolated.
 _BRIDGE_OK = False
 try:
@@ -196,6 +226,18 @@ if _CTE_OK:
     NODE_CLASS_MAPPINGS["ULSCLIPTextEncode"] = ULSCLIPTextEncode
     NODE_DISPLAY_NAME_MAPPINGS["ULSCLIPTextEncode"] = "⬡ Polyhedron CLIP Text Encode"
 
+if _PUP_OK:
+    NODE_CLASS_MAPPINGS["ULSPowerUpscale"] = ULSPowerUpscale
+    NODE_DISPLAY_NAME_MAPPINGS["ULSPowerUpscale"] = "⬡ Polyhedron Power Upscale"
+
+if _FUP_OK:
+    NODE_CLASS_MAPPINGS["ULSFastUpscale"] = ULSFastUpscale
+    NODE_DISPLAY_NAME_MAPPINGS["ULSFastUpscale"] = "⬡ Polyhedron Fast Upscale"
+
+if _INTERP_OK:
+    NODE_CLASS_MAPPINGS["ULSInterpolate"] = ULSInterpolate
+    NODE_DISPLAY_NAME_MAPPINGS["ULSInterpolate"] = "⬡ Polyhedron Interpolate"
+
 WEB_DIRECTORY = "./web/js"
 
 try:
@@ -226,7 +268,7 @@ _node_count = len(NODE_CLASS_MAPPINGS)
 _bridge_str = "✅" if _BRIDGE_OK else "⚠ unavailable"
 print(f"""
 ⚡ ============================================================
-   Polyhedron Suite  v367
+   Polyhedron Suite  v368
    {_node_count} Nodes  |  Bridge: {_bridge_str}
 ⚡ ============================================================
 """)
