@@ -15,8 +15,26 @@ def main():
     if names.index("sampler_low") != names.index("sigma_shift") + 1 or \
        names.index("scheduler_low") != names.index("sampler_low") + 1:
         _fail("the v546 pair must sit directly after sigma_shift (appended in v546)")
-    if "_low_or, SAME_AS_HIGH" not in py:
-        _fail("resolver must be IMPORTED from uls_sampler (house pattern), not copied")
+    # v851 RE-GROUNDING (declared): this pinned the LITERAL import text
+    # "_low_or, SAME_AS_HIGH". The promise was never that spelling - it is that
+    # the resolvers are IMPORTED from uls_sampler and NOT re-implemented here
+    # (two places that compute the same thing drift). v851 added
+    # _resolve_low_shift to the same import and re-wrapped the line; the
+    # substring broke while the promise held. Checked structurally now, and in
+    # its STRONGER form: imported from uls_sampler AND absent as a local def.
+    import ast as _ast
+    _tree = _ast.parse(py)
+    _imported = set()
+    for _n in _ast.walk(_tree):
+        if isinstance(_n, _ast.ImportFrom) and (_n.module or "").endswith("uls_sampler"):
+            for _a in _n.names:
+                _imported.add(_a.name)
+    for _need in ("_apply_sigma_shift", "_resolve_low_shift", "_low_or", "SAME_AS_HIGH"):
+        if _need not in _imported:
+            _fail("%s must be IMPORTED from uls_sampler (house pattern), not copied" % _need)
+    for _n in _ast.walk(_tree):
+        if isinstance(_n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and _n.name in _imported:
+            _fail("%s is re-implemented locally - the mirror WILL drift" % _n.name)
     if "_low_or(sampler_low, sampler_name) if is_low" not in py:
         _fail("stage L must resolve its own sampler")
     if "_low_or(scheduler_low, scheduler) if is_low" not in py:
@@ -55,6 +73,17 @@ def main():
     # REMAINS: the historic order must survive VERBATIM as the legacy map
     # (or every pre-v589 stray save shifts again), and the display stays a
     # permutation - both pinned below.
+    # the v589..v851 display order: the v589 permutation with sigma_shift_low
+    # still parked at the very end, where v851 appended it.
+    DISPLAY_V589_851 = ["dual_moe", "upscale_by", "upscale_by_low",
+                        "final_upscale_by",
+                        "denoise", "denoise_low", "steps", "steps_low",
+                        "cfg", "cfg_low", "seed", "control_after_generate",
+                        "sampler_name", "sampler_low", "scheduler",
+                        "scheduler_low", "tile_size", "tile_overlap",
+                        "sigma_shift", "result_preview", "process_preview",
+                        "mute_staging_logs", "resize_method", "per_batch",
+                        "vae_tiling", "pixel_stage", "sigma_shift_low"]
     DISPLAY_LEGACY = ["dual_moe", "upscale_by", "upscale_by_low",
                       "denoise", "denoise_low", "steps", "steps_low",
                       "cfg", "cfg_low", "seed", "control_after_generate",
@@ -63,22 +92,55 @@ def main():
                       "sigma_shift", "result_preview", "process_preview",
                       "mute_staging_logs", "resize_method", "per_batch",
                       "vae_tiling", "pixel_stage", "final_upscale_by"]
-    DISPLAY_V589_26 = ["dual_moe", "upscale_by", "upscale_by_low",
-                       "final_upscale_by",   # v589: the law of proximity
-                       "denoise", "denoise_low", "steps", "steps_low",
-                       "cfg", "cfg_low", "seed", "control_after_generate",
-                       "sampler_name", "sampler_low", "scheduler",
-                       "scheduler_low", "tile_size", "tile_overlap",
-                       "sigma_shift", "result_preview", "process_preview",
-                       "mute_staging_logs", "resize_method", "per_batch",
-                       "vae_tiling", "pixel_stage"]
-    if disp[:26] != DISPLAY_V589_26:
-        for i, (a, b) in enumerate(zip(disp, DISPLAY_V589_26)):
+    # v852 AMENDMENT (3rd): sigma_shift_low moved out of the tail and under
+    # sigma_shift. Legal by the SAME ceremony v589 used and this guard demanded
+    # in its own failure text: the order it left behind is frozen as
+    # DISPLAY_LEGACY_V851, the fingerprint learned to name it, and this pin was
+    # rewritten in the same cut. The law that REMAINS is unchanged: every order
+    # we ever displayed must survive VERBATIM as a table, or a stray save from
+    # that era shifts. Rollback anchor: v851.
+    DISPLAY_V852 = ["dual_moe", "upscale_by", "upscale_by_low",
+                    "final_upscale_by",   # v589: the law of proximity
+                    "denoise", "denoise_low", "steps", "steps_low",
+                    "cfg", "cfg_low", "seed", "control_after_generate",
+                    "sampler_name", "sampler_low", "scheduler",
+                    "scheduler_low", "tile_size", "tile_overlap",
+                    "sigma_shift", "sigma_shift_low",   # v852: the last twin
+                    "result_preview", "process_preview",
+                    "mute_staging_logs", "resize_method", "per_batch",
+                    "vae_tiling", "pixel_stage"]
+    if disp != DISPLAY_V852:
+        for i, (a, b) in enumerate(zip(disp, DISPLAY_V852)):
             if a != b:
                 _fail(f"DISPLAY slot {i} moved: '{a}' where '{b}' is the "
-                      f"v589 order. Re-sorts need the full ceremony: legacy "
-                      f"map + fingerprint + this guard, in one cut")
-        _fail("DISPLAY_ORDER lost slots - append only, never remove")
+                      f"v852 order. Re-sorts need the full ceremony: freeze "
+                      f"the order being left as a table + teach the "
+                      f"fingerprint to name it + rewrite this guard, in one "
+                      f"cut")
+                break
+        else:
+            _fail("DISPLAY_ORDER changed length - a widget appears or vanishes")
+    # every LOW twin must sit directly under its HIGH partner (the point of the
+    # display permutation in the first place). Checked as a RULE, not as a list,
+    # so the next twin cannot be forgotten.
+    for hi, lo in (("upscale_by", "upscale_by_low"), ("denoise", "denoise_low"),
+                   ("steps", "steps_low"), ("cfg", "cfg_low"),
+                   ("sampler_name", "sampler_low"), ("scheduler", "scheduler_low"),
+                   ("sigma_shift", "sigma_shift_low")):
+        if disp.index(lo) != disp.index(hi) + 1:
+            _fail(f"'{lo}' must sit directly under '{hi}' - the law of "
+                  f"proximity is the whole reason this node permutes at all")
+    # every order we have ever displayed must still exist as a frozen table
+    for table in ("DISPLAY_LEGACY_V587", "DISPLAY_LEGACY_V851"):
+        if not re.search(r"const %s = \[" % table, js):
+            _fail(f"{table} is gone - every stray save from that era shifts "
+                  f"again without it")
+    legacy851 = re.findall(
+        r'"([a-z_]+)"',
+        re.search(r"const DISPLAY_LEGACY_V851 = \[(.*?)\];", js, re.S).group(1))
+    if legacy851 != DISPLAY_V589_851:
+        _fail("DISPLAY_LEGACY_V851 must be the v589..v851 order VERBATIM - it "
+              "is the load path for that era, not a suggestion")
     legacy_js = re.search(r"const DISPLAY_LEGACY_V587 = \[(.*?)\];", js, re.S)
     if not legacy_js:
         _fail("DISPLAY_LEGACY_V587 is gone - every pre-v589 stray save "

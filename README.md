@@ -1132,8 +1132,29 @@ ComfyUI core** and to this pack's own Sampler rather than re-implemented, which
 is why the node follows core's behaviour when core changes.
 
 **Dual MoE.** With `dual_moe` on, the node carries a full second parameter set
-(`upscale_by_low`, `denoise_low`, `steps_low`, `cfg_low`), so the high-noise and
-low-noise experts each get their own refine — the same split the Sampler makes.
+(`upscale_by_low`, `denoise_low`, `steps_low`, `cfg_low`, `sampler_low`,
+`scheduler_low`, `sigma_shift_low`), so the high-noise and low-noise experts
+each get their own refine — the same split the Sampler makes.
+
+**The low expert's own sigma shift.** `sigma_shift_low` sits directly under
+`sigma_shift` and works exactly like its twin in the Sampler. **-1** means
+*same as high*: stage L follows `sigma_shift`, which is what this node did
+before, so existing workflows behave as they always did. **0** switches the
+shift off for stage L alone, even while stage H is shifted. Any positive value
+gives stage L its own — `sigma_shift` 8.0 with `sigma_shift_low` 5.0, for
+instance.
+
+Two details worth knowing. Unlike the Sampler, this value is **always
+honoured**: there is no continuous-handoff mode here in which one schedule
+serves both experts, because the stages are independent runs. And it works
+**with or without a wired `model_low`** — without one, stage L falls back to
+the `model` input and is given its own shifted copy of it rather than
+inheriting the high expert's.
+
+A word of caution if you have calibrated `denoise_low` by eye: the shift
+changes where on the noise scale a given denoise fraction lands, so moving
+`sigma_shift_low` away from -1 changes what your proven `denoise_low` number
+means. Re-check the two together, not one at a time.
 
 **Working through long clips.** Tiles are processed in batches so a long video
 does not have to fit in VRAM at once. Progress is reported per tile: the node

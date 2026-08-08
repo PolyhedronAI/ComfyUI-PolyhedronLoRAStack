@@ -51,6 +51,7 @@ const ORDER_CANON = [
     "vae_tiling",                         // v562 (appended)
     "pixel_stage",                        // v564 (appended)
     "final_upscale_by",                   // v582 (appended - every old index keeps its slot)
+    "sigma_shift_low",                    // v851 (appended - every old index keeps its slot)
 ];
 // What the USER sees: every LOW twin directly under its HIGH partner (the Sampler's v494
 // pattern). Same names, permuted; everything below is index-based (widgets_values is
@@ -71,7 +72,15 @@ const DISPLAY_ORDER = [
     "seed", "control_after_generate",
     "sampler_name", "sampler_low",
     "scheduler", "scheduler_low",
-    "tile_size", "tile_overlap", "sigma_shift",
+    "tile_size", "tile_overlap",
+    "sigma_shift", "sigma_shift_low",   // v852: the LAST twin joins its partner.
+                          // v851 parked it at the end because DISPLAY_ORDER is
+                          // append-only; this is the separate, measured cut that
+                          // was announced there. Legal by the SAME ceremony v589
+                          // used: the order it leaves behind is frozen as
+                          // DISPLAY_LEGACY_V851, the fingerprint learned to name
+                          // it, and the guard was rewritten in the same cut.
+                          // Rollback anchor: v851.
     "result_preview", "process_preview", "mute_staging_logs", "resize_method",
     "per_batch", "vae_tiling", "pixel_stage",
 ];
@@ -195,6 +204,7 @@ const CANON_DEFAULTS = {
     23: "Off",           // vae_tiling
     24: "model + fit",   // pixel_stage
     25: 1.0,             // final_upscale_by (v582: 1.0 = the old law, bit for bit)
+    26: -1.0,            // sigma_shift_low (v851: -1 = "same as high" = the old law)
 };
 // v584: the numeric ranges, MIRRORED from INPUT_TYPES for the same reason
 // CANON_DEFAULTS exists - a live ComfyUI widget is not guaranteed to expose
@@ -215,6 +225,7 @@ const CANON_RANGES = {
     15: [0.0, 20.0],                     // sigma_shift
     22: [1, 256],                        // per_batch
     25: [0.25, 8.0],                     // final_upscale_by
+    26: [-1.0, 20.0],                    // sigma_shift_low (v851: -1 is the sentinel)
 };                                       // keep in step with the python widget
 function _padToCanon(arr) {
     if (!Array.isArray(arr) || arr.length >= ORDER_CANON.length) return arr;
@@ -314,26 +325,99 @@ const DISPLAY_LEGACY_V587 = [
     "resize_method", "per_batch", "vae_tiling", "pixel_stage",
     "final_upscale_by",
 ];
-function _legacyDisplayToCanon(arr) {
+// v851: the table above is FROZEN history and stays VERBATIM - but the canon
+// kept growing, and _padToCanon runs BEFORE this map, so a padded legacy save is
+// now LONGER than the historic order and still passes the length gate. A name the
+// historic table does not know is a widget appended after v588; both lists are
+// APPEND-ONLY, so such a name sits at the SAME index in the canon and in the save,
+// and its value is already where it belongs. Read it from its canon slot instead
+// of asking a table that predates it - exact, and true for every future append.
+// v852: the display order of v589..v851, frozen the moment it was left. Same
+// role DISPLAY_LEGACY_V587 plays for the pre-v589 era: an unmarked save that a
+// stray frontend path wrote in DISPLAY order carries THIS order and loads
+// through it instead of shifting. Never edit either table - they are history.
+const DISPLAY_LEGACY_V851 = [
+    "dual_moe", "upscale_by", "upscale_by_low", "final_upscale_by",
+    "denoise", "denoise_low", "steps", "steps_low", "cfg", "cfg_low",
+    "seed", "control_after_generate",
+    "sampler_name", "sampler_low", "scheduler", "scheduler_low",
+    "tile_size", "tile_overlap", "sigma_shift",
+    "result_preview", "process_preview", "mute_staging_logs",
+    "resize_method", "per_batch", "vae_tiling", "pixel_stage",
+    "sigma_shift_low",
+];
+// v852: ONE mapper for every historic order. A name the table does not know is
+// a widget appended after that table was frozen; both orders are append-only,
+// so it sits at the SAME index in canon and in the save (the v851 rule, now
+// shared instead of duplicated).
+function _tableToCanon(arr, table) {
     if (!Array.isArray(arr) || arr.length !== ORDER_CANON.length) return arr;
-    return ORDER_CANON.map((name) => arr[DISPLAY_LEGACY_V587.indexOf(name)]);
+    return ORDER_CANON.map((name, ci) => {
+        const li = table.indexOf(name);
+        return arr[li < 0 ? ci : li];
+    });
 }
-// v589: a save STATES its order or gets read by its TYPES. Canon and the
-// legacy display order differ at slots 13/14 (canon: tile_size/tile_overlap,
-// numbers) vs (legacy: scheduler/scheduler_low, strings) and at 16/17
-// (canon: sampler_low/scheduler_low, strings) vs (legacy:
-// tile_overlap/sigma_shift, numbers). Two witnesses per side, so ONE corrupt
-// slot (the '' saga) cannot flip the verdict. No witness majority -> "unknown"
-// -> status quo (treated as canon, exactly the pre-v589 behaviour), loudly.
+function _legacyDisplayToCanon(arr) {
+    return _tableToCanon(arr, DISPLAY_LEGACY_V587);
+}
+// v589: a save STATES its order or gets read by its TYPES. Two witnesses per
+// verdict, so ONE corrupt slot (the '' saga) cannot flip it. No majority ->
+// "unknown" -> status quo (treated as canon, the pre-v589 behaviour), loudly.
+//
+// v852: there are now THREE historic layouts to tell apart, and slots 13/14 +
+// 16/17 alone can no longer do it - the v851 display order carries the SAME
+// string/number shape there as the pre-v589 one. Measured over the four
+// orders, these witnesses separate them (S=string, N=number, B=bool):
+//
+//   slot            10      13/14    16/17    18      25
+//   canon            S       N N      S S      B       N
+//   legacy v587      S       S S      N N      B       N
+//   legacy v851      N       S S      N N      N       S
+//   current v852     N       S S      N N      N       S
+//
+// So 13/14 + 16/17 answer "canon or a display order", and 10 + 25 answer
+// "which display era". The last two rows are identical here on purpose: that
+// pair differs only in slots 19..24, which is what _displayEra() then reads.
 function _saveOrderOf(vals, marked) {
     if (marked) return "canon";
     if (!Array.isArray(vals) || vals.length < 24) return "canon";  // pre-Vue era: the hook ran
     const num = (x) => typeof x === "number";
     const str = (x) => typeof x === "string";
+    const bool = (x) => typeof x === "boolean";
     const canonW  = (num(vals[13]) || num(vals[14])) && (str(vals[16]) || str(vals[17]));
     const legacyW = (str(vals[13]) || str(vals[14])) && (num(vals[16]) || num(vals[17]));
     if (canonW && !legacyW) return "canon";
-    if (legacyW && !canonW) return "legacy-display";
+    if (!(legacyW && !canonW)) return "unknown";
+    // it is SOME display order - now which era? TWO witnesses per side again,
+    // never a single slot: slot 10 (control_after_generate vs seed) pairs with
+    // 18 (result_preview vs a number), and 25 (final_upscale_by vs a string
+    // dial) pairs with 19.
+    const oldEraW = (str(vals[10]) || bool(vals[18])) && (str(vals[19]) || num(vals[25]));
+    const newEraW = (num(vals[10]) || num(vals[18])) && (str(vals[25]) || !str(vals[19]));
+    if (oldEraW && !newEraW) return "legacy-display";
+    if (!(newEraW && !oldEraW)) return "unknown";
+    return _displayEra(vals);
+}
+
+// v852: v851 and the current display run apart from slot 19 on, because
+// sigma_shift_low left the tail and pushed everything after sigma_shift down
+// by one. Two witnesses again: 19 and 24.
+//
+//   slot            19                  21                 24            26
+//   legacy v851      B result_preview     B mute_staging     S vae_tiling  N shift_low
+//   current v852     N sigma_shift_low    S process_preview  N per_batch   S pixel_stage
+//
+// Paired as (19|21) and (24|26), so ONE corrupt slot cannot even degrade the
+// verdict to "unknown" -- the '' saga taught that a single junk value must be
+// survivable, not merely non-fatal.
+function _displayEra(vals) {
+    const num = (x) => typeof x === "number";
+    const bool = (x) => typeof x === "boolean";
+    const str = (x) => typeof x === "string";
+    const v851W = (bool(vals[19]) || bool(vals[21])) && (str(vals[24]) || num(vals[26]));
+    const currW = (num(vals[19]) || str(vals[21])) && (num(vals[24]) || str(vals[26]));
+    if (v851W && !currW) return "legacy-display-851";
+    if (currW && !v851W) return "display-current";
     return "unknown";
 }
 
@@ -1022,24 +1106,35 @@ app.registerExtension({
                     info.widgets_values = _healPreV564(info.widgets_values);
                     info.widgets_values = _padToCanon(info.widgets_values);  // v563
                     const _ord = _saveOrderOf(info.widgets_values, marked);
+                    // v852: three historic layouts can reach us now. Each one
+                    // is mapped home through ITS OWN frozen table; "canon" and
+                    // "unknown" are left alone (status quo, said out loud).
                     if (_ord === "legacy-display") {
                         info.widgets_values = _legacyDisplayToCanon(info.widgets_values);
+                    } else if (_ord === "legacy-display-851") {
+                        info.widgets_values = _tableToCanon(info.widgets_values,
+                                                            DISPLAY_LEGACY_V851);
+                    } else if (_ord === "display-current") {
+                        // a stray save in the order we display TODAY - the v584
+                        // phantom class, which until now had no map at all
+                        // because the current order never had a table.
+                        info.widgets_values = _displayToCanon(info.widgets_values);
                     }
                     console.info(marked
                         ? "[PLS] PU: canon-marked save (order proven by its own "
                           + "serialize - immune to display re-sorts)"
-                        : (_ord === "legacy-display"
+                        : (_ord === "canon"
                             ? "[PLS] PU: legacy save (no canon marker) - TYPE "
-                              + "fingerprint says v587 display order; mapped "
-                              + "through the legacy table, values keep their names"
+                              + "fingerprint says canon order; the marker is "
+                              + "written on the next save"
                             : (_ord === "unknown"
                                 ? "[PLS] PU: legacy save (no canon marker) - "
                                   + "fingerprint INCONCLUSIVE; loading as canon "
                                   + "(the pre-v589 status quo). Check the dials "
                                   + "once; the marker is written on the next save"
                                 : "[PLS] PU: legacy save (no canon marker) - TYPE "
-                                  + "fingerprint says canon order; the marker is "
-                                  + "written on the next save")));
+                                  + "fingerprint says " + _ord + "; mapped "
+                                  + "through its table, values keep their names")));
                     if (this._plsDisplayReordered) {
                         info.widgets_values = _canonToDisplay(info.widgets_values);
                     }

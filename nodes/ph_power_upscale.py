@@ -60,7 +60,8 @@ import folder_paths
 try:  # package load (ComfyUI) vs direct module load (tools)
     from . import uls_tile_math
     from .ph_runclock import _fmt_clock, _RunClock  # noqa: F401 (v576 re-export)
-    from .uls_sampler import _apply_sigma_shift, _low_or, SAME_AS_HIGH, _current_node_id
+    from .uls_sampler import (_apply_sigma_shift, _resolve_low_shift, _low_or,
+                              SAME_AS_HIGH, _current_node_id)
     from .ph_logmute import MuteStagingLogs as _MuteInfoLogs
 except ImportError:  # pragma: no cover
     import os as _os
@@ -70,7 +71,8 @@ except ImportError:  # pragma: no cover
         _sys.path.insert(0, _here)
     import uls_tile_math
     from ph_runclock import _fmt_clock, _RunClock  # noqa: F401 (v576 re-export)
-    from uls_sampler import _apply_sigma_shift, _low_or, SAME_AS_HIGH, _current_node_id
+    from uls_sampler import (_apply_sigma_shift, _resolve_low_shift, _low_or,
+                             SAME_AS_HIGH, _current_node_id)
     from ph_logmute import MuteStagingLogs as _MuteInfoLogs
 
 # ComfyUI's VIDEO type (optional) -- the exact Media Loader pattern: the
@@ -1830,6 +1832,27 @@ class ULSPowerUpscale:
                                                           " = the stage canvas (classic supersample refine); below 1.0 = supersampled "
                                                           "DOWNscale (sprite work). Ignored (loudly) when resize_method='none', which "
                                                           "keeps the raw model result."}),
+                # ── v851: per-stage sigma shift — appended LAST in required for
+                #    serialised index stability (#577). Mirrors the Sampler's v839
+                #    widget INCLUDING its -1 sentinel, and resolves through the SAME
+                #    function (_resolve_low_shift, imported — not copied).
+                #    UNLIKE the Sampler this is honoured UNCONDITIONALLY: there is no
+                #    'Continuous' mode here in which one schedule serves both experts,
+                #    because the stages are independent runs (see the module docstring).
+                #    So this widget can never be inert, and needs no honesty line. ──
+                "sigma_shift_low": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 20.0,
+                                              "step": 0.01, "round": 0.01,
+                                              "tooltip": "Flow-matching sigma shift for stage L (the LOW-noise "
+                                                         "expert). -1 = 'same as high': stage L follows "
+                                                         "sigma_shift, so both stages are shifted alike. "
+                                                         "0 = OFF for stage L only -- its model_sampling is left "
+                                                         "alone even when sigma_shift is set. Any positive value "
+                                                         "gives stage L its OWN shift (e.g. sigma_shift 8.0 with "
+                                                         "sigma_shift_low 5.0). Always honoured: the stages are "
+                                                         "independent runs, so unlike the Sampler there is no mode "
+                                                         "in which this goes inert. Works with or without a wired "
+                                                         "'model_low' -- without one, stage L falls back to the "
+                                                         "'model' input and gets its own shifted copy of it."}),
             },
             "optional": {
                 "image": ("IMAGE", {"tooltip": "Frame input [N,H,W,C] — stills or an unpacked video. Wire "
@@ -1869,15 +1892,45 @@ class ULSPowerUpscale:
                 model_low=None, upscale_model_low=None, sampler_low=SAME_AS_HIGH, scheduler_low=SAME_AS_HIGH,
                 result_preview=True, process_preview="Off", mute_staging_logs=True,
                 resize_method="lanczos (cpu)", per_batch=8, vae_tiling="Off",
-                pixel_stage="model + fit", final_upscale_by=1.0):
+                pixel_stage="model + fit", final_upscale_by=1.0,
+                sigma_shift_low=-1.0):
         t_all = time.monotonic()   # v553/v567: wall clock of THIS function,
         # started before input resolve so 'total=' and the ComfyUI badge
         # disagree only by executor overhead OUTSIDE the node body.
         frames, audio, frame_rate = _resolve_input(image, video)
-        if sigma_shift and float(sigma_shift) > 0:
-            model = _apply_sigma_shift(model, float(sigma_shift))
-            if model_low is not None:
-                model_low = _apply_sigma_shift(model_low, float(sigma_shift))
+        # ── v851: per-stage sigma shift. The LOW value resolves through the
+        #    Sampler's own _resolve_low_shift (-1 sentinel = "same as high", 0 =
+        #    OFF for stage L, positive = its own). Two things make this trickier
+        #    here than in the Sampler:
+        #    (1) ORDER. The HIGH patch REBINDS 'model', so stage L's source must
+        #        be captured BEFORE it - otherwise a "low" shift would be laid on
+        #        top of an already-shifted model.
+        #    (2) THE FALLBACK. Without a wired 'model_low', stage L runs on the
+        #        'model' input (v568 law). To give that stage its own shift we
+        #        must build a SECOND clone from the RAW model; leaving it to the
+        #        loop would silently hand it the HIGH-shifted one.
+        #    When the sentinel is untouched AND there is no wired low expert we
+        #    deliberately build nothing: the loop then uses the high-shifted
+        #    'model' exactly as it did before v851, bit for bit.
+        _hi_shift = float(sigma_shift or 0.0)
+        _low_shift = _resolve_low_shift(_hi_shift, sigma_shift_low)
+        _low_src = model_low if model_low is not None else model   # BEFORE the rebind
+        _low_wired = model_low is not None
+        _low_same = (_low_shift == _hi_shift)
+        if _hi_shift > 0:
+            model = _apply_sigma_shift(model, _hi_shift)
+        if _low_wired or not _low_same:
+            if _low_shift > 0:
+                model_low = _apply_sigma_shift(_low_src, _low_shift)
+            elif not _low_wired and _hi_shift > 0:
+                # stage L is OFF while stage H is shifted and no low expert is
+                # wired -> hand the loop the RAW model instead of the shifted one.
+                model_low = _low_src
+        if _hi_shift > 0 or (_low_shift and _low_shift > 0):
+            print(f"[PLS] Power Upscale: sigma shift H={_hi_shift:g} "
+                  f"L={_low_shift:g}"
+                  f"{' (same as high)' if _low_same else ''}"
+                  f"{'' if _low_wired else ' [stage L runs on the model input]'}")
 
         stages = uls_tile_math.plan_stages(bool(dual_moe), upscale_by, denoise,
                                            steps, cfg, upscale_by_low,

@@ -37,9 +37,16 @@ def main():
         re.search(r"const ORDER_CANON = \[[\s\S]*?\];", js).group(0),
         re.search(r"const DISPLAY_ORDER = \[[\s\S]*?\];", js).group(0),
         re.search(r"const DISPLAY_LEGACY_V587 = \[[\s\S]*?\];", js).group(0),
+        # v851: the real load chain pads before it maps, so the harness must
+        # carry the pad and its default table too (lifted from the SOURCE, never
+        # rebuilt - a second implementation would be a second truth).
+        re.search(r"const CANON_DEFAULTS = \{[\s\S]*?\n\};", js).group(0),
+        re.search(r"function _padToCanon[\s\S]*?\n\}", js).group(0),
         re.search(r"const CANON_IDX_AT_DISPLAY[\s\S]*?;", js).group(0),
         re.search(r"const DISPLAY_POS_OF_CANON[\s\S]*?;", js).group(0),
         re.search(r"function _canonToDisplay[\s\S]*?\n\}", js).group(0),
+        # v852: _legacyDisplayToCanon delegates to the shared table mapper now
+        re.search(r"function _tableToCanon[\s\S]*?\n\}", js).group(0),
         re.search(r"function _legacyDisplayToCanon[\s\S]*?\n\}", js).group(0),
         re.search(r"function _saveOrderOf[\s\S]*?\n\}", js).group(0),
         # ---- verdicts, pinned -------------------------------------------------
@@ -70,7 +77,21 @@ def main():
         'if (_saveOrderOf(hurt, false) !== "canon") {',
         '    console.error("FAIL witness majority"); process.exit(1); }',
         # ---- the v584 regression, end to end ---------------------------------
-        "let v = _legacyDisplayToCanon(frank);",
+        # v851 RE-GROUNDING (declared): this fed 'frank' STRAIGHT into
+        # _legacyDisplayToCanon, but the real configure() pads FIRST and only
+        # then maps - and the map gates on arr.length === ORDER_CANON.length.
+        # With a hand-built vector that gate held by accident as long as the
+        # canon never grew; v851 grew it and the shortcut showed. Run the REAL
+        # chain now, so this guard also proves that a canon APPEND leaves the
+        # v584 recovery of an old save intact.
+        "const frankPadded = _padToCanon(frank);",
+        "if (frankPadded.length !== ORDER_CANON.length) {",
+        '    console.error("FAIL: the pad did not reach canon length"); process.exit(1); }',
+        "if (frankPadded[ORDER_CANON.length - 1] !== CANON_DEFAULTS[ORDER_CANON.length - 1]) {",
+        '    console.error("FAIL: the padded tail is not the canon default"); process.exit(1); }',
+        'if (_saveOrderOf(frankPadded, false) !== "legacy-display") {',
+        '    console.error("FAIL: padding must not flip the fingerprint"); process.exit(1); }',
+        "let v = _legacyDisplayToCanon(frankPadded);",
         "v = _canonToDisplay(v);   // the v589 display",
         "const at = (n) => v[DISPLAY_ORDER.indexOf(n)];",
         'if (at("seed") !== 933250499243096) {',
