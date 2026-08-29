@@ -116,9 +116,26 @@ def main():
     # Pin the SHAPE, not a word - the docstring is allowed to name what the code
     # deliberately does not do. (This guard first failed on its own prose.)
     pix = pu[pu.index("def _make_pixel_probe"):pu.index("def _resolve_input")]
-    if "def _make_pixel_probe():" not in pix:
-        _fail("the pixel probe must take NO model - pixel frames are already RGB, "
-              "and a door that needs a model is a door that can be shut by one")
+    # RE-GROUNDED IN v885 (declared). This pinned the LITERAL empty parameter
+    # list "def _make_pixel_probe():". That is the v565 LAGE, not the v565
+    # ZUSAGE. The promise was and is: this door needs no MODEL -- pixel frames
+    # are finished RGB, and a door that needs a model is a door that can be
+    # shut by one. v885 hands it the run CLOCK (telemetry, so the frame can
+    # also reach the node's own progress slot), which takes nothing away from
+    # that promise; the literal pin called a lawful change a violation. Now the
+    # promise itself is pinned: no model-ish parameter may appear, whatever
+    # else does.
+    _sig = re.search(r"def _make_pixel_probe\(([^)]*)\):", pix)
+    if not _sig:
+        _fail("the pixel probe's signature is not readable")
+    _params = [q.split("=")[0].strip() for q in _sig.group(1).split(",")
+               if q.strip()]
+    _banned = [q for q in _params
+               if q in ("model", "vae", "latent_format", "model_low", "sharp")]
+    if _banned:
+        _fail("the pixel probe must take NO model - pixel frames are already "
+              "RGB, and a door that needs a model is a door that can be shut "
+              "by one (found: %s)" % ", ".join(_banned))
     if "einsum" in pix or "model.model" in pix:
         _fail("a latent2rgb conversion crept into the pixel door - those frames "
               "are finished RGB, converting them is decoding an image twice")

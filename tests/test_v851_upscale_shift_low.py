@@ -51,6 +51,8 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _lift as _LIFT          # noqa: E402  -- the shared closed lift (v896)
 PY = os.path.join(ROOT, "nodes", "ph_power_upscale.py")
 JS = os.path.join(ROOT, "web", "js", "ph_power_upscale.js")
 WIDGET = "sigma_shift_low"
@@ -112,7 +114,9 @@ def _widget_order():
         if isinstance(node, ast.ClassDef) and node.name == "ULSPowerUpscale":
             for sub in node.body:
                 if isinstance(sub, ast.FunctionDef) and sub.name == "INPUT_TYPES":
-                    names, dynamic = scan._order_of(sub)
+                    # v901 widened this to (names, dynamic, stray sections);
+                    # this test only needs the first two.
+                    names, dynamic = scan._order_of(sub)[:2]
                     return names, dynamic
     return None, False
 
@@ -228,7 +232,12 @@ def _extract_apply_block():
     if _APPLY_SRC:
         return _APPLY_SRC
     src = open(PY, encoding="utf-8").read()
-    start = src.index("_hi_shift = float(sigma_shift or 0.0)")
+    # v894 put a `_dual = bool(dual_moe)` line at the TOP of this block, ahead
+    # of the old anchor -- so the lift silently cut it off and the block ran on
+    # an undefined name. Anchored on the first line of the block as it now
+    # stands. LESSON, and it is the session's recurring one: changing a seam
+    # that other benches LIFT means checking those benches in the same cut.
+    start = src.index("_dual = bool(dual_moe)")
     end = src.index("stages = uls_tile_math.plan_stages")
     block = src[start:end]
     _APPLY_SRC = "\n".join(l[8:] if l.startswith(" " * 8) else l
@@ -258,10 +267,40 @@ def _run_block(sigma_shift, sigma_shift_low, wired):
         "model_low": M("L") if wired else None,
         "_apply_sigma_shift": fake_apply,
         "print": lambda *a, **k: None,
+        # v894 put the low half behind a dual_moe gate, because Single plans one
+        # stage tagged 'single' and never reads model_low -- every clone built
+        # for stage L there was paid for and never touched. EVERY promise in
+        # this guard is about the High + Low behaviour, which v894 left bit for
+        # bit intact, so the bench drives dual. The Single side is pinned in
+        # test_v894_shift_low_single.py, not weakened here.
+        "dual_moe": True,
     }
     env["_resolve_low_shift"] = _resolver()
-    exec(compile(_extract_apply_block(), "<v851-block>", "exec"), env)
+    block_src = _extract_apply_block()
+    _check_block_closed(block_src, env)
+    exec(compile(block_src, "<v851-block>", "exec"), env)
     return env, calls
+
+
+_closed_reported = []
+
+
+def _check_block_closed(block_src, env):
+    """v896: say WHICH name is short, instead of surfacing as a bare NameError
+    that reads like a broken tree. This bench went red the moment v894 gave the
+    block a new name -- the shape v896 closed for two other guards, recurring
+    inside the same session.
+
+    It REPORTS and lets the run continue to the NameError, deliberately: _fail
+    here only records, so returning early would hand the caller None where it
+    unpacks a tuple. (Which is exactly what my first draft did -- a guard whose
+    failure path crashes the guard tells you nothing about the tree.)"""
+    missing = _LIFT.free_names(block_src, set(env))
+    if missing and not _closed_reported:
+        _closed_reported.append(True)
+        _fail("the lifted apply block needs names this bench does not provide: "
+              "%s -- a GUARD fault, not a tree fault; add them to the bench "
+              "environment" % ", ".join(missing))
 
 
 def s4_no_double_shift():
@@ -348,28 +387,54 @@ def s5_fallback_cases():
 # ---------------------------------------------------------------------------
 # S6  no inert mode may be claimed
 # ---------------------------------------------------------------------------
-def s6_never_inert():
+def s6_scope_is_honest():
+    """RE-GROUNDED IN v894 -- was s6_never_inert.
+
+    The old promise was: "this widget is ALWAYS honoured, unlike the Sampler's,
+    so it needs no honesty line", and it pinned the words "Always honoured" in
+    the tooltip. v894 MEASURED that claim and it is false for Single:
+    plan_stages(False, ...) yields one stage tagged 'single', and model_low is
+    read only where the tag is 'low'. The widget reached nothing there, while
+    the backend still built a second clone for it on every run.
+
+    The reasoning behind the old promise still holds where it was true -- there
+    is no 'Continuous' mode here, so in High + Low the value is always honoured
+    and no schedule is shared. What was wrong was the SCOPE. So the promise is
+    re-grounded, not dropped:
+
+        the tooltip must state the true reach (High + Low), and a value dialled
+        on a Single run must be REPORTED, never silently absorbed.
+
+    The old wording is now explicitly forbidden, so it cannot creep back."""
     src = open(PY, encoding="utf-8").read()
     if "handoff_mode" in src:
         return _fail("a handoff mode appeared in the Power Upscale -- if the stages "
-                     "ever share a schedule, this widget can go inert and S5 is "
-                     "no longer the whole truth")
-    # The word itself is fine in prose that DENIES inertness (the tooltip does
-    # exactly that). What may never appear is the Sampler's honesty LINE -- a
-    # runtime message telling the user the value was ignored. If such a line is
-    # ever needed here, the stage model changed and S5 is no longer the truth.
+                     "ever share a schedule, the twin arithmetic in S5 is no "
+                     "longer the whole truth")
+    tip = re.search(r'"sigma_shift_low":.*?\}\),', src, re.S)
+    if not tip:
+        return _fail("the sigma_shift_low widget declaration is gone")
+    tip = tip.group(0)
+    if "Always honoured" in tip or "can never be inert" in src:
+        return _fail("the v851 claim ('always honoured' / 'can never be inert') "
+                     "is back. It is false in Single -- measured in v894: one "
+                     "stage tagged 'single', model_low never read")
+    if "HIGH + LOW ONLY" not in tip:
+        return _fail("the tooltip must name the mode in which the dial works")
+    # and the run must SAY so rather than absorb it -- the v552/v885 rule
+    # against silent degradation, in the other direction.
+    said_lines = []
     for node in ast.walk(ast.parse(src)):
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                 and node.func.id == "print"):
-            said = " ".join(c.value for c in ast.walk(node)
-                            if isinstance(c, ast.Constant) and isinstance(c.value, str))
-            if "inert" in said.lower():
-                return _fail("a runtime message says a value went inert: %r" % said)
-    tip = re.search(r'"sigma_shift_low":.*?\}\),', src, re.S)
-    if not tip or "Always honoured" not in tip.group(0):
-        return _fail("the tooltip must say the value is always honoured -- the one "
-                     "real difference from the Sampler's v839 widget")
-    _ok("no handoff mode, no inert claim, tooltip states it is always honoured")
+            said_lines.append(" ".join(
+                c.value for c in ast.walk(node)
+                if isinstance(c, ast.Constant) and isinstance(c.value, str)))
+    if not any("sigma_shift_low" in t and "ignored" in t for t in said_lines):
+        return _fail("a dialled sigma_shift_low on a Single run must be "
+                     "reported at runtime, not silently absorbed")
+    _ok("no handoff mode; the tooltip states the true reach and the run says "
+        "when the dial is out of scope")
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +542,7 @@ def main():
     s3_sentinel_semantics()
     s4_no_double_shift()
     s5_fallback_cases()
-    s6_never_inert()
+    s6_scope_is_honest()
     s7_frontend()
     if _fails:
         print("\n%d FAILURE(S)" % len(_fails))

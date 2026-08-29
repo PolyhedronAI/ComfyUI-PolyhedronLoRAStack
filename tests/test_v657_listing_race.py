@@ -64,6 +64,17 @@ const api = { fetchApi: () => new Promise((res) => { resolveFetch = res; }) };
 class Host {
 %s
     renderGrid() { this.rendered = (this.rendered || 0) + 1; }
+    // v906 GUARD MAINTENANCE, declared. _focusReread gained three neighbours
+    // when the loader learned that a listing is also news about what is GONE.
+    // This guard's promise is UNCHANGED -- it is about staleness tickets, not
+    // about pruning -- but its stand-in has to carry the new calls or it dies
+    // of a NameError and reports a healthy tree as broken. That is exactly the
+    // failure _lift.py was written about (v685/v839 stood red for versions).
+    // The prune returns nothing here on purpose: this scenario is about which
+    // RESPONSE wins, so nothing may vanish and perturb the render count.
+    _pruneVanished() { this.pruned = (this.pruned || 0) + 1; return []; }
+    _renderPreview() { this.repainted = (this.repainted || 0) + 1; }
+    _announceVanished() { this.announced = (this.announced || 0) + 1; }
 }
 async function scenario(bumpDuringFlight, busy) {
     const h = new Host();

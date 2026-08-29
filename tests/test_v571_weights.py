@@ -64,7 +64,10 @@ def main():
               "enter the rung-3 blend 16x too heavy")
 
     # ---- 2: one gate, two places, same spelling ------------------------------------
-    _p0 = pu.index('if str(pixel_stage) == "model final":')
+    # v884: the final block's opener is `if _final_runs:` -- ONE name that ORs
+    # the dial with the joint-model detection (see test_v880 P7). The promise
+    # here is unchanged; only the anchor follows the one-source form.
+    _p0 = pu.index('if _final_runs:')
     post = pu[_p0:pu.index("clock.push()", _p0)]
     if "if _um_fin is not None:" not in post:
         _fail("the up-front post must gate on the WIRE (is not None) - "

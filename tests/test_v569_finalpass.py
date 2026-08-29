@@ -76,7 +76,10 @@ def main():
               "the stages are pure fit, the wire serves the final pass")
 
     # ---- 3: the wire law of the pass --------------------------------------------
-    blk_at = pu.find("if str(pixel_stage) == \"model final\":",
+    # v884: the final block's opener is `if _final_runs:` -- ONE name that ORs
+    # the dial with the joint-model detection (see test_v880 P7). The promise
+    # here is unchanged; only the anchor follows the one-source form.
+    blk_at = pu.find("if _final_runs:",
                      pu.index("_free()   # v561"))
     if blk_at < 0:
         _fail("the final-pass block is gone")

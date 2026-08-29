@@ -176,15 +176,36 @@ def run_seam(mod):
                   % ("neither pin" if not bad else "both pins"))
         except RuntimeError:
             pass
-    out, n, fps, info = _call(mod, video=_Vid(frames, Fraction(20, 1)))
+    # RE-GROUNDED IN v887 (declared). These three calls used to unpack EXACTLY
+    # four values. That pinned the ARITY of the return, which was never this
+    # guard's promise -- its subject is the video-INPUT seam (which pin wins,
+    # whose rate is used, and that the node says so). v887 APPENDS a `video`
+    # output, a lawful act, and the fixed-arity unpack called it a violation.
+    # Read by INDEX instead, and pin the promise that actually protects a
+    # saved workflow: the historic outputs keep their slots and anything new
+    # lands behind them (links store an origin SLOT INDEX -- the output-side
+    # twin of #577).
+    hist = ("frames", "frame_count", "fps", "interp_info")
+    _need(tuple(mod.ULSInterpolate.RETURN_NAMES)[:len(hist)] == hist,
+          "the historic outputs must keep their slots and order; a new output "
+          "is APPENDED, never inserted (got %r)"
+          % (mod.ULSInterpolate.RETURN_NAMES,))
+    _need(len(mod.ULSInterpolate.RETURN_TYPES)
+          == len(mod.ULSInterpolate.RETURN_NAMES),
+          "RETURN_TYPES and RETURN_NAMES drifted in length")
+
+    res = _call(mod, video=_Vid(frames, Fraction(20, 1)))
+    n, fps, info = res[1], res[2], res[3]
     _need(n == 1 and fps == 20.0,
           "video rate not substituted: fps %r" % fps)
     _need("read from the wired video" in info,
           "substitution must be said in interp_info: %s" % info)
-    out, n, fps, info = _call(mod, video=_Vid(frames, 0))
+    res = _call(mod, video=_Vid(frames, 0))
+    fps, info = res[2], res[3]
     _need(fps == 16.0 and "names no frame rate" in info,
           "rate-less fallback broken: fps %r / %s" % (fps, info))
-    out, n, fps, info = _call(mod, frames=frames)
+    res = _call(mod, frames=frames)
+    fps, info = res[2], res[3]
     _need(fps == 16.0 and "wired video" not in info,
           "classic frames path changed: %s" % info)
     print("[test_v791_interpolate_video] seam OK")

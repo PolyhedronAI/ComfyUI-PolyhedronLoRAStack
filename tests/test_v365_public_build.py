@@ -151,7 +151,25 @@ for flag, cls, disp in (("_SAMPLER_OK", "ULSSampler", "Polyhedron Sampler"),
                         ("_FUP_OK", "ULSFastUpscale",
                          "Polyhedron Fast Upscale"),
                         ("_INTERP_OK", "ULSInterpolate",
-                         "Polyhedron Interpolate")):
+                         "Polyhedron Interpolate"),
+                        # v371 -- the workflow essentials group
+                        ("_BASICS_OK", "ULSLoadModel", "Polyhedron Load Model"),
+                        ("_BASICS_OK", "ULSLoadCLIP", "Polyhedron Load CLIP"),
+                        ("_BASICS_OK", "ULSLoadVAE", "Polyhedron Load VAE"),
+                        ("_BASICS_OK", "ULSSeed", "Polyhedron Seed"),
+                        ("_UPLOAD_OK", "ULSLoadUpscaleModel",
+                         "Polyhedron Load Upscale Model"),
+                        ("_VAE_OK", "ULSVAE", "Polyhedron VAE Codec"),
+                        ("_ELAT_OK", "ULSEmptyLatent",
+                         "Polyhedron Empty Latent"),
+                        ("_SWITCH_OK", "ULSAnySwitch", "Polyhedron Switch"),
+                        ("_SWITCH_OK", "ULSAnySwitchInv",
+                         "Polyhedron Switch Inverse"),
+                        ("_INT_OK", "ULSInt", "Polyhedron Int"),
+                        ("_MINFO_OK", "ULSMediaInfo", "Polyhedron Media Info"),
+                        ("_MMREF_OK", "ULSMiniMaxReference",
+                         "Polyhedron MiniMax Reference"),
+                        ("_NOTE_OK", "ULSNote", "Polyhedron Note")):
     if ("if %s:" % flag) not in INIT:
         _fail("__init__.py does not guard %s behind %s" % (cls, flag))
     if 'NODE_CLASS_MAPPINGS["%s"]' % cls not in INIT:
@@ -164,16 +182,33 @@ if "register_sampler_routes()" not in INIT:
 
 n_nodes = len(set(re.findall(r'NODE_CLASS_MAPPINGS\["(\w+)"\]', INIT))
               | set(re.findall(r'"(\w+)":\s+\w+,', INIT)))
-if n_nodes != 20:
-    _fail("the pack registers %d nodes, expected 20 (15 published + Sampler + "
-          "CLIP Text Encode + Power Upscale + Fast Upscale + Interpolate)"
-          % n_nodes)
+if n_nodes != 37:
+    _fail("the pack registers %d nodes, expected 37 (the 33 of v371 plus "
+          "Attention, NAG, Filter and Audio Stretch added in v372)" % n_nodes)
 
 # v368: the three new nodes open NO server route. Power Upscale reports tile
 # progress through PromptServer.send_sync, which needs no endpoint. This is a
 # promise worth pinning: the day one of them grows a route handler, it must be
 # a DECLARED act in its own module -- not a quiet reopening of a shared file.
-for fname in ("ph_power_upscale.py", "ph_fast_upscale.py", "ph_interpolate.py"):
+# v371: the same promise for the thirteen workflow essentials. Measured before
+# the cut -- not one of their nine carrier modules opens an endpoint, and not
+# one of their frontends calls fetch(). That is WHY this cut needed no new
+# route module at all, and it is the reason uls_routes.py can stay shut for a
+# tenth release running.
+#
+# v372: Attention and NAG keep the promise -- neither opens an endpoint and
+# neither ships a frontend. The FILTER does not, and that is a declared act:
+# its live preview has to read the SAME .cube the backend grades with, so it
+# needs three routes. They went into nodes/ph_filter_routes.py, a FOURTH
+# module, exactly the way the Media Loader and the Sampler did it. The rule
+# was never "no new routes" -- it is "no reopening of a shared file", and the
+# check below enforces the version that actually matters: the Filter's routes
+# must live in its own module, and uls_routes.py must stay byte-identical
+# (pinned at the top of this file).
+for fname in ("ph_power_upscale.py", "ph_fast_upscale.py", "ph_interpolate.py",
+              "ph_basics.py", "ph_switch.py", "ph_int.py",
+              "ph_empty_latent.py", "ph_media_info.py", "ph_minimax_ref.py",
+              "ph_note.py", "ph_vae.py", "ph_upscale_loader.py"):
     src = _read("nodes", fname)
     for needle in ("routes.get(", "routes.post(", "@server.PromptServer",
                    "add_routes("):
@@ -199,6 +234,36 @@ for rel in (("nodes", "ph_sampler_routes.py"),):
     if not data.isascii():
         _fail("%s is not pure ASCII" % "/".join(rel))
 
+# --- v372: the Filter's routes live in their OWN module ---------------------
+# The one node in this cut that needs endpoints. The promise is not that it
+# has none -- it is that getting them cost no shared file. Each check below is
+# the thing that would actually go wrong if the rule were bent.
+FR = _read("nodes", "ph_filter_routes.py")
+for _path in ("/uls/filter/lut", "/uls/filter/preset"):
+    if _path not in FR:
+        _fail("ph_filter_routes.py does not serve %s" % _path)
+if "def register_filter_routes" not in FR:
+    _fail("ph_filter_routes.py exposes no register_filter_routes()")
+if "register_filter_routes()" not in INIT:
+    _fail("__init__.py never calls register_filter_routes() -- the Filter's "
+          "live preview would 404 on every LUT it tries to read")
+# NOT a substring search. The first draft of this check was one, and it went
+# red on its own module header, which NAMES the other three files in order to
+# explain why it does not use them. Prose is not a dependency: what matters is
+# whether the module IMPORTS them.
+for _shared in ("uls_routes", "ph_media_routes", "ph_sampler_routes"):
+    if re.search(r"(?:^|\n)\s*(?:from\s+\.?%s\s+import|import\s+\.?%s)\b"
+                 % (_shared, _shared), FR):
+        _fail("ph_filter_routes.py imports %s.py -- the whole point of a "
+              "fourth module is that the other three stay shut" % _shared)
+_FJS = _read("web", "js", "ph_filter.js")
+for _hit in re.findall(r'fetchApi\("([^"?]+)', _FJS):
+    if not _hit.startswith("/uls/filter/"):
+        _fail("ph_filter.js calls %s, which ph_filter_routes.py does not serve"
+              % _hit)
+
+
 print("[test_v365_public_build] OK -- uls_routes.py untouched (%s), the sampler "
-      "owns its 3 routes lazily, /uls/media/dims served, 20 nodes, the three v368 nodes routeless, at %s"
+      "owns its 3 routes lazily, the Filter owns its 3 in a fourth module, "
+      "/uls/media/dims served, 37 nodes, at %s"
       % (ULS_ROUTES_MD5[:8], triple))

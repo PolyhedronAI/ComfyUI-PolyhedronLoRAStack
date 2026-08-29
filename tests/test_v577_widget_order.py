@@ -11,7 +11,7 @@ and it is honoured: there is not one index-based widget access in the whole
 frontend. But it was ENFORCED for exactly ONE node -- ph_power_upscale's
 ORDER_CANON (25 entries). The other 38 were protected by memory and care.
 
-This gate generalises ORDER_CANON to the tree. The audit measured that 19 of
+This gate generalises ORDER_CANON to the tree. The audit measured that 36 of
 39 INPUT_TYPES can be read STATICALLY (no torch, no ComfyUI, pure AST), so the
 protection is simply available:
 
@@ -119,22 +119,28 @@ def _is_widget(spec):
     v812) have compared against the socket-free runtime order all
     along.
 
-    RE-GROUNDED v368 (BinOp): a combo list may be BUILT rather than
+    RE-GROUNDED v850 (BinOp): a combo list may be BUILT rather than
     named -- `([SAME_AS_HIGH] + list(comfy.samplers.KSampler.SAMPLERS),
+    {...})`, `([SAME_AS_MAIN] + modes, {...})`, `(["auto"] + types,
     {...})`. That is an ast.BinOp, which no branch below covered, so the
     scanner fell through to False and filed a REAL widget as a socket.
-    Four nodes were affected across the two trees (Power Upscale and the
-    Sampler here; Attention and Load CLIP internally) and their entries
-    vanished from the baseline SILENTLY -- for Power Upscale the baseline
-    diverged from the truth at slot 15 onward, so ten slots were compared
-    against the wrong names.
+    FOUR nodes were affected -- ULSPowerUpscale and ULSSampler
+    (sampler_low / scheduler_low), ULSAttention (attention_first /
+    attention_last) and ULSLoadCLIP (type) -- and their entries vanished
+    from the baseline SILENTLY.
 
-    MEASURED before the fix, not assumed: the node publishes its true
-    serialisation order as ORDER_CANON in web/js/ph_power_upscale.js, and
-    the patched scan reproduces it EXACTLY (25/25 once core's
-    control_after_generate is discounted). The baseline was BLIND, not
-    WRONG -- no saved workflow shifted, only the yardstick was short.
-    Nothing to heal, nothing to migrate."""
+    MEASURED before the fix, not assumed. Power Upscale and the Sampler
+    publish their true serialisation order in the frontend as
+    ORDER_CANON / ORDER_V404, and the patched scan reproduces both
+    EXACTLY (25/25 and 19/19 once core's control_after_generate is
+    discounted). For the other two the argument is structural: this
+    scanner only reads a node statically when INPUT_TYPES returns a
+    LITERAL dict, and a literal dict's iteration order IS the order
+    INPUT_TYPES() yields at runtime -- so scan order and slot order
+    cannot diverge there.
+
+    The baseline was BLIND, not WRONG -- no saved workflow shifted, only
+    the yardstick was short. Nothing to heal, nothing to migrate."""
     if (isinstance(spec, (ast.Tuple, ast.List)) and len(spec.elts) > 1
             and isinstance(spec.elts[1], ast.Dict)):
         for k, v in zip(spec.elts[1].keys, spec.elts[1].values):
@@ -153,18 +159,40 @@ def _is_widget(spec):
     return False
 
 
+# ComfyUI reads exactly these three sections out of an INPUT_TYPES dict.
+# Anything else is not a section it knows.
+_SECTIONS = ("required", "optional", "hidden")
+
+
 def _order_of(fn):
-    """Ordered WIDGET names of one INPUT_TYPES, statically. (names, dynamic?)
+    """Ordered WIDGET names of one INPUT_TYPES, statically.
+    (names, dynamic?, stray sections)
 
     required widgets first, then optional widgets, in declaration order - which
-    is exactly the order LiteGraph fills widgets_values in."""
-    order, dynamic = [], False
+    is exactly the order LiteGraph fills widgets_values in.
+
+    v901: STRAY SECTIONS ARE NOW REPORTED. This scanner used to `continue`
+    past any key that was not required/optional, which silently tolerated the
+    worst version of the very fault this gate exists to catch: in v900 a new
+    widget was written one brace too late and landed as a THIRD top-level
+    section beside required and optional. Python accepted it, py_compile
+    accepted it, this gate said the widget order was unchanged -- and ComfyUI
+    refused to register the node at all, so the whole VAE box came up red with
+    UNKNOWN widgets in Frank's graph. A widget that lands outside every
+    section is not "no change", it is a node that does not load."""
+    order, dynamic, stray = [], False, []
     for n in ast.walk(fn):
         if isinstance(n, ast.Return) and isinstance(n.value, ast.Dict):
             for k, v in zip(n.value.keys, n.value.values):
                 sec = getattr(k, "value", None)
-                if sec not in ("required", "optional"):
+                if sec not in _SECTIONS:
+                    if isinstance(k, ast.Constant):
+                        stray.append(str(sec))
+                    else:
+                        dynamic = True      # a computed section key
                     continue
+                if sec == "hidden":
+                    continue                # hidden fills no widgets_values slot
                 if not isinstance(v, ast.Dict):
                     dynamic = True          # the whole section is computed
                     continue
@@ -174,13 +202,16 @@ def _order_of(fn):
                         continue
                     if _is_widget(vv):
                         order.append(str(kk.value))
-            return order, dynamic
-    return order, True                      # no literal return dict at all
+            return order, dynamic, stray
+    return order, True, stray               # no literal return dict at all
 
 
 def _scan():
-    """{node_class: (order, dynamic, file)} for every INPUT_TYPES in nodes/."""
-    out = {}
+    """{node_class: (order, dynamic, file)} for every INPUT_TYPES in nodes/.
+
+    Stray sections are collected on the side and checked before anything
+    else -- a node that cannot register has no widget order to compare."""
+    out, strays = {}, []
     for p in sorted(glob.glob(os.path.join(ROOT, "nodes", "*.py"))):
         tree = ast.parse(open(p, encoding="utf-8").read())
         for c in ast.walk(tree):
@@ -188,8 +219,16 @@ def _scan():
                 continue
             for fn in c.body:
                 if isinstance(fn, ast.FunctionDef) and fn.name == "INPUT_TYPES":
-                    o, d = _order_of(fn)
+                    o, d, st = _order_of(fn)
                     out[c.name] = (o, d, os.path.basename(p))
+                    for sec in st:
+                        strays.append((c.name, os.path.basename(p), sec))
+    for cls, fname, sec in strays:
+        _fail(f"{cls} ({fname}): INPUT_TYPES returns a section named "
+              f"'{sec}'. ComfyUI reads only "
+              f"{'/'.join(_SECTIONS)} -- a widget written one brace too late "
+              f"lands here, and the node then fails to register (red box, "
+              f"UNKNOWN widgets). This is the v900 fault.")
     return out
 
 
@@ -332,15 +371,18 @@ def main():
     static_guarded = sum(1 for n, (o, d, f) in now.items()
                          if not d and n not in base_canon)
     guarded = static_guarded + len(base_canon)
-    # RE-GROUNDED FOR THE PUBLIC BUILD (v368). This floor is a CENSUS of the
-    # tree the gate guards, not a law: it fires when a node silently goes
-    # dynamic and thereby leaves the guarded set. The internal tree's census
-    # is 36; this tree carries 20 node classes, one of them declared dynamic,
-    # so 19 is FULL coverage here -- the floor stays maximally tight, it is
-    # merely true of the tree it actually guards. The law itself (checks 1
-    # and 2 above: nothing leaves unannounced, no order shifts) is untouched.
-    if guarded < 19:
-        _fail(f"only {guarded} nodes are guarded - the audit measured 19. "
+    # RE-GROUNDED FOR THE PUBLIC BUILD (v372), declared in the changelog.
+    # This floor is a CENSUS of the tree the gate guards, not a law: it fires
+    # when a node silently goes dynamic and thereby leaves the guarded set.
+    # The internal tree's census is 36 at this cut. THIS tree also carries 36
+    # node classes, but a different set: THREE are declared dynamic and there
+    # is no CANON row (the node that owns it does not exist here), so full
+    # coverage is 34. That number is MEASURED, not derived -- my first draft
+    # of this line said 35 from arithmetic and the gate said 33 on the first
+    # run. Keeping the internal number would make a correct public build look
+    # broken; a lower one would let a real loss slip through.
+    if guarded < 34:
+        _fail(f"only {guarded} nodes are guarded - the audit measured 34. "
               f"Something went dynamic without being declared.")
 
     print(f"[test_v577_widget_order] PASS: {static_guarded} nodes guarded "

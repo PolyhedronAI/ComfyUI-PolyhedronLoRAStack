@@ -151,8 +151,20 @@ end = SRC.index("\n", end)
 block = textwrap.dedent(SRC[SRC.rindex("\n", 0, start) + 1:end])
 block = textwrap.dedent(block)
 
+# v896: the seam's own dependencies, lifted CLOSED out of the module instead of
+# hand-listed. tests/_lift.py reports a short lift BY NAME, so the next time a
+# cut gives this block a new helper the failure says so, instead of surfacing as
+# a bare NameError that reads like a broken tree.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _lift as _LIFT
+_RAGGED_SRC, _RAGGED_MISSING = _LIFT.close_over(SRC, ["_is_ragged_latent"], set())
+_need(not _RAGGED_MISSING,
+      "L3: lift of _is_ragged_latent is SHORT of %s -- a GUARD fault, not a "
+      "tree fault" % ", ".join(_RAGGED_MISSING))
 
-def _drive(shift, low, dual=True, sig=None, sig_h=None, sig_l=None):
+
+def _drive(shift, low, dual=True, sig=None, sig_h=None, sig_l=None,
+           latent=None):
     calls = []
 
     def spy(mdl, s):
@@ -161,7 +173,14 @@ def _drive(shift, low, dual=True, sig=None, sig_h=None, sig_l=None):
     ns = {"_resolve_low_shift": R, "_apply_sigma_shift": spy,
           "sigma_shift": shift, "sigma_shift_low": low, "dual_moe": dual,
           "model": "HI", "model_low": "LO",
-          "sigmas": sig, "sigmas_high": sig_h, "sigmas_low": sig_l}
+          "sigmas": sig, "sigmas_high": sig_h, "sigmas_low": sig_l,
+          # v896: the block gained `_is_ragged_latent` and `latent_image` in
+          # v870 and this harness was not updated -- it raised NameError and
+          # this guard stood red for many versions while the tree was fine.
+          # The helper is LIFTED from the module (real arithmetic, not a stub);
+          # the latent is injected because it is an input, not a dependency.
+          "latent_image": latent if latent is not None else {"samples": None}}
+    exec(_RAGGED_SRC, ns)
     exec(compile(textwrap.dedent(block), "<applyblock>", "exec"), ns)
     return calls
 
@@ -214,6 +233,13 @@ def _lift(sig):
     return JSSRC[i:j + 2]
 
 
+
+def _grab_line(sig):
+    """One whole statement line, lifted verbatim."""
+    i = JSSRC.index(sig)
+    j = JSSRC.index("\n", i)
+    return JSSRC[i:j]
+
 js_parts = []
 # constants + arrays (slice from ORDER_V404 through the maps)
 for sig in ("const STATE_WIDGETS", "const ORDER_V404", "const DISPLAY_ORDER"):
@@ -236,6 +262,12 @@ for line_sig in ("const DUAL_ONLY", "const SINGLE_ONLY",
     if k != -1 and k < JSSRC.index("\nconst", i + 1 if JSSRC.find("\nconst", i + 1) != -1 else i):
         j = max(j, k + 1)
     js_parts.append(JSSRC[i:j + 1])
+# v896: the v888 rewrite also introduced module state (`let _visMoved`) and a
+# reader (`_visChanged`) that _applyModeState calls. Lift BOTH -- a bench that
+# invents a replacement would be testing its own invention.
+js_parts.append(_grab_line("let _visMoved"))
+js_parts.append(_lift("function _visChanged"))
+
 for fn in ("function _looksPhantomPreset", "function _healPhantomPreset",
            "function _looksPreV404", "function _migratePreV404",
            "function _looksV492Current", "function _healV492Current",
@@ -243,6 +275,19 @@ for fn in ("function _looksPhantomPreset", "function _healPhantomPreset",
            "function _findWidget", "function _inputLinked",
            "function _setDisabled", "function _applyModeState"):
     js_parts.append(_lift(fn))
+
+# v896: v888 moved _setDisabled onto the SHARED module web/js/ph_widget_vis.js
+# (setHidden / refit). This harness lifts functions out of uls_sampler.js and so
+# inherited a reference it does not define -- ReferenceError: setHidden. It went
+# unseen because the python half of this guard was already red on the v870
+# NameError; one wound hid the other. The REAL module is placed alongside, per
+# the standing rule that a JS bench which strips imports must lay the genuine
+# files next to it -- never a stub of the thing under test.
+_VIS = os.path.join(ROOT, "web", "js", "ph_widget_vis.js")
+_vis_src = open(_VIS, encoding="utf-8").read()
+_vis_src = re.sub(r"^\s*import\s+.*?;\s*$", "", _vis_src, flags=re.M)
+_vis_src = _vis_src.replace("export function", "function").replace("export const", "const")
+js_parts.insert(0, _vis_src)
 
 harness = "\n".join(js_parts) + r"""
 

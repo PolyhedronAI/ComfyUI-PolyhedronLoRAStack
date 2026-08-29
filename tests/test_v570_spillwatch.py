@@ -99,7 +99,10 @@ def main():
         _fail("the stage budget must be posted under its declared kind")
     if "_key=f\"{st['pix_kind']}:{st['tag']}\"" not in pu:
         _fail("the stage closure must measure under the SAME key it posted")
-    fin = pu[pu.index("if str(pixel_stage) == \"model final\":",
+    # v884: the final block's opener is `if _final_runs:` -- ONE name that ORs
+    # the dial with the joint-model detection (see test_v880 P7). The promise
+    # here is unchanged; only the anchor follows the one-source form.
+    fin = pu[pu.index("if _final_runs:",
                       pu.index("_free()   # v561")):]
     if '"pix:final"' not in fin:
         _fail("the final pass is a model forward - it posts and measures "
