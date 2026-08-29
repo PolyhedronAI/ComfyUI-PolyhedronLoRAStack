@@ -59,12 +59,33 @@ app.registerExtension({
 
                 if (info.over_limit) {
                     const over = worst - info.limit;
+                    // v908 -- THE TOAST USED TO LIE, LOUDLY.
+                    //
+                    // It promised "may be silently truncated or crash kijai's
+                    // WanVideoSampler" for EVERY over-budget run, on every
+                    // encoder. On MiniMax H3 both halves are false: qwen3vl
+                    // carries max_length=99999999 and there is no kijai sampler
+                    // anywhere in that graph. Frank trimmed a whole prompt
+                    // session against that sentence. A warning nobody can act
+                    // on correctly is worse than none, because it is the one
+                    // thing that pops up on its own.
+                    //
+                    // The backend now sends `can_truncate` (does any live
+                    // encoder actually have a cap) and `encoder`. With no clip
+                    // wired can_truncate is true, so the old caveat still
+                    // appears exactly where it is still warranted.
+                    const named = info.encoder ? ` (${info.encoder})` : "";
+                    const body = info.can_truncate
+                        ? `Prompt is ${worst}/${info.limit} tokens (over by ${over}). ` +
+                          `It may be silently truncated or crash kijai's WanVideoSampler. ` +
+                          `Shorten the prompt or route through WanVideoTextEncode.`
+                        : `Prompt is ${worst}/${info.limit} tokens (over by ${over}). ` +
+                          `Nothing is truncated${named} — this is your own budget, ` +
+                          `not a cap. See the report for what length really costs here.`;
                     toast(
                         "warn",
-                        "Token limit exceeded",
-                        `Prompt is ${worst}/${info.limit} tokens (over by ${over}). ` +
-                        `It may be silently truncated or crash kijai's WanVideoSampler. ` +
-                        `Shorten the prompt or route through WanVideoTextEncode.`,
+                        info.can_truncate ? "Token limit exceeded" : "Over your token budget",
+                        body,
                         0,   // life 0 = sticky: an over-limit run must not auto-vanish
                     );
                 } else if (info.near_limit) {

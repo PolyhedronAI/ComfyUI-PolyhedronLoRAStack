@@ -1940,6 +1940,165 @@ def _heuristic_token_count(text: str) -> int:
 _NO_CAP_AT_OR_ABOVE = 1_000_000
 
 
+# ---------------------------------------------------------------------------
+# v907 -- WHAT "TOO LONG" MEANS ON MINIMAX H3.
+#
+# It does not mean truncation. Measured in core v0.33.4,
+# comfy/text_encoders/qwen3vl.py: max_length=99999999, pad_to_max_length=False.
+# Nothing is cut, ever. A report that warns "over 512" on H3 is inventing a
+# limit, and Frank spent a whole prompt session trimming against one.
+#
+# What DOES happen is structural, and it comes out of the model itself.
+# H3 is a single-stream packed-token transformer: text, video and audio share
+# ONE sequence and ONE position axis (comfy/ldm/minimax/model.py, PackedLayout):
+#
+#     segments = [("text", text_len)]
+#     g[:, 0] = torch.arange(text_len)   # each text token costs 1.0 on t
+#     cursor  = text_len                 # the video starts BEHIND the text
+#
+# A latent frame costs FRAME_RESCALE * FRAME_PER_TOKEN[k % 5] on that same
+# axis -- 1.67 or 6.67, not 1. So the text does not merely sit next to the
+# video, it PUSHES it along the time axis, and a long prompt pushes it far:
+# 378 text tokens against a 22-frame clip put the video at t=378..415, while
+# the clip itself spans 36.7. The prompt occupies ten times the video's own
+# extent.
+#
+# Two consequences follow, and only these two are claimed here:
+#   * RoPE encodes DISTANCE. The first token of a 378-token prompt sits 378
+#     units from the video; the last sits next to it. Early parts of a long
+#     prompt therefore pull measurably weaker than late ones.
+#   * The video's absolute start position grows with prompt length, which is
+#     the same class of fault as v900 (a coordinate outside anything training
+#     saw) -- there the still's 0.0, here a start at t=378.
+#
+# The 512 is NOT invented either, but it is not the encoder's: ai-toolkit's H3
+# trainer defaults `max_text_length` to 512 and says in the same breath that
+# "the released stack has no limit". So 512 is the span LoRAs are trained
+# within -- a training convention worth knowing, not a cliff to fall off.
+#
+# These helpers are pure and mirror the model's own constants. If core ever
+# changes FRAME_PER_TOKEN or FRAME_RESCALE, this is the one place to follow.
+# ---------------------------------------------------------------------------
+
+H3_FRAME_PER_TOKEN = (1, 4, 4, 4, 4)
+H3_FRAME_RESCALE = 5.0 / 3.0
+H3_TRAIN_SPAN = 512          # ai-toolkit max_text_length default
+
+
+def _any_encoder_truncates(clip) -> bool:
+    """True only if some live encoder really has a cap.
+
+    No clip wired -> True: without knowing the encoder we must not promise
+    that nothing is cut. Silence about a real risk is worse than a caveat.
+    """
+    facts = []
+    try:
+        facts = _encoder_facts(clip)
+    except Exception:
+        return True
+    if not facts:
+        return True
+    return any(f.get("cap") is not None for f in facts)
+
+
+def _encoder_label(clip):
+    """The live encoder's name for the toast, or None."""
+    try:
+        facts = _encoder_facts(clip)
+    except Exception:
+        return None
+    return facts[0].get("name") if facts else None
+
+
+def _is_h3_encoder(clip) -> bool:
+    """True only for a MiniMax H3 text encoder.
+
+    Read off the live tokenizer via the v905 facts helper, never guessed from
+    the model or the latent: the H3 section below is only true for H3, and
+    printing it elsewhere would be exactly the kind of invented number this
+    whole block exists to remove.
+    """
+    # v908 -- MEASURED CORRECTION. v907 looked for "minimax" in the inner
+    # tokenizer's NAME and never fired, because H3's inner tokenizer is called
+    # `qwen3vl_32b` -- the same name a plain Qwen3-VL model uses
+    # (comfy/text_encoders/minimax.py: MiniMaxH3Tokenizer passes
+    # embedding_key="qwen3vl_32b"). The name cannot identify H3 and never
+    # could. The OUTER class can: MiniMaxH3Tokenizer is the thing that builds
+    # the packed sequence this whole report is about.
+    try:
+        tk = getattr(clip, "tokenizer", None)
+        if tk is not None and "minimax" in type(tk).__name__.lower():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def h3_video_span(latent_t):
+    """The extent one video of `latent_t` latent frames occupies on the shared
+    time axis. DECLARED MIRROR of _video_t_spans in comfy/ldm/minimax/model.py.
+    """
+    try:
+        n = int(latent_t)
+    except (TypeError, ValueError):
+        return 0.0
+    if n <= 0:
+        return 0.0
+    return sum(H3_FRAME_RESCALE * H3_FRAME_PER_TOKEN[k % 5] for k in range(n))
+
+
+def h3_reach(text_tokens, latent_t):
+    """How the prompt sits on the time axis relative to the clip.
+
+    Returns {"text": float, "video": float, "ratio": float|None,
+             "start": float, "end": float} -- ratio None when there is no
+    video to compare against (a still, or no latent wired). Ratio is the
+    number that carries the meaning: 1.0 means the prompt occupies as much of
+    the axis as the clip does.
+    """
+    try:
+        t = float(int(text_tokens))
+    except (TypeError, ValueError):
+        t = 0.0
+    v = h3_video_span(latent_t)
+    return {
+        "text": t,
+        "video": v,
+        "ratio": (t / v) if v > 0 else None,
+        "start": t,
+        "end": t + v,
+    }
+
+
+def h3_latent_frames(latent):
+    """Latent-frame count out of a LATENT dict, joint or plain.
+
+    Reuses the split rule the VAE node already declares: a joint AV latent is
+    nested, and the VIDEO half is part 0. Returns 0 when anything is missing --
+    the caller must survive that, because this input is optional by design.
+    """
+    if not isinstance(latent, dict):
+        return 0
+    sam = latent.get("samples", None)
+    if sam is None:
+        return 0
+    if bool(getattr(sam, "is_nested", False)):
+        try:
+            parts = sam.unbind()
+        except Exception:
+            return 0
+        if not parts:
+            return 0
+        sam = parts[0]
+    shape = getattr(sam, "shape", None)
+    if shape is None or len(shape) < 5:
+        return 0
+    try:
+        return int(shape[2])          # (B, C, T, H, W)
+    except (TypeError, ValueError, IndexError):
+        return 0
+
+
 def _encoder_facts(clip) -> list:
     """
     Read the REAL tokenizer limits off a live CLIP object.
@@ -2135,6 +2294,17 @@ class ULSTokenCounter:
                                "the node falls back to UMT5-XXL, which is only "
                                "correct for WAN.",
                 }),
+                # v907, APPENDED (#577): a socket like `clip`, so the widget
+                # baseline stays "model_limit,warn_threshold" untouched.
+                "latent": ("LATENT", {
+                    "tooltip": "Optional, MiniMax H3 only: wire the same latent "
+                               "the sampler gets. H3 puts text and video on ONE "
+                               "position axis, so the prompt's length decides "
+                               "where the video sits on it. With the latent the "
+                               "report says how far the prompt pushes the clip "
+                               "-- the only 'too long' that means anything on "
+                               "H3, since its encoder never truncates.",
+                }),
             },
         }
 
@@ -2156,7 +2326,8 @@ class ULSTokenCounter:
               positive_prompt: str = "",
               negative_prompt: str = "",
               trigger_words: str = "",
-              clip=None) -> tuple:
+              clip=None,
+              latent=None) -> tuple:
 
         pos_count, pos_method = _count_tokens(positive_prompt, clip)
         neg_count, neg_method = _count_tokens(negative_prompt, clip)
@@ -2257,6 +2428,33 @@ class ULSTokenCounter:
                     lines.append(f"                  {chunk}")
             else:
                 lines.append("                ℹ usually already inside POSITIVE — informational, not added to over-limit")
+
+        # --- v907: on H3 the only meaningful "too long" ---------------------
+        # Printed only when the encoder really is H3. On every other model the
+        # numbers below have no meaning, and a figure without meaning is worse
+        # than no figure at all.
+        if _is_h3_encoder(clip):
+            lat_t = h3_latent_frames(latent)
+            reach = h3_reach(pos_count, lat_t)
+            lines.append("─────────────────────────────────")
+            lines.append("  MiniMax H3 — position axis")
+            lines.append("    Nothing is truncated here: this encoder has no cap.")
+            if reach["ratio"] is None:
+                lines.append("    Wire `latent` to see how far the prompt pushes")
+                lines.append("    the clip along the shared time axis.")
+            else:
+                lines.append(f"    prompt spans {reach['text']:.0f} · clip spans "
+                             f"{reach['video']:.1f} → prompt is "
+                             f"{reach['ratio']:.1f}x the clip")
+                lines.append(f"    the video sits at t={reach['start']:.0f}"
+                             f"..{reach['end']:.1f}, not at 0")
+                if reach["ratio"] >= 8.0:
+                    lines.append("    ⚠ the prompt's opening is far from the video;")
+                    lines.append("      early lines pull weaker than late ones.")
+                    lines.append("      Put what matters most LAST.")
+            if pos_count > H3_TRAIN_SPAN:
+                lines.append(f"    ⚠ over {H3_TRAIN_SPAN} tokens — not a cap, but the span")
+                lines.append("      LoRAs are trained within (ai-toolkit default).")
         lines.append("─────────────────────────────────")
 
         # Actionable hints
@@ -2316,6 +2514,12 @@ class ULSTokenCounter:
             "limit":        int(model_limit),
             "warn_at":      int(warn_at),
             "near_limit":   bool((pos_count >= warn_at) or (neg_count >= warn_at)),
+            # v908: the toast used to promise truncation and a kijai crash for
+            # EVERY over-budget run. On an encoder that cannot truncate, that
+            # is a lie loud enough to act on -- and Frank did act on it. The
+            # frontend now gets the two facts it needs to say something true.
+            "can_truncate": bool(_any_encoder_truncates(clip)),
+            "encoder":      str(_encoder_label(clip) or ""),
         }]}
         return {"ui": ui,
                 "result": (report, pos_count, neg_count, over_limit, trig_count)}
