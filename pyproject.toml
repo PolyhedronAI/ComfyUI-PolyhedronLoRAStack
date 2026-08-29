@@ -1,6 +1,6 @@
 [project]
 name = "polyhedron-lora-stack"
-version = "3.72.0"
+version = "3.73.0"
 description = "The Polyhedron Suite for ComfyUI. Group-aware LoRA management: stack 10-25 LoRAs with per-group merge modes (SEQ/CONCAT/DARE), per-row decoupled CLIP strength, Trim & Resolve cleanup switches against multi-LoRA interference, thumbnails, trigger words, Civitai fetch, a dedicated Accelerator engine and a passive Merge Analyzer. Plus media I/O: a pinned-folder Media Loader (images, video, audio, batch modes) and a unified Save node for stills, video and audio. Plus sampling: a classic-wiring Sampler with a live preview decoder and a CLIP Text Encode that shares the Token Counter's count."
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
