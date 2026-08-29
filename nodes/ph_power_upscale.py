@@ -1419,7 +1419,70 @@ def _sharp_frame(vae, x0):
 _PROBE_EVENT = "polyhedron.pu_tile"
 
 
-def _make_tile_probe(model, vae=None, sharp=False):
+def _offer(clock, pil):
+    """v885: hand ONE finished preview frame to the node's own progress slot.
+
+    Core's PreviewImageTuple is (format, PIL.Image, max_edge); the clock keeps
+    it for exactly one push (see ph_runclock.offer_preview), so the send rate
+    is the PROBE's throttle, never the clock's. Wrapped like every other line
+    in this file: a preview may never cost a render.
+    """
+    if clock is None:
+        return
+    try:
+        clock.offer_preview(("JPEG", pil, _PROBE_MAX_EDGE))
+    except Exception:
+        pass
+
+
+def _emit_input_preview(frames, clock=None):
+    """v885 -- THE THIRD DOOR into the same pane: what came IN.
+
+    The v565 door (pixel) cannot fire until a chunk is finished; the v550 door
+    (tile) cannot fire until the refine has started. Both are LATE by
+    construction, so until the first chunk lands the node shows nothing at all
+    -- and 'nothing' reads as 'broken', not as 'working'. Frank, 26.08.: "Da
+    ist ueberhaupt nichts mehr zu sehen, bis alles fertig ist, weder ein
+    Eingangsbild noch diese Box-Chunk-Mechanik."
+
+    This needs no model, no VAE and no latent_rgb_factors -- the input frames
+    are already RGB. One frame, once, before any pass. Same encapsulation as
+    its two siblings: a failure says itself once and costs nothing.
+    """
+    node_id = _current_node_id()
+    if node_id is None:
+        print("[PLS] Power Upscale: input view unavailable (no node id)")
+        return
+    try:
+        from PIL import Image
+        h, w = int(frames.shape[1]), int(frames.shape[2])
+        n = int(frames.shape[0])
+        arr = (frames[0, :, :, :3].to(torch.float32).clamp(0.0, 1.0).cpu()
+               .numpy() * 255.0).astype("uint8")
+        pil = Image.fromarray(arr)
+        pil.thumbnail((_PROBE_MAX_EDGE, _PROBE_MAX_EDGE),
+                      getattr(Image, "Resampling", Image).LANCZOS)
+        buf = io.BytesIO()
+        pil.save(buf, "JPEG", quality=_PROBE_JPEG_Q)
+        _offer(clock, pil)
+        from server import PromptServer
+        PromptServer.instance.send_sync(_PROBE_EVENT, {
+            "node": str(node_id), "stage": "input",
+            "elapsed": 0, "eta": None,
+            "tile": 1, "tiles": 1,
+            "step": 1, "steps": n,
+            "rect": [0, 0, w, h],     # the source IS the whole canvas
+            "canvas": [w, h],
+            "jpeg": base64.b64encode(buf.getvalue()).decode("ascii"),
+        })
+        print(f"[PLS] Power Upscale: input view sent ({w}x{h}, {n} frame"
+              f"{'' if n == 1 else 's'}) - the node is alive before the first "
+              f"pass finishes.")
+    except Exception as exc:
+        print(f"[PLS] Power Upscale: input view unavailable ({exc})")
+
+
+def _make_tile_probe(model, vae=None, sharp=False, clock=None):
     node_id = _current_node_id()   # imported from uls_sampler (house pattern)
     if node_id is None:
         # v552: this used to be a SILENT no-op - the one place a broken chain
@@ -1518,6 +1581,11 @@ def _make_tile_probe(model, vae=None, sharp=False):
                           getattr(Image, "Resampling", Image).LANCZOS)
             buf = io.BytesIO()
             pil.save(buf, "JPEG", quality=_PROBE_JPEG_Q)
+            # v885: the SAME frame also goes to the node's own progress slot,
+            # so the picture is visible without opening the pane (the courtesy
+            # Core's KSampler has always had). One-shot -- see
+            # _RunClock.offer_preview.
+            _offer(clock, pil)
             from server import PromptServer
             PromptServer.instance.send_sync(_PROBE_EVENT, {
                 "node": str(node_id), "stage": stage,
@@ -1540,7 +1608,7 @@ def _make_tile_probe(model, vae=None, sharp=False):
     return probe
 
 
-def _make_pixel_probe():
+def _make_pixel_probe(clock=None):
     """v565: the SECOND door into the same pane - the pixel stage.
 
     The v550 probe hangs off the sampler callback, so it cannot fire until the
@@ -1575,6 +1643,7 @@ def _make_pixel_probe():
                           getattr(Image, "Resampling", Image).LANCZOS)
             buf = io.BytesIO()
             pil.save(buf, "JPEG", quality=_PROBE_JPEG_Q)
+            _offer(clock, pil)   # v885: also into the node's progress slot
             from server import PromptServer
             PromptServer.instance.send_sync(_PROBE_EVENT, {
                 "node": str(node_id), "stage": "pixel",
@@ -1626,6 +1695,55 @@ def _build_video(frames, audio, frame_rate):
         rate = Fraction(rate)
     return VideoFromComponents(VideoComponents(images=frames, frame_rate=rate,
                                                audio=audio))
+
+
+def _reject_none_conditioning(positive, negative):
+    """v881: refuse a None CONDITIONING before any work is done.
+
+    THE WOUND, from Frank's field log (26.08.), the second ten-minute run in a
+    row lost to a late failure. After the pixel pass the refine died in CORE
+    with `TypeError: 'NoneType' object is not iterable` at
+    comfy/sampler_helpers.py:72, `for c in cond:` -- a CONDITIONING input was
+    None.
+
+    WHERE None COMES FROM: our OWN CLIP Text Encode, since v876. Its gate
+    skips an encode nobody reads and returns None on that output, by design and
+    loudly logged. That was half a promise: a node that MAY return None obliges
+    every node reading it to check. This is the other half.
+
+    ComfyUI validates that a required input is WIRED, never that the value on
+    the wire is usable -- so a None sails straight through into the sampler.
+    """
+    for tag, cond in (("positive", positive), ("negative", negative)):
+        if cond is None:
+            raise ValueError(
+                "\u2b21 Power Upscale: '%s' carries None instead of a "
+                "CONDITIONING. The most likely source is a Polyhedron CLIP "
+                "Text Encode whose encode was SKIPPED because nothing read "
+                "that output when it last ran -- its result is then cached as "
+                "None. Touch that node (change a character and change it "
+                "back) so it re-runs, or wire a conditioning that is actually "
+                "produced." % tag)
+        try:
+            iter(cond)
+        except TypeError:
+            raise ValueError(
+                "\u2b21 Power Upscale: '%s' is not a CONDITIONING list "
+                "(got %s). The sampler iterates it on the first line."
+                % (tag, type(cond).__name__))
+
+
+# v889: the three-witness joint probe MOVED to nodes/ph_joint_probe.py, because
+# ph_basics needs the same answer (Load VAE must not refuse a 24ch video VAE
+# against an H3 model that reports 32). Re-exported here so every caller in this
+# file, and test_v880 which pins them, keep working unchanged -- same shape as
+# the v576 ph_runclock re-export. THE PROBE ITSELF DID NOT CHANGE.
+try:
+    from .ph_joint_probe import (_joint_latent_parts,  # noqa: F401
+                                 _joint_streams)       # noqa: F401
+except ImportError:  # pragma: no cover - direct-run fallback, as elsewhere here
+    from ph_joint_probe import (_joint_latent_parts,   # noqa: F401
+                                _joint_streams)        # noqa: F401
 
 
 class ULSPowerUpscale:
@@ -1737,8 +1855,17 @@ class ULSPowerUpscale:
                                                           "touches the outputs."}),
                 # ── v550: process view. Off = the probe is never built; latent2rgb
                 #    streams the tile being refined into a collapsible pane. ──
+                # v885: the DEFAULT moved Off -> latent2rgb (Frank's go). A NEW
+                #    node now shows its work; latent2rgb is the free path (a
+                #    linear projection of a latent that already exists). The
+                #    HEAL is deliberately NOT moved: a save from before v550
+                #    ran with no process view at all, and _healPreV550 keeps
+                #    filling "Off" so such a workflow stays bit-for-bit what it
+                #    was. Consequence, said out loud rather than discovered:
+                #    an EXISTING workflow carries its own stored "Off" and is
+                #    unaffected - it needs one flip of the widget.
                 "process_preview": (["Off", "latent2rgb", "vae (sharp)"],
-                                    {"default": "Off",
+                                    {"default": "latent2rgb",
                                      "tooltip": "Watch the refine LIVE: the tile being "
                                                 "sampled right now, a minimap locating it "
                                                 "on the stage canvas, and stage/tile/step "
@@ -1836,10 +1963,18 @@ class ULSPowerUpscale:
                 #    serialised index stability (#577). Mirrors the Sampler's v839
                 #    widget INCLUDING its -1 sentinel, and resolves through the SAME
                 #    function (_resolve_low_shift, imported — not copied).
-                #    UNLIKE the Sampler this is honoured UNCONDITIONALLY: there is no
-                #    'Continuous' mode here in which one schedule serves both experts,
-                #    because the stages are independent runs (see the module docstring).
-                #    So this widget can never be inert, and needs no honesty line. ──
+                #    v894 CORRECTS THE v851 CLAIM. v851 said this dial "can never be
+                #    inert, and needs no honesty line", reasoning that the stages are
+                #    independent runs. That is true of High + Low and FALSE of Single:
+                #    plan_stages(False, ...) yields ONE stage tagged 'single', and
+                #    model_low is only ever read where the tag is 'low'. So in Single
+                #    the dial reaches nothing -- and until v894 it still built a second
+                #    shifted model clone on every run, memory and time for a model the
+                #    stage never touches. The dial is now a DUAL_ONLY twin like every
+                #    other *_low: hidden in Single by the frontend, skipped by the
+                #    backend, and said out loud once when a Single run carries a dialled
+                #    value. The lesson is the general one: a promise is re-grounded, not
+                #    talked around. ──
                 "sigma_shift_low": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 20.0,
                                               "step": 0.01, "round": 0.01,
                                               "tooltip": "Flow-matching sigma shift for stage L (the LOW-noise "
@@ -1848,9 +1983,12 @@ class ULSPowerUpscale:
                                                          "0 = OFF for stage L only -- its model_sampling is left "
                                                          "alone even when sigma_shift is set. Any positive value "
                                                          "gives stage L its OWN shift (e.g. sigma_shift 8.0 with "
-                                                         "sigma_shift_low 5.0). Always honoured: the stages are "
-                                                         "independent runs, so unlike the Sampler there is no mode "
-                                                         "in which this goes inert. Works with or without a wired "
+                                                         "sigma_shift_low 5.0). HIGH + LOW ONLY: Single runs one "
+                                                         "stage and never reads a low expert, so this dial does "
+                                                         "nothing there -- the row is hidden in Single, and a "
+                                                         "dialled value on a Single run is reported once in the "
+                                                         "console instead of quietly building a clone. Works with "
+                                                         "or without a wired "
                                                          "'model_low' -- without one, stage L falls back to the "
                                                          "'model' input and gets its own shifted copy of it."}),
             },
@@ -1890,13 +2028,36 @@ class ULSPowerUpscale:
                 steps_low, cfg_low, seed, sampler_name, scheduler, tile_size,
                 tile_overlap, sigma_shift, image=None, video=None,
                 model_low=None, upscale_model_low=None, sampler_low=SAME_AS_HIGH, scheduler_low=SAME_AS_HIGH,
-                result_preview=True, process_preview="Off", mute_staging_logs=True,
+                result_preview=True, process_preview="latent2rgb", mute_staging_logs=True,
                 resize_method="lanczos (cpu)", per_batch=8, vae_tiling="Off",
                 pixel_stage="model + fit", final_upscale_by=1.0,
                 sigma_shift_low=-1.0):
         t_all = time.monotonic()   # v553/v567: wall clock of THIS function,
         # started before input resolve so 'total=' and the ComfyUI badge
         # disagree only by executor overhead OUTSIDE the node body.
+        # v880: the cheapest check in the node, and it runs FIRST.
+        _joint = _joint_streams(model, model_low)
+        if _joint is None:
+            _reject_none_conditioning(positive, negative)
+        else:
+            print("\u2b21 Power Upscale: the model on '%s' denoises %d "
+                  "latent streams jointly (video + audio) -- MiniMax H3 and "
+                  "its kin. It cannot refine image tiles, so the REFINE "
+                  "stages are OFF for this run (denoise/steps/cfg have no "
+                  "effect) and the PIXEL path runs alone: final ESRGAN + "
+                  "fit deliver the upscaled file. For a true refine, wire "
+                  "an ordinary image/video model (e.g. Wan) with its "
+                  "matching VAE and conditioning." % _joint)
+        # v884: ONE source of truth for "does the final pass run". v883
+        # emptied the stages on a joint model but the ONLY carrier of
+        # final_upscale_by outside the stages is the 'model final' block --
+        # Frank's field run (pixel_stage='model + fit') therefore delivered
+        # the INPUT SIZE, and the amber chunk tiles stayed dark because no
+        # pass fired a clock event. The downgrade now routes delivery through
+        # the existing final pass, whatever the pixel_stage dial says; the
+        # v571 law ("one condition, two places, same spelling") collapses to
+        # one NAME read in both places.
+        _final_runs = (str(pixel_stage) == "model final") or (_joint is not None)
         frames, audio, frame_rate = _resolve_input(image, video)
         # ── v851: per-stage sigma shift. The LOW value resolves through the
         #    Sampler's own _resolve_low_shift (-1 sentinel = "same as high", 0 =
@@ -1912,29 +2073,45 @@ class ULSPowerUpscale:
         #    When the sentinel is untouched AND there is no wired low expert we
         #    deliberately build nothing: the loop then uses the high-shifted
         #    'model' exactly as it did before v851, bit for bit.
+        #    (3) v894: THE WHOLE LOW HALF IS DUAL-ONLY. Single plans one stage
+        #        tagged 'single' and reads model_low nowhere, so every clone built
+        #        for stage L there is paid for and never touched. The gate is on
+        #        _dual, not on the dial, and the HIGH shift stays unconditional -
+        #        it is the one that reaches the single stage.
+        _dual = bool(dual_moe)
         _hi_shift = float(sigma_shift or 0.0)
+        _low_raw = float(sigma_shift_low if sigma_shift_low is not None else -1.0)
+        _low_dialled = _low_raw >= 0.0          # -1 is the "same as high" sentinel
         _low_shift = _resolve_low_shift(_hi_shift, sigma_shift_low)
         _low_src = model_low if model_low is not None else model   # BEFORE the rebind
         _low_wired = model_low is not None
         _low_same = (_low_shift == _hi_shift)
         if _hi_shift > 0:
             model = _apply_sigma_shift(model, _hi_shift)
-        if _low_wired or not _low_same:
+        if _dual and (_low_wired or not _low_same):
             if _low_shift > 0:
                 model_low = _apply_sigma_shift(_low_src, _low_shift)
             elif not _low_wired and _hi_shift > 0:
                 # stage L is OFF while stage H is shifted and no low expert is
                 # wired -> hand the loop the RAW model instead of the shifted one.
                 model_low = _low_src
-        if _hi_shift > 0 or (_low_shift and _low_shift > 0):
-            print(f"[PLS] Power Upscale: sigma shift H={_hi_shift:g} "
-                  f"L={_low_shift:g}"
-                  f"{' (same as high)' if _low_same else ''}"
-                  f"{'' if _low_wired else ' [stage L runs on the model input]'}")
+        if not _dual and _low_dialled:
+            # v894 honesty line: the dial is set, the run is Single, nothing was
+            # built for it. Say so once - the v552/v885 rule against silent
+            # degradation cuts both ways.
+            print(f"[PLS] Power Upscale: sigma_shift_low={_low_raw:g} is ignored - "
+                  f"dual_moe is OFF, so there is no stage L to shift. Set "
+                  f"dual_moe to use it (the row is hidden in Single).")
+        if _hi_shift > 0 or (_dual and _low_shift and _low_shift > 0):
+            print(f"[PLS] Power Upscale: sigma shift H={_hi_shift:g}"
+                  f"{'' if not _dual else (' L=%g' % _low_shift)}"
+                  f"{' (same as high)' if (_dual and _low_same) else ''}"
+                  f"{'' if (not _dual or _low_wired) else ' [stage L runs on the model input]'}")
 
         stages = uls_tile_math.plan_stages(bool(dual_moe), upscale_by, denoise,
                                            steps, cfg, upscale_by_low,
                                            denoise_low, steps_low, cfg_low)
+        stages = uls_tile_math.drop_refine_stages(stages, _joint is not None)
         # v566: 'model only' - the canvas IS the model factor (Frank's law: the
         # model and the filter are alternatives for GROWING; the fit stays only
         # as the /8 snap corrective). The factor swap happens HERE, before the
@@ -2048,7 +2225,7 @@ class ULSPowerUpscale:
         # so the ETA covers it from second one. Weight = the MODEL's output area
         # (the forward dominates its cost); the 'pix' kind rate-borrows from the
         # stage passes until its own first chunk measures (rung 2, declared ~).
-        if str(pixel_stage) == "model final":
+        if _final_runs:
             _um_fin = upscale_model_low if bool(dual_moe) else upscale_model
             # v571: the gate mirrors the final-pass block EXACTLY (wired or
             # not) - v570 gated the post on scale > 0, so a scale-less model
@@ -2066,11 +2243,23 @@ class ULSPowerUpscale:
         # frame per event instead of reading the /8 latent2rgb map. The mode
         # pays for itself against the stage clock or it disarms itself.
         probe = (_make_tile_probe(model, vae=vae,
-                                  sharp=(str(process_preview) == "vae (sharp)"))
+                                  sharp=(str(process_preview) == "vae (sharp)"),
+                                  clock=clock)
                  if str(process_preview) != "Off" else None)
         # v565: the pixel door needs no model at all - the frames are RGB already.
-        pixel_probe = (_make_pixel_probe()
+        pixel_probe = (_make_pixel_probe(clock=clock)
                        if str(process_preview) != "Off" else None)
+        # v885: Off still means OFF - the v550 promise ("zero overhead, the
+        # probe is never built") is not quietly broken for a nicer picture.
+        # But it says so ONCE, because a silent Off is indistinguishable from a
+        # broken preview, and that cost Frank a whole run of guessing.
+        if str(process_preview) == "Off":
+            print("[PLS] Power Upscale: process view is Off - no live picture "
+                  "this run (not a fault). Set process_preview to 'latent2rgb' "
+                  "for the free /8 map, or 'vae (sharp)' for a real decode.")
+        else:
+            # v885: the third door - the INPUT, before any pass has finished.
+            _emit_input_preview(frames, clock=clock)
 
         cur = frames
         for st, sw, sh, grid in plans:
@@ -2200,7 +2389,7 @@ class ULSPowerUpscale:
         # chunked + interruptible (v565/v566). The wires are the truth (v568):
         # in High + Low the pass belongs to the LAST stage and takes its wire
         # (upscale_model_low); in Single it takes upscale_model.
-        if str(pixel_stage) == "model final":
+        if _final_runs:
             um_fin = upscale_model_low if bool(dual_moe) else upscale_model
             wire = "upscale_model_low" if bool(dual_moe) else "upscale_model"
             if um_fin is None:

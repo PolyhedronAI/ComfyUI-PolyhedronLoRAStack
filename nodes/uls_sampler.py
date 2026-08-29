@@ -150,6 +150,78 @@ def _norm_tae(name):
     return re.sub(r"[^a-z0-9]", "", str(name).lower())
 
 
+
+# ---------------------------------------------------------------------------
+# v870 -- JOINT / NESTED LATENTS (MiniMax H3 and anything shaped like it).
+#
+# MEASURED against Core's comfy/nested_tensor.py: NestedTensor is a plain Python
+# class holding .tensors (video, audio). It ANSWERS .size(), .shape, .dtype,
+# .layout and .device -- all delegated to tensors[0] -- and .ndim as the MAX over
+# its parts. It does NOT define numel() and does NOT define detach(). Those two
+# gaps are the whole story: the clock died on numel(), the preview dies on
+# detach(). Everything here closes exactly those two, and nothing else.
+# ---------------------------------------------------------------------------
+
+def _latent_parts(latent_image):
+    """Component tensors of a latent. A joint AV latent unbinds into its parts;
+    a plain tensor is its own only part, so callers need no special case."""
+    if getattr(latent_image, "is_nested", False):
+        parts = getattr(latent_image, "tensors", None)
+        if parts is None:
+            try:
+                parts = latent_image.unbind()
+            except Exception:
+                parts = None
+        if parts:
+            return list(parts)
+    return [latent_image]
+
+
+def _is_ragged_latent(latent_image):
+    """True for a joint/nested latent. Real torch tensors answer is_nested=False,
+    so this is ONE check that covers both worlds and never raises."""
+    return bool(getattr(latent_image, "is_nested", False))
+
+
+def _latent_weight(latent_image):
+    """Work weight for the run clock, in latent elements.
+
+    numel() is the fast path. A nested latent has none, so we SUM its parts --
+    the clock stays EXACT instead of guessing, because the parts are ordinary
+    tensors. Anything that answers neither falls back to a neutral 1.0.
+
+    The v869 lesson 'a guard must JUDGE, not crash', applied to telemetry: the
+    clock may lose precision, it may NEVER end a run. Before v870 an estimate
+    for a progress bar could abort a whole sampling run (MiniMax H3 ref2v)."""
+    try:
+        return float(max(1, latent_image.numel()))
+    except Exception:
+        pass
+    total = 0
+    for part in _latent_parts(latent_image):
+        try:
+            total += int(part.numel())
+        except Exception:
+            return 1.0
+    return float(max(1, total))
+
+
+def _preview_tensor(x0):
+    """The tensor a preview is drawn from.
+
+    A joint AV latent previews its VIDEO half: that is the half with a picture,
+    and it is what a viewer expects to watch emerge. Returns None when nothing
+    drawable is left, which the previewer reads as 'no frames this step'."""
+    parts = _latent_parts(x0)
+    x = parts[0] if parts else None
+    if x is None:
+        return None
+    try:
+        return x.detach()
+    except AttributeError:
+        return x
+
+
 class _AnimatedVideoPreviewer:
     """Latent2RGB previewer that keeps ALL frames (core keeps one).
 
@@ -206,6 +278,7 @@ class _AnimatedVideoPreviewer:
         self._core_tried = False
         self._cl2 = None          # Core Latent2RGBPreviewer (Standard latent2rgb), lazy
         self._cl2_tried = False
+        self._said_joint = False  # v885: the joint-latent notice fires once
 
         if not self.ok:
             return
@@ -242,6 +315,9 @@ class _AnimatedVideoPreviewer:
         self._core_tried = False
         self._cl2 = None
         self._cl2_tried = False
+        # v885: a LIVE switch is a fresh explicit ask - if the user picks a TAE
+        # mode again on a joint latent, they have earned the sentence again.
+        self._said_joint = False
 
     def _get_core(self):
         """Lazily build ComfyUI Core's OWN previewer (Standard mode) via
@@ -349,6 +425,29 @@ class _AnimatedVideoPreviewer:
         to the latent2rgb (smooth) path for the rest of the run (never a crash)."""
         if not self.ok:
             return []
+        # v870: ONE normalisation for all four preview paths below. A joint AV
+        # latent has no detach(); take the video half here so _frames_core_single,
+        # _frames_tae and _frames_latent2rgb all receive an ordinary tensor.
+        ragged = _is_ragged_latent(x0)
+        x0 = _preview_tensor(x0)
+        if x0 is None:
+            return []
+        # v885: a joint AV latent's VIDEO half carries the model's own channel
+        # count (MiniMax H3: 24, MEASURED at Core's
+        # MiniMaxH3Video.latent_rgb_factors - the AV format's
+        # latent_channels=32 is only the MAX over the two streams and
+        # misleads). The TAE decoders this node offers are WAN/image decoders
+        # and cannot read it. Before this cut they tried, raised, and fell back
+        # with a line that blamed the decoder. Now the REASON is named once,
+        # before the attempt.
+        if ragged and self.use_tae and not self._said_joint:
+            self._said_joint = True
+            self.use_tae = False
+            self.filter = Image.LANCZOS
+            print("[PLS v885 PREVIEW] this is a JOINT (video+audio) latent - "
+                  "the TAE decoders are WAN/image decoders and cannot read its "
+                  "video half. Falling back to latent2rgb (smooth), which can. "
+                  "For MiniMax H3 pick a 'Video \u00b7 latent2rgb' mode.")
         if self.use_core:
             core = self._get_core()
             if core is not None:
@@ -714,7 +813,7 @@ def _make_preview_callback(model, total_steps, node_id, step_offset=0,
                                                 device=model.load_device)
         except Exception:
             previewer = None
-    state = {"last": 0.0, "spoke": False}
+    state = {"last": 0.0, "spoke": False, "pvw": False}   # v885: pvw = preview warned
 
     def callback(step, x0, x, _phase_total):
         # continuous progress across phases; pass None so core's single-frame
@@ -780,8 +879,18 @@ def _make_preview_callback(model, total_steps, node_id, step_offset=0,
             frames = previewer.frames_b64(x0)
             if frames:
                 _send_preview(node_id, frames, fps)
-        except Exception:
-            pass  # preview must never break sampling
+        except Exception as exc:
+            # v885: it still must never break sampling - but it must not be
+            # SILENT either. Before this cut a failing preview produced an
+            # empty node and not one character anywhere, which is
+            # indistinguishable from "previews are off" and from "the node is
+            # hung". Say it ONCE per run (the v552 doctrine of the Power
+            # Upscale probes, brought to the sampler), then stay quiet.
+            if not state["pvw"]:
+                state["pvw"] = True
+                print(f"[PLS SAMPLER] live preview failed "
+                      f"({type(exc).__name__}: {exc}) - sampling continues, "
+                      f"the preview stays dark for this run.")
 
     return callback
 
@@ -901,6 +1010,27 @@ def _initial_noise(latent, latent_image, seed, add_noise):
     original: comfy.sample.prepare_noise. A gaussian source at strength 1.0
     delegates to that same call, so wiring the default changes no byte."""
     if not add_noise:
+        _parts = _latent_parts(latent_image)
+        if len(_parts) > 1:
+            # v870: size()/dtype/layout answer from tensors[0] ONLY, so the old
+            # one-shot call built a VIDEO-shaped zero and silently dropped the
+            # audio half. Build one zero per part and re-wrap.
+            _zeros = [torch.zeros(t.size(), dtype=t.dtype, layout=t.layout,
+                                  device="cpu") for t in _parts]
+            try:
+                # v896: `from ... import NestedTensor`, NOT
+                # `import comfy.nested_tensor`. The latter binds the name
+                # `comfy` LOCALLY for the WHOLE function (Python decides that at
+                # compile time), and the add_noise path below reads
+                # comfy.sample.prepare_noise on a route that never runs this
+                # branch -- UnboundLocalError, measured 28.08. This form binds
+                # only NestedTensor and leaves `comfy` the module global it has
+                # always been. The lazy import is kept: older Cores have no
+                # comfy.nested_tensor, and the except below is their path.
+                from comfy.nested_tensor import NestedTensor
+                return NestedTensor(_zeros)
+            except Exception:
+                return type(latent_image)(_zeros)
         return torch.zeros(latent_image.size(), dtype=latent_image.dtype,
                            layout=latent_image.layout, device="cpu")
     batch_inds = latent["batch_index"] if "batch_index" in latent else None
@@ -941,7 +1071,7 @@ def _polyhedron_sample(model, seed, steps, cfg, sampler_name, scheduler,
         pbar = comfy.utils.ProgressBar(steps)
         own_clock = _RunClock(pbar)
         own_clock.post("step:main", _units,
-                       float(max(1, latent_image.numel())) * _cfg_forwards(cfg))
+                       _latent_weight(latent_image) * _cfg_forwards(cfg))
         callback = _make_preview_callback(model, steps, node_id, pbar=pbar,
                                           preview_mode=preview_mode,
                                           clock=own_clock, clock_key="step:main")
@@ -1036,7 +1166,7 @@ def _moe_sample(model_high, model_low, seed, steps, cfg_high, cfg_low,
     pbar = comfy.utils.ProgressBar(total)
     clock = _RunClock(pbar)
     for _k, _u, _w in _chain_posts(high_steps, total - high_steps,
-                                   latent["samples"].numel(), cfg_high, cfg_low):
+                                   _latent_weight(latent["samples"]), cfg_high, cfg_low):
         clock.post(_k, _u, _w)
     previewer = None
     if _previews_enabled() and node_id is not None:
@@ -1130,7 +1260,7 @@ def _moe_sample_rebase(model_high, model_low, seed, steps, cfg_high, cfg_low,
     pbar = comfy.utils.ProgressBar(total)
     clock = _RunClock(pbar)
     for _k, _u, _w in _chain_posts(switch, total - switch,
-                                   latent["samples"].numel(), cfg_high, cfg_low):
+                                   _latent_weight(latent["samples"]), cfg_high, cfg_low):
         clock.post(_k, _u, _w)
     previewer = None
     if _previews_enabled() and node_id is not None:
@@ -1191,7 +1321,7 @@ def _polyhedron_sample_sigmas(model, seed, cfg, sampler_name, sigmas, positive, 
         pbar = comfy.utils.ProgressBar(steps)
         own_clock = _RunClock(pbar)
         own_clock.post("step:main", steps,
-                       float(max(1, latent_image.numel())) * _cfg_forwards(cfg))
+                       _latent_weight(latent_image) * _cfg_forwards(cfg))
         callback = _make_preview_callback(model, steps, node_id, pbar=pbar,
                                           preview_mode=preview_mode,
                                           clock=own_clock, clock_key="step:main")
@@ -1277,7 +1407,7 @@ def _moe_sample_sigmas(model_high, model_low, seed, cfg_high, cfg_low, sampler_n
     pbar = comfy.utils.ProgressBar(total)
     clock = _RunClock(pbar)
     for _k, _u, _w in _chain_posts(high_steps, low_steps,
-                                   latent["samples"].numel(), cfg_high, cfg_low):
+                                   _latent_weight(latent["samples"]), cfg_high, cfg_low):
         clock.post(_k, _u, _w)
     previewer = None
     if _previews_enabled() and node_id is not None:
@@ -1669,6 +1799,20 @@ class ULSSampler:
             # greys the widget in this state.
             _ext_sigmas = ((sigmas_high is not None and sigmas_low is not None)
                            or (sigmas is not None)) if dual_moe else (sigmas is not None)
+            # v870: a joint AV latent carries TWO flow schedules (video and
+            # audio). _apply_sigma_shift mirrors Core's ModelSamplingSD3, which
+            # knows only ONE -- patching here would install the wrong
+            # model_sampling class and drop the audio schedule SILENTLY. Refuse
+            # by name instead: Core ships ModelSamplingMiniMaxH3 for this.
+            if _is_ragged_latent((latent_image or {}).get("samples")):
+                raise ValueError(
+                    "[PLS] Sampler: sigma_shift is not valid for a joint "
+                    "audio/video latent -- it would patch the video schedule "
+                    "only and leave the audio schedule mis-scaled without "
+                    "warning. Set sigma_shift (and sigma_shift_low) to 0 and "
+                    "shape the schedule upstream with ModelSamplingMiniMaxH3, "
+                    "which sets shift_video and shift_audio together."
+                )
             if not _ext_sigmas:
                 if sigma_shift and sigma_shift > 0:
                     model = _apply_sigma_shift(model, sigma_shift)

@@ -54,6 +54,25 @@ class _RunClock:
         self.pbar = pbar
         self.posts = {}
         self._cursor = self.t0
+        self._preview = None   # v885: ONE-SHOT preview for the node's own slot
+
+    def offer_preview(self, image):
+        """v885 -- hand the node's progress bar a picture.
+
+        MEASURED at Core (comfy/utils.py ProgressBar.update_absolute): a
+        non-None preview BYPASSES Core's own throttle
+        (PROGRESS_THROTTLE_MIN_INTERVAL / _MIN_PERCENT) and is sent at once.
+        Attaching one to every push would therefore flood the socket, which is
+        exactly the failure the throttle exists to prevent.
+
+        So this is a ONE-SHOT slot: whoever produces a frame OFFERS it, the
+        next push CONSUMES it and clears it. The rate is then the producer's
+        own (the probes are throttled by _PROBE_MIN_INTERVAL), never the
+        clock's tick rate. `image` is Core's PreviewImageTuple --
+        (format, PIL.Image, max_edge) -- the same shape latent_preview hands
+        the stock KSampler; anything else is the caller's error, not ours.
+        """
+        self._preview = image
 
     def tick(self):
         """v577: seconds since the last tick - ONE cursor per RUN.
@@ -170,4 +189,8 @@ class _RunClock:
         eta = self.eta()
         total = el + (eta if eta is not None else max(el, 1.0) * 99.0)
         v = int(el * 10)
-        self.pbar.update_absolute(v, max(int(total * 10), v + 1), None)
+        # v885: consume the one-shot preview (see offer_preview). None when no
+        # producer offered one since the last push -- which is the normal case
+        # and keeps Core's throttle in charge of plain progress updates.
+        img, self._preview = self._preview, None
+        self.pbar.update_absolute(v, max(int(total * 10), v + 1), img)

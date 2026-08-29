@@ -2108,6 +2108,71 @@ class MediaLoaderUI {
         this._renderPreview();
     }
 
+    // v906 -- A LISTING IS ALSO NEWS ABOUT WHAT IS GONE.
+    //
+    // Frank moved two images out of the input folder. The tiles updated (the
+    // grid is built from _files), but the Selection kept showing one of them:
+    // its <img> was already in the DOM and already decoded, so nothing on
+    // screen had any reason to change. The comment on the focus probe said
+    // "page + name-based selection survive on their own" -- true, and exactly
+    // the bug: the selection survived the file.
+    //
+    // The backend was already honest about it (ph_media_loader.py raises
+    // "the selected file vanished from disk"), so a run never loaded a ghost.
+    // Only the picture lied, which is worse in its own way: it invites you to
+    // queue a run you have every reason to believe in.
+    //
+    // ONE PLACE, TWO READERS (the v571 rule, resolved the other way round):
+    // refreshGrid and _focusReread both replace _files, so both call this.
+    //
+    // WHAT IT MUST NOT DO: judge a selection from ANOTHER folder. A listing of
+    // folder A says nothing whatever about a file pinned in folder B, and the
+    // audio slot is routinely cross-folder (there is a jump-to-folder button
+    // for exactly that). Absence is only evidence where we actually looked.
+    _pruneVanished() {
+        if (!Array.isArray(this._files)) return [];
+        const here = this._filesFolder || "";
+        const have = new Set(this._files.map((f) => f && f.name));
+        const gone = [];
+
+        const s = this.state;
+        if (s && s.file && this._samePath(s.folder || "", here) && !have.has(s.file)) {
+            gone.push(s.file);
+            // Keep the folder: the user is still standing there, only the file
+            // is gone. Everything derived from the file goes with it.
+            this.state = { folder: s.folder, file: "", kind: "", mtime: 0 };
+            this.paused = false;
+            this._pendingSplit = null;
+        }
+
+        const a = this.audioSel;
+        if (a && a.file && this._samePath(a.folder || "", here) && !have.has(a.file)) {
+            gone.push(a.file);
+            this.audioSel = null;
+            this.audioOn = false;
+            this._syncAudioToggle();
+            this._stopAudioHover();
+        }
+        return gone;
+    }
+
+    // Say it, once, where the file used to be. A selection that empties itself
+    // in silence is the same class of lie as one that stays: the user is left
+    // to work out what happened from an absence.
+    _announceVanished(gone) {
+        if (!gone || !gone.length) return;
+        const what = gone.length === 1 ? gone[0] : gone.length + " selected files";
+        console.warn("[PLS] MediaLoader: " + what + " no longer on disk -- selection cleared.");
+        if (this.previewCapEl) {
+            this.previewCapEl.textContent = "\u26A0 " + what + " \u2014 gone from disk";
+            this.previewCapEl.title = gone.join(", ") + " no longer exists in " + (this._filesFolder || "");
+            this.previewCapEl.style.color = "#ff8c00";
+            // The caption is rebuilt by the next _renderPreview; clear the tint
+            // so the warning colour cannot outlive the warning.
+            setTimeout(() => { if (this.previewCapEl) this.previewCapEl.style.color = ""; }, 6000);
+        }
+    }
+
     _fileURL(f) { return this._fileURLFor(this.folder, f); }
     _fileURLFor(folder, f) {
         return api.apiURL("/uls/media/file?folder=" + encodeURIComponent(folder || "") +
@@ -3484,7 +3549,10 @@ class MediaLoaderUI {
             // v655: keepPage holds the current page across a re-read (renderGrid
             // clamps if the folder shrank); every other path starts at page 1.
             this._page = keepPage ? this._page : 0;
+            // v906: the fresh listing is also the verdict on the selection.
+            const gone = this._pruneVanished();
             this.renderGrid();
+            if (gone.length) { this._renderPreview(); this._announceVanished(gone); }
         } finally {
             this._busyOff();
         }
@@ -3511,7 +3579,13 @@ class MediaLoaderUI {
         if (_filesSig(d.files) === _filesSig(this._files)) return;   // nothing new
         this._files = d.files || [];
         this._filesFolder = target;
-        this.renderGrid();   // page + name-based selection survive on their own
+        // v906: "the selection survives on its own" was true even when the FILE
+        // did not. This is the path Frank hit -- he moved the images with the
+        // tab in the background, and the probe that noticed brought the grid up
+        // to date while leaving the preview showing a file that was gone.
+        const gone = this._pruneVanished();
+        this.renderGrid();
+        if (gone.length) { this._renderPreview(); this._announceVanished(gone); }
     }
 
     // v683 — DEFERRED DIMENSIONS. The listing itself no longer opens a single

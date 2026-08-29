@@ -9,6 +9,8 @@
 | [CLIP Text Encode](#-polyhedron-clip-text-encode) | ⬡ Polyhedron CLIP Text Encode |
 | [Sampler](#-polyhedron-sampler) | ⬡ Polyhedron Sampler |
 | [Upscale & Interpolate](#-polyhedron-power-upscale) | ⬡ Polyhedron Power Upscale · ⬡ Polyhedron Fast Upscale · ⬡ Polyhedron Interpolate |
+| [Workflow essentials](#-workflow-essentials) | ⬡ Load Model · ⬡ Load CLIP · ⬡ Load VAE · ⬡ Load Upscale Model · ⬡ VAE Codec · ⬡ Seed · ⬡ Int · ⬡ Empty Latent · ⬡ Switch · ⬡ Switch Inverse · ⬡ Media Info · ⬡ MiniMax Reference · ⬡ Note |
+| [Attention & grading](#-polyhedron-attention) | ⬡ Polyhedron Attention · ⬡ Polyhedron NAG · ⬡ Polyhedron Filter · ⬡ Polyhedron Audio Stretch |
 
 Installed as one custom-node pack — the node names, the package id
 (`polyhedron-lora-stack`) and every saved workflow are unchanged.
@@ -1209,22 +1211,141 @@ modified: every correction this pack makes lives outside the engine, in
 `nodes/ph_interpolate.py`, where it can be guarded. Model weights are fetched
 into the usual ComfyUI model folders on first use.
 
+
+---
+
+# ⬡ Workflow essentials
+
+Thirteen small nodes that the rest of the suite is wired *from*. None of them
+opens a server route, none needs a model download of its own, and each one is
+registered behind its own guard flag, so a changed ComfyUI Core API can take
+one of them out without touching the others.
+
+## Loading
+
+| Node | What it does |
+| --- | --- |
+| **⬡ Polyhedron Load Model** | Diffusion model loader with progressive slots — a second slot appears only once the first is filled, so the node stays as small as the job. |
+| **⬡ Polyhedron Load CLIP** | The same idea for text encoders, including multi-encoder setups; the header names what it recognised. |
+| **⬡ Polyhedron Load VAE** | VAE loader, sized — the list shows how big each file is before you pick it. |
+| **⬡ Polyhedron Load Upscale Model** | ESRGAN-family loader, with the same model card the Power Upscale node shows. |
+| **⬡ Polyhedron VAE Codec** | Encode and decode in one node, so a round trip does not need two. |
+
+## Values and flow
+
+| Node | What it does |
+| --- | --- |
+| **⬡ Polyhedron Seed** | Seed source with a live noise preview, roll-and-keep and a reuse-last button. |
+| **⬡ Polyhedron Int** | An integer with presets — click, arrows, drag or keyboard. |
+| **⬡ Polyhedron Empty Latent** | Empty latent for whichever model family you are on, rather than one node per family. |
+| **⬡ Polyhedron Switch** and **Switch Inverse** | One input picked from several, or one input steered to one of several outputs. Unused branches are blocked rather than run. |
+| **⬡ Polyhedron Media Info** | Reads the numbers out of whatever media is passing through. |
+| **⬡ Polyhedron MiniMax Reference** | Builds the reference latent a MiniMax ref2v graph expects. |
+
+## Notes
+
+**⬡ Polyhedron Note** is a coloured card that belongs to the graph: a heading,
+a body, and a colour row on the node itself. The row sets exactly the same
+colours as ComfyUI's own right-click › Colors menu — ten choices including
+"none" — so the two can never disagree, and each swatch is painted with the
+colour the node will actually take. Fold the row away with the chevron when
+you do not want it. The note has no inputs and no outputs: it is never
+executed and costs nothing when you queue a prompt.
+
+# ⬡ Polyhedron Attention
+
+![Polyhedron Attention](assets/v6_attention.png)
+
+Swaps the attention backend the model runs on, and — the part that is easy to
+miss — it can swap it **per step range**. The dropdown only ever offers what is
+really installed and really loadable on this machine: a mode whose kernel
+imports but cannot run at scale is not offered, because an option you can pick
+and then watch fail is worse than one that was never there.
+
+| Widget | What it does |
+| --- | --- |
+| `attention` | The backend for the whole run — PyTorch SDPA in four flavours, the SageAttention family, `comfy kitchen int8`, and whatever else the machine can actually load. |
+| `fallback` | Where to land when a kernel refuses a particular call. `same as main` keeps it simple. |
+| `attention_first` / `first_steps` | A different backend for the opening steps, where composition is decided. |
+| `attention_last` / `last_steps` | And for the closing steps, where detail lands. |
+| `live_check` | Probes the chosen kernel before the run instead of failing inside it. |
+
+![The backend list](assets/v6_attention_modes.png)
+
+The split matters because the fast quantised kernels are not lossless on every
+model. Running the exact backend for the first and last few steps and the fast
+one in between is usually indistinguishable from full precision and still buys
+most of the time. A cross-attention call, a masked call or an unfamiliar
+sequence length is handed straight back to the model's own backend rather than
+being forced through — no warning, because it is not an error.
+
+# ⬡ Polyhedron NAG
+
+![Polyhedron NAG](assets/v6_nag.png)
+
+Normalized Attention Guidance on a conditioning. Where CFG pushes the whole
+prediction away from the negative, NAG works inside attention and stays useful
+where CFG has been turned down or off — which is exactly where distilled and
+few-step models live.
+
+| Widget | What it does |
+| --- | --- |
+| `nag_scale` | How hard to push. 0 disables it; the useful range starts well above 1. |
+| `nag_alpha` | How much of the guided result to blend back in. |
+| `nag_tau` | The clamp that keeps the push from running away on individual tokens. |
+| `start_percent` / `end_percent` | The slice of the run it applies to. |
+
+It takes a model and a conditioning and returns a patched model, so it sits in
+the graph like any other model patch — before the sampler, after the LoRAs.
+
+# ⬡ Polyhedron Filter
+
+![Polyhedron Filter](assets/v6_filter.png)
+
+Colour grading with a preview that is actually the grade. The browser applies
+the **same** LUT file the backend will, read through this pack's own route, so
+what you set is what you render — not an approximation that drifts once the
+graph runs.
+
+Exposure, temperature, tint, contrast, gamma, saturation, vibrance, highlights,
+shadows, black point and a sharpen pass, plus `.cube` LUT support with its own
+strength. Looks are saved and loaded as presets from the pack's `presets/`
+folder; both directions run through one whitelist, so a hand-edited or
+downloaded preset can never push unknown keys into the node.
+
+This is the one node in this release that opens server routes — three of them,
+in their own module `nodes/ph_filter_routes.py`. Both folders it serves are
+fixed and derived from the pack's own location, and the caller supplies nothing
+but a bare filename.
+
+# ⬡ Polyhedron Audio Stretch
+
+Retimes a soundtrack to a target it measures itself, so a slowed or sped-up
+video keeps its audio in step. It shares its machinery with the Interpolate
+node's `audio_mode` — one implementation, two ways to reach it, so the two can
+never drift apart. Speech survives the stretch better than a naive resample
+because the tempo change is done without moving the pitch.
+
 ---
 
 ## Documentation
 
 The full illustrated user manual ships in this repository:
-[`docs/Polyhedron_Suite_Documentation_v369.pdf`](docs/Polyhedron_Suite_Documentation_v369.pdf)
-— 83 pages in five parts and an appendix:
+[`docs/Polyhedron_Suite_Documentation_v372.pdf`](docs/Polyhedron_Suite_Documentation_v372.pdf)
+— 89 pages in six parts and an appendix:
 
 - **Part I — Media Loader & Save** (21 pages): the two media I/O nodes, every
   panel, pin and switch, fully illustrated.
 - **Part II — LoRA Stack** (35 pages): every Stack node, panel and switch.
   The per-row CLIP strength feature is section 3.13.
-- **Part III — CLIP Text Encode** (9 pages): segments, comments, the negative,
+- **Part III — CLIP Text Encode** (10 pages): segments, comments, the negative,
   external text and the token footer.
 - **Part IV — Sampler** (7 pages): Single, High + Low with the Handoff, the
   per-expert shifts and the live preview decoders.
+- **Part V — Upscale & Interpolate** (7 pages): Fast and Power Upscale, the
+  process view, Interpolate, and which of them to reach for.
+- **Part VI — Attention & grading** (6 pages): the attention backends and the
+  step split, NAG, the Filter, and Audio Stretch.
 - **Appendix** (1 page): running with `--listen` and the browse lock.
 
 The Nodes 2.0 compatibility layer is described in the Compatibility section

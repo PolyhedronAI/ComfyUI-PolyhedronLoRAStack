@@ -26,16 +26,25 @@ try:  # v577: ONE door to the versioned API (nodes/ph_comfyapi.py).
 except ImportError:  # pragma: no cover - direct module load (tools)
     from ph_comfyapi import io
 
+try:  # v902: the SAME selection logic the legacy class uses.
+    from . import uls_pick_frame_core as _pf
+except ImportError:  # pragma: no cover - direct module load (tools)
+    import uls_pick_frame_core as _pf
+
 
 # Kept byte-identical to the legacy node's tooltip / description text so the UI
-# reads the same after migration.
+# reads the same after migration. v902 changed BOTH together, on purpose:
+# the -1 reading now depends on the mode, and a tooltip that still promised
+# "always the middle" would be a lie in three of the six modes.
 _FRAME_INDEX_TOOLTIP = (
-    "Which frame to pick (0-based). Use -1 for the "
-    "middle frame (recommended for inflated T2I runs — "
+    "Which frame to pick (0-based). In the default 'middle (legacy)' "
+    "mode, -1 means the MIDDLE frame (recommended for inflated T2I runs — "
     "the sampler converges most cleanly on the "
     "central frame, since the first frame can carry "
     "anchor artifacts and the last can be slightly "
-    "blurred by motion continuity)."
+    "blurred by motion continuity). In 'index' and 'range' it is Core's "
+    "convention instead: -1 is the LAST frame. The mode says which "
+    "reading applies."
 )
 
 _DESCRIPTION = (
@@ -62,8 +71,22 @@ class ULSImagePickFrameV3(io.ComfyNode):
                 io.Image.Input("images"),
                 io.Int.Input(
                     "frame_index",
-                    default=-1, min=-1, max=1000, step=1,
+                    default=-1, min=-4096, max=4096, step=1,
                     tooltip=_FRAME_INDEX_TOOLTIP,
+                ),
+                # v902: APPENDED, never inserted. Same order as the legacy
+                # class, because a saved graph must resolve identically
+                # whichever of the two registers.
+                io.Combo.Input(
+                    "mode",
+                    options=list(_pf.MODES),
+                    default=_pf.MODES[0],
+                    tooltip=_pf.MODE_TOOLTIP,
+                ),
+                io.Int.Input(
+                    "count",
+                    default=1, min=1, max=4096, step=1,
+                    tooltip=_pf.COUNT_TOOLTIP,
                 ),
             ],
             outputs=[
@@ -72,22 +95,13 @@ class ULSImagePickFrameV3(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, images, frame_index) -> io.NodeOutput:
-        # Verbatim port of the legacy ULSImagePickFrame.pick() logic.
-        n = images.shape[0]
-        if n == 0:
-            print("[ULSImagePickFrame] \u26a0 empty image batch — passing through")
-            return io.NodeOutput(images)
-
-        if frame_index == -1:
-            # Middle frame: integer middle for odd, lower-middle for even
-            idx = n // 2
-        else:
-            idx = max(0, min(frame_index, n - 1))
-
-        picked = images[idx:idx + 1]  # keep batch dimension
-        print(
-            f"[ULSImagePickFrame] \u2713 picked frame {idx} of {n}  "
-            f"({'middle' if frame_index == -1 else 'explicit'})"
-        )
+    def execute(cls, images, frame_index, mode=None, count=1) -> io.NodeOutput:
+        # v902: delegates to nodes/uls_pick_frame_core.py, the one place the
+        # rule lives. This class and the legacy one share a node id and are
+        # mutually exclusive, so a rule kept in both would only ever be
+        # wrong on machines running the other -- the v898 failure shape.
+        if mode is None:
+            mode = _pf.MODES[0]
+        picked, note = _pf.select(images, mode, frame_index, count)
+        print(f"[ULSImagePickFrame] ✓ {note}")
         return io.NodeOutput(picked)

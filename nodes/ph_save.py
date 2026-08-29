@@ -455,6 +455,23 @@ class ULSSave:
             comps = video.get_components()
             frames = _to_np(comps.images)
             src_audio = comps.audio
+            if image is not None:
+                # v887: a wired VIDEO wins over a wired IMAGE -- and until now
+                # it won in SILENCE. That is the one shape of this node that
+                # can throw a whole stage's work away without a word: feed the
+                # Interpolate's frames into `image` and the ORIGINAL clip into
+                # `video` (the natural way to bring the audio along) and the
+                # interpolated frames are discarded, at the original rate,
+                # while the file still looks plausible. Saying which one won
+                # costs one line; not saying it cost a field session.
+                print("[PLS] Save: BOTH a video and an image are wired. The "
+                      "VIDEO wins -- %d frame(s) at %.2f fps from the video; "
+                      "the %d image frame(s) are NOT written, and the "
+                      "frame_rate input is ignored because the video carries "
+                      "its own rate. If you meant the image frames, unwire "
+                      "the video and use the `audio` input for the sound -- "
+                      "or feed a video that already carries them."
+                      % (int(frames.shape[0]), fps, int(image.shape[0])))
         elif image is not None:
             frames = _to_np(image)
             src_audio = None

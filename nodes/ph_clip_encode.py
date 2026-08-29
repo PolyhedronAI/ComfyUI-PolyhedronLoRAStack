@@ -13,10 +13,11 @@ Design notes worth keeping:
   whole following line - which is exactly what a strip_newlines-only chain
   does today (measured against Frank's Show-Any output).
 * ONE token truth. `_count_tokens` is IMPORTED from uls_stack_node - the very
-  function behind ULSTokenCounter (UMT5-XXL exact, calibrated heuristic as
-  fallback). This node only ever DISPLAYS that number; the Token Counter
-  stays the authority with its report / limit / over_limit contract. A second
-  counter would be a second truth, so there isn't one.
+  function behind ULSTokenCounter. This node only ever DISPLAYS that number;
+  the Token Counter stays the authority with its report / limit / over_limit
+  contract. A second counter would be a second truth, so there isn't one.
+  v905: it is handed the live `clip`, so the number is exact for whichever
+  encoder is wired instead of assuming WAN's UMT5-XXL.
 * Hidden segments stay SERIALISED. Turning `segments` down hides fields, it
   never drops their text.
 """
@@ -96,6 +97,48 @@ def _compose(parts, separator, strip_comments, strip_newlines,
         else:
             blocks = blocks + [ext]
     return _SEPARATORS.get(str(separator), ", ").join(blocks)
+
+
+# ---- v876: does anyone actually read our conditioning? --------------------
+POS_SLOT = 0
+NEG_SLOT = 1
+
+
+def slot_consumed(prompt, unique_id, slot):
+    """Does any node in the RUNNING graph read output `slot` of this node?
+
+    WHY THIS EXISTS: encode() used to run two full text encodes unconditionally.
+    Wired as a pure text composer -- positive_text into another node's prompt
+    field, which is exactly how the MiniMax Reference chain uses it -- that is
+    two forward passes through a 32B encoder per run whose results are thrown
+    away.
+
+    THIRD SEAT OF THIS PROBE, and deliberately so. ph_switch carries
+    ULSAnySwitchInv._consumed_outputs, ph_vectorize carries report_consumed,
+    and this is a third body of the same idea. The reason is ARCHITECTURAL, not
+    laziness: these node modules are kept IMPORT-INDEPENDENT so their guards can
+    load them flat -- test_v869 does a bare `import ph_vectorize`. A shared
+    module would break that on the first relative import, which is also why
+    v868 wrote "ph_switch is left untouched: its promise is its own".
+
+    THE DEFAULT IS INVERTED HERE, on purpose. ph_vectorize treats an unknown
+    prompt (an API call, an older frontend) as NOT wired -- the quiet answer, so
+    nobody is surprised by an extra image. Here an unknown prompt counts as
+    CONSUMED and we encode: skipping an encode that IS needed breaks the run,
+    while an unnecessary one costs seconds. The quiet answer follows whichever
+    failure is worse, and that is not the same direction every time.
+    """
+    if not prompt or unique_id is None:
+        return True
+    uid = str(unique_id)
+    for node in prompt.values():
+        if not isinstance(node, dict):
+            continue
+        for value in (node.get("inputs") or {}).values():
+            if (isinstance(value, (list, tuple)) and len(value) == 2
+                    and str(value[0]) == uid and int(value[1]) == int(slot)):
+                return True
+    return False
 
 
 def _encode(clip, text):
@@ -190,6 +233,12 @@ class ULSCLIPTextEncode:
                                                           "'https://...' survives. Empty = "
                                                           "nothing is stripped."}),
             },
+            "hidden": {
+                # v876: hidden inputs are injected at runtime and never touch
+                # widgets_values, so both baselines stand.
+                "prompt": "PROMPT",
+                "unique_id": "UNIQUE_ID",
+            },
             "optional": {
                 "pos_external": ("STRING", {"forceInput": True, "default": "",
                                             "tooltip": "External positive text (Florence2, "
@@ -199,6 +248,38 @@ class ULSCLIPTextEncode:
                                             "tooltip": "External negative text."}),
             },
         }
+
+    @classmethod
+    def IS_CHANGED(cls, prompt=None, unique_id=None, **kwargs):
+        """v881: the v876 gate must not be able to hang on a stale answer.
+
+        THE WOUND, from Frank's field log (26.08.). The Power Upscale died in
+        CORE with `TypeError: 'NoneType' object is not iterable`
+        (comfy/sampler_helpers.py:72) because a CONDITIONING input was None --
+        and the run's log carried no CLIP Encode line at all: the node had not
+        executed.
+
+        WHY. `slot_consumed()` reads the RUNNING GRAPH through the hidden
+        PROMPT input. Core builds a node's cache signature (comfy_execution/
+        caching.py) as [class_type, IS_CHANGED] followed by that node's OWN
+        inputs -- links are recorded as ("ANCESTOR", ...) of its INCOMING
+        edges. Nothing about who reads its OUTPUTS is in there. So wiring the
+        conditioning output somewhere new leaves the signature untouched, the
+        node is served from cache, and the None it produced back when nobody
+        read that slot is handed out again.
+
+        A gate whose ANSWER depends on something outside the cache key must
+        put that something INTO the key. That is the whole fix: report the
+        consumption state, and a rewire becomes a cache miss.
+
+        Returned as a string because Core compares these values for equality
+        and stores them in the prompt; a plain, stable scalar is the least
+        surprising thing to put there.
+        """
+        return "pos=%d neg=%d" % (
+            int(bool(slot_consumed(prompt, unique_id, POS_SLOT))),
+            int(bool(slot_consumed(prompt, unique_id, NEG_SLOT))),
+        )
 
     RETURN_TYPES = ("CONDITIONING", "CONDITIONING", "STRING", "STRING", "STRING")
     RETURN_NAMES = ("positive", "negative", "positive_text", "negative_text", "full_text")
@@ -214,7 +295,8 @@ class ULSCLIPTextEncode:
     def encode(self, clip, segments, use_negative, neg_1, separator,
                strip_comments, strip_newlines, external_mode,
                comment_markers=_DEFAULT_MARKERS,
-               pos_external="", neg_external="", **kwargs):
+               pos_external="", neg_external="",
+               prompt=None, unique_id=None, **kwargs):
         n = max(1, min(int(segments), MAX_SEGMENTS))
         parts = [kwargs.get(f"pos_{i}", "") for i in range(1, n + 1)]
         pos_text = _compose(parts, separator, strip_comments, strip_newlines,
@@ -223,12 +305,26 @@ class ULSCLIPTextEncode:
                              neg_external, external_mode, comment_markers)
                     if bool(use_negative) else "")
 
-        pos_cond = _encode(clip, pos_text)
-        neg_cond = _encode(clip, neg_text)
+        # v876: encode only what someone reads. See slot_consumed().
+        want_pos = slot_consumed(prompt, unique_id, POS_SLOT)
+        want_neg = slot_consumed(prompt, unique_id, NEG_SLOT)
+        pos_cond = _encode(clip, pos_text) if want_pos else None
+        neg_cond = _encode(clip, neg_text) if want_neg else None
+        if not (want_pos and want_neg):
+            skipped = ([] if want_pos else ["positive"]) + \
+                      ([] if want_neg else ["negative"])
+            print("[PLS] CLIP Encode: nothing reads %s -- that encode was "
+                  "SKIPPED and the output is None. Wire it and it runs again."
+                  % " or ".join(skipped))
 
         # ONE token truth: the very function behind ULSTokenCounter.
-        pt, method = _count_tokens(pos_text)
-        nt, _ = _count_tokens(neg_text)
+        # v905: hand it the clip we are ALREADY encoding with. Until v904 this
+        # counted with a UMT5-XXL we loaded ourselves -- right for WAN, wrong
+        # for MiniMax H3 (Qwen3-VL) and Flux2-Klein (Qwen3-4B). The encoder is
+        # right here in the signature; asking it removes the second tokenizer
+        # rather than teaching it to guess which family it is looking at.
+        pt, method = _count_tokens(pos_text, clip)
+        nt, _ = _count_tokens(neg_text, clip)
         ext = ("pos" if pos_external else "") + ("+neg" if neg_external else "")
         print(f"[PLS] CLIP Encode: pos={pt} tokens ({method}) from "
               f"{len([p for p in parts if p.strip()])}/{n} segment(s) | "

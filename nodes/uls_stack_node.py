@@ -1911,12 +1911,118 @@ def _heuristic_token_count(text: str) -> int:
     return max(1, round(base + digit_bonus))
 
 
-def _count_tokens(text: str) -> tuple:
+# ---------------------------------------------------------------------------
+# v905: ask the LIVE encoder instead of guessing.
+#
+# Until v904 the count came from a UMT5-XXL tokenizer we loaded ourselves,
+# next to the one ComfyUI had already loaded. Two places computing the same
+# thing drift -- and this one drifted twice over:
+#
+#   * WRONG TOKENIZER for anything that is not WAN. MiniMax H3 encodes with
+#     Qwen3-VL, Flux2-Klein with Qwen3-4B. Measured against the core
+#     tokenizers, UMT5 reads 10-20% high on prose and low on weighted syntax.
+#   * WRONG LIMIT. `min_length` is a PAD FLOOR, not a cap. In core v0.32.0
+#     every modern family carries `max_length=99999999, pad_to_max_length=
+#     False`; umt5xxl (WAN) has min_length=512, qwen3_4b 512, t5xxl 256.
+#     They pad UP to that number and never truncate. The 512 the node has
+#     been reporting as "the limit" is the floor, and comfy/ldm/wan/model.py
+#     assigns self.text_len = 512 and then never reads it again.
+#
+# MEASURED, not assumed: KleinTokenizer (qwen3_4b, min_length=512) on a
+# 13-word sentence returns 512 tokens by default and 29 with min_length=0.
+# Counting a live tokenizer WITHOUT passing min_length=0 therefore reports
+# the floor as if it were the prompt. That is why the kwarg is mandatory
+# below and why a tokenizer that refuses it is not used at all.
+# ---------------------------------------------------------------------------
+
+# Core writes a literal 99999999 for "no cap". Read it as a threshold rather
+# than an equality so a future core that writes 2**31 still means the same.
+_NO_CAP_AT_OR_ABOVE = 1_000_000
+
+
+def _encoder_facts(clip) -> list:
     """
-    Returns (count, method) where method is "exact" or "heuristic".
+    Read the REAL tokenizer limits off a live CLIP object.
+
+    Returns one dict per inner tokenizer:
+        {"name": str, "cap": int|None, "pad_floor": int, "pads_to_cap": bool}
+    `cap` is None when the encoder does not truncate at all. Returns [] if
+    anything is missing or unreadable -- every caller must work without it.
+    """
+    tk = getattr(clip, "tokenizer", None)
+    if tk is None:
+        return []
+    facts = []
+    try:
+        members = vars(tk)
+    except TypeError:
+        return []
+    for attr, inner in members.items():
+        # An inner SDTokenizer is identified by carrying BOTH limits; that is
+        # what we are here to read, so it is also the right duck test.
+        if not (hasattr(inner, "max_length") and hasattr(inner, "min_length")):
+            continue
+        try:
+            cap = int(getattr(inner, "max_length"))
+            floor = int(getattr(inner, "min_length") or 0)
+            pads = bool(getattr(inner, "pad_to_max_length", False))
+        except (TypeError, ValueError):
+            continue
+        facts.append({
+            "name": str(getattr(inner, "embedding_key", attr) or attr),
+            "cap": None if cap >= _NO_CAP_AT_OR_ABOVE else cap,
+            "pad_floor": floor,
+            "pads_to_cap": pads,
+        })
+    return facts
+
+
+def _count_with_clip(clip, text: str):
+    """
+    Exact count from the encoder that will actually run. Returns
+    (count, label) or (None, "") when this path is not usable.
+
+    min_length=0 is NOT optional -- see the module note above. A tokenizer
+    that will not take it would report its pad floor as the prompt length,
+    so we decline instead of reporting a number we do not believe.
+    """
+    try:
+        out = clip.tokenize(text, min_length=0)
+    except Exception as e:
+        print("[PLS Tokens] live tokenizer declined min_length=0 (%r) -- "
+              "falling back rather than reporting a padded count." % (e,))
+        return (None, "")
+    if not isinstance(out, dict) or not out:
+        return (None, "")
+    best_n, best_name = -1, ""
+    for key, chunks in out.items():
+        try:
+            n = sum(len(c) for c in chunks)
+        except TypeError:
+            continue
+        if n > best_n:
+            best_n, best_name = n, str(key)
+    if best_n < 0:
+        return (None, "")
+    return (best_n, best_name)
+
+
+def _count_tokens(text: str, clip=None) -> tuple:
+    """
+    Returns (count, method) where method is "exact", "heuristic", or the
+    live encoder name when a CLIP object was handed in.
+
+    `clip` is optional and appended, so every existing caller keeps its
+    exact v904 behaviour. With a clip the count comes from the tokenizer
+    that will actually encode the prompt -- correct for every family, no
+    download, no `transformers`, and no second tokenizer to drift against.
     """
     if not text:
         return (0, "exact")
+    if clip is not None:
+        n, name = _count_with_clip(clip, text)
+        if n is not None:
+            return (n, name)
     tok = _try_load_umt5_tokenizer()
     if tok is not None:
         try:
@@ -1942,21 +2048,28 @@ def _make_bar(used: int, total: int, width: int = 32) -> str:
 
 class ULSTokenCounter:
     """
-    Polyhedron Token Counter — diagnostic node for WAN prompt budgets.
+    Polyhedron Token Counter — diagnostic node for prompt budgets.
 
-    WAN 2.x models use the UMT5-XXL text encoder with a hard limit of
-    512 tokens (max sequence length). Exceeding this in kijai's WanVideo-
-    Wrapper produces a hard crash:
-        RuntimeError: Trying to create tensor with negative dimension
+    v905 CORRECTION, measured against core v0.32.0. This node used to
+    report 512 as "the model limit" for WAN. That number is a PAD FLOOR,
+    not a cap: comfy/text_encoders/wan.py builds umt5xxl with
+    `max_length=99999999, pad_to_max_length=False, min_length=512`, and
+    comfy/ldm/wan/model.py assigns `self.text_len = 512` and then never
+    reads it. Short prompts are padded UP to 512; long ones are not cut.
+    The same holds for every modern family (t5xxl 256, qwen3_4b 512,
+    qwen3vl_32b 1) -- none of them truncates.
 
-    This node estimates the token count of positive and negative prompts
-    and warns before they exceed the model limit. Uses the real UMT5-XXL
-    tokenizer if `transformers` is installed and the model files are
-    cached locally; otherwise falls back to a calibrated heuristic.
+    Where 512 IS real: kijai's WanVideoWrapper, whose fixed 512-wide
+    buffer produced the crash this node was originally built for
+    ("RuntimeError: Trying to create tensor with negative dimension").
+    That path is still worth guarding, which is why `model_limit` stays --
+    but it is now labelled as YOUR budget, not as the encoder's cap.
 
-    No model patching — purely informational. Hook the same STRING that
-    feeds your CLIP Text Encode (or WanVideoTextEncode) into this node
-    to monitor your budget.
+    Wire the optional `clip` input and the count comes from the tokenizer
+    that will actually run: exact for every family, no download, no
+    `transformers`. Without it the node behaves exactly as in v904.
+
+    No model patching — purely informational.
     """
 
     @classmethod
@@ -1968,9 +2081,13 @@ class ULSTokenCounter:
                     "min": 64,
                     "max": 8192,
                     "step": 64,
-                    "tooltip": "Max tokens supported by the target model's text "
-                               "encoder. WAN 2.1 / WAN 2.2 = 512 (UMT5-XXL hard "
-                               "limit). FLUX = 512 (T5-XXL). SDXL = 75 per CLIP "
+                    "tooltip": "YOUR token budget -- a self-set guide rail, not "
+                               "the encoder's cap. Measured against core "
+                               "v0.32.0, no modern text encoder truncates: 512 "
+                               "on WAN is a pad FLOOR. Wire `clip` and the "
+                               "report names the real limits. 512 is still the "
+                               "right number for kijai's WanVideoWrapper, whose "
+                               "buffer really is fixed. Old guidance: SDXL = 75 per CLIP "
                                "chunk. Leave at 512 for WAN.",
                 }),
                 "warn_threshold": ("FLOAT", {
@@ -2005,6 +2122,19 @@ class ULSTokenCounter:
                                "normally already part of the positive prompt, so they "
                                "are NOT added to over_limit.",
                 }),
+                # v905, APPENDED (#577): a socket, not a widget -- widget_values
+                # serialises by index and the widget baseline stays
+                # "model_limit,warn_threshold" untouched.
+                "clip": ("CLIP", {
+                    "tooltip": "Optional but recommended: the same CLIP that "
+                               "encodes this prompt. The count then comes from "
+                               "the tokenizer that will actually run -- exact "
+                               "for WAN, MiniMax H3, Flux2 and everything else "
+                               "-- and the report names that encoder's REAL "
+                               "limits instead of assuming WAN's. Without it "
+                               "the node falls back to UMT5-XXL, which is only "
+                               "correct for WAN.",
+                }),
             },
         }
 
@@ -2025,27 +2155,40 @@ class ULSTokenCounter:
               warn_threshold: float,
               positive_prompt: str = "",
               negative_prompt: str = "",
-              trigger_words: str = "") -> tuple:
+              trigger_words: str = "",
+              clip=None) -> tuple:
 
-        pos_count, pos_method = _count_tokens(positive_prompt)
-        neg_count, neg_method = _count_tokens(negative_prompt)
+        pos_count, pos_method = _count_tokens(positive_prompt, clip)
+        neg_count, neg_method = _count_tokens(negative_prompt, clip)
+        facts = _encoder_facts(clip) if clip is not None else []
         # Trigger words are diagnostic only — see the report note and the
         # RETURN comment. Always defined so the trigger_tokens output is stable.
         trig_count = 0
         trig_alarm = ""
         if trigger_words and trigger_words.strip():
-            trig_count, _ = _count_tokens(trigger_words)
+            trig_count, _ = _count_tokens(trigger_words, clip)
             trig_alarm = _mis_wired_trigger_input(trigger_words, trig_count)
             if trig_alarm:
                 print(f"[PLS] Token Counter: {trig_alarm}")
 
         # Use the same method label if both are exact, otherwise show mixed
-        method = pos_method if pos_method == neg_method else "mixed"
+        # v905: only prompts that actually carry text get a vote. An empty
+        # negative returns "exact" for zero tokens and used to drag the label
+        # to "mixed" next to a perfectly exact positive count. Seen while
+        # rendering the report, not while reading it.
+        _voted = [mth for mth, txt in ((pos_method, positive_prompt),
+                                       (neg_method, negative_prompt)) if txt]
+        if not _voted:
+            method = "exact"
+        elif len(set(_voted)) == 1:
+            method = _voted[0]
+        else:
+            method = "mixed"
         method_label = {
-            "exact":     "UMT5-XXL tokenizer (exact)",
-            "heuristic": "heuristic estimator (±5%)",
+            "exact":     "UMT5-XXL tokenizer (exact) — assumes WAN",
+            "heuristic": "heuristic estimator (±5%) — assumes WAN",
             "mixed":     "mixed (some exact, some heuristic)",
-        }.get(method, method)
+        }.get(method, "%s — the live encoder (exact)" % method)
 
         pos_pct = (pos_count / model_limit * 100) if model_limit else 0.0
         neg_pct = (neg_count / model_limit * 100) if model_limit else 0.0
@@ -2062,12 +2205,24 @@ class ULSTokenCounter:
             # The loud alert is now the native ComfyUI toast (uls_token_toast.js,
             # visible anywhere). Keep a compact one-line marker in the report for
             # anyone reading the text output directly.
-            lines.append(">>> ⚠ TOKEN LIMIT EXCEEDED — see details below <<<")
+            lines.append(">>> ⚠ OVER YOUR BUDGET — see details below <<<")
         lines += [
             "═══ Polyhedron Token Counter ═══",
-            f"  Limit       : {model_limit} tokens",
+            f"  Your budget : {model_limit} tokens  (self-set, not the encoder's cap)",
             f"  Warn at     : {warn_at} tokens ({int(warn_threshold * 100)}%)",
             f"  Method      : {method_label}",
+        ]
+        # v905: what the ENCODER actually does, read off the live object.
+        # Without a clip we say so instead of implying we know.
+        if facts:
+            for f in facts:
+                cap_txt = ("no cap (never truncates)" if f["cap"] is None
+                           else "CUTS at %d" % f["cap"])
+                floor_txt = (" · pads up to %d" % f["pad_floor"]) if f["pad_floor"] > 1 else ""
+                lines.append(f"  Encoder     : {f['name']} · {cap_txt}{floor_txt}")
+        else:
+            lines.append("  Encoder     : unknown — wire `clip` for the real limits")
+        lines += [
             "─────────────────────────────────",
             f"  POSITIVE    : {pos_count:>4} / {model_limit}  ({pos_pct:5.1f}%)  {pos_status}",
             f"                {_make_bar(pos_count, model_limit)}",
@@ -2108,17 +2263,29 @@ class ULSTokenCounter:
         hints = []
         if over_limit:
             over_by = max(pos_count, neg_count) - model_limit
-            hints.append(f"⚠ OVER LIMIT by {over_by} token(s) — the prompt exceeds the")
-            hints.append(f"  text encoder's {model_limit}-token budget. Depending on how the")
-            hints.append("  prompt is encoded, the surplus is either silently truncated")
-            hints.append("  (tail of the prompt is dropped) or the sampler hard-crashes:")
-            hints.append("    kijai WanVideoSampler → 'RuntimeError: Trying to create")
-            hints.append("    tensor with negative dimension'. Either way, fix it:")
-            hints.append("    • Shorten the prompt — drop redundant tags and remove any")
-            hints.append("      (word:1.x) weight syntax (WAN/UMT5 ignores the weighting")
-            hints.append("      but still spends tokens on the digits and parentheses).")
-            hints.append("    • Or route through kijai's WanVideoTextEncode, which")
-            hints.append("      truncates silently at the limit instead of crashing.")
+            hints.append(f"⚠ OVER YOUR BUDGET by {over_by} token(s).")
+            # v905: say what actually happens, and only where it is true.
+            # The old text promised silent truncation for every path. Measured
+            # against core v0.32.0 that is false for the core encoders; it is
+            # kijai's fixed 512-wide buffer that really breaks.
+            real_cap = next((f["cap"] for f in facts if f["cap"] is not None), None)
+            if real_cap is not None:
+                hints.append(f"  The encoder DOES cut at {real_cap} tokens — past that the")
+                hints.append("  tail of the prompt never reaches the model.")
+            elif facts:
+                hints.append("  This encoder has NO cap — nothing is truncated, so this is")
+                hints.append("  your own guide rail talking, not a failure. Long prompts")
+                hints.append("  still cost attention and tend to dilute the subject.")
+            else:
+                hints.append("  Whether anything is actually cut depends on the encoder;")
+                hints.append("  wire `clip` and this line will say so instead of guessing.")
+            hints.append("  Where 512 is REAL: kijai's WanVideoWrapper has a fixed")
+            hints.append("    512-wide buffer → 'RuntimeError: Trying to create tensor")
+            hints.append("    with negative dimension'. On that path, stay under it.")
+            hints.append("  • Shorten the prompt — drop redundant tags and remove any")
+            hints.append("    (word:1.x) weight syntax: WAN/UMT5 ignores the weighting,")
+            hints.append("    and so does MiniMax H3, but both still spend tokens on the")
+            hints.append("    digits and parentheses (measured: 8 words → 35 tokens).")
         elif (pos_count >= warn_at) or (neg_count >= warn_at):
             pct = int(round(warn_threshold * 100))
             hints.append(f"⚠ Approaching limit — at or above the {pct}% warn threshold")
@@ -2126,8 +2293,10 @@ class ULSTokenCounter:
             hints.append("  budget fills (motion slows, 'grid' patterns appear in output")
             hints.append("  — kijai issue #1781). Consider trimming before you hit the cap.")
         if method == "heuristic":
-            hints.append("ℹ For exact counts: `pip install transformers` and ensure the UMT5-XXL")
-            hints.append("  tokenizer is downloaded (first online use will cache it).")
+            hints.append("ℹ For exact counts: wire the `clip` input — no download, no")
+            hints.append("  `transformers`, and correct for whichever encoder you run.")
+            hints.append("  (The old route still works: `pip install transformers` plus a")
+            hints.append("  cached UMT5-XXL, but that is only right for WAN.)")
 
         if hints:
             for h in hints:

@@ -67,6 +67,20 @@ import folder_paths
 
 from .ph_runclock import _fmt_clock
 
+# v887: ComfyUI's VIDEO type (optional) -- the exact Media Loader / Power
+# Upscale pattern. Absent -> the video OUTPUT is simply None; the frames
+# output is untouched, so a build without the API loses a convenience, never
+# a result.
+try:
+    from comfy_api.input_impl import VideoFromComponents
+    from comfy_api.util import VideoComponents
+    from fractions import Fraction
+    _HAS_VIDEO_API = True
+except Exception:  # pragma: no cover
+    VideoFromComponents = VideoComponents = None
+    Fraction = None
+    _HAS_VIDEO_API = False
+
 
 # --------------------------------------------------------------------------
 # Model registry. Names are the community's, not ours -- a saved workflow that
@@ -485,6 +499,117 @@ def _frames_from_video(video):
     return imgs, (fr if fr > 0 else 0.0)
 
 
+# v890: the stretch machinery lives in ph_audio_stretch (ONE source, shared
+# with the free ULSAudioStretch node) and the arithmetic in uls_audio_math.
+# Imported lazily inside _retime_audio so a broken audio stack can never cost
+# a finished interpolation its import.
+
+
+def _audio_of(video):
+    """v887: the sound of a wired video, or None. Never raises -- a clip with
+    no audio is the ordinary case, not a fault."""
+    if video is None:
+        return None
+    try:
+        return video.get_components().audio
+    except Exception:
+        return None
+
+
+
+def _retime_audio(audio, audio_mode, n_in, src_fps, n_out, out_fps):
+    """v890: the soundtrack, made to follow the picture's own timeline.
+
+    Returns (audio_for_video, note). keep -> untouched (v887). mute -> None.
+    stretch to output -> the SHARED machinery in ph_audio_stretch runs the
+    plan from uls_audio_math: the tempo is (n_in/src_fps)/(n_out/out_fps),
+    computed from the very numbers this node just interpolated with -- never
+    re-derived elsewhere. Near-1 tempos are trimmed instead of resynthesised,
+    and the trim to the output duration retires the 31 ms tail. Refusals and
+    failures fall back to the UNCHANGED audio, said out loud -- a soundtrack
+    problem must never cost a finished interpolation."""
+    if audio is None or audio_mode == "keep":
+        return audio, ""
+    if audio_mode == "mute":
+        return None, "audio muted"
+    try:
+        try:
+            from .ph_audio_stretch import stretch_audio, trim_audio
+            from .uls_audio_math import stretch_plan
+        except ImportError:  # pragma: no cover - direct-run fallback
+            from ph_audio_stretch import stretch_audio, trim_audio
+            from uls_audio_math import stretch_plan
+        plan = stretch_plan(n_in, src_fps, n_out, out_fps)
+        if plan["action"] == "refuse":
+            print("[PLS] Interpolate: " + plan["note"])
+            return audio, plan["note"]
+        if plan["action"] == "trim":
+            out = trim_audio(audio, plan["d_out"])
+            print("[PLS] Interpolate: " + plan["note"])
+            return out, plan["note"]
+        out = stretch_audio(audio, plan["tempo"], pitch_mode="preserve",
+                            d_target=plan["d_out"])
+        print("[PLS] Interpolate: " + plan["note"])
+        return out, plan["note"]
+    except Exception as exc:
+        note = ("audio retime failed (%s: %s) - original audio kept"
+                % (type(exc).__name__, exc))
+        print("[PLS] Interpolate: " + note)
+        return audio, note
+
+
+def _build_video(frames, audio, frame_rate):
+    """v887: the interpolated frames as a VIDEO, carrying the ORIGINAL audio
+    and the NEW rate.
+
+    The house already solved this once -- ph_power_upscale._build_video does
+    exactly this for the upscaled frames. Interpolate was the only video stage
+    in the tree without it, and that gap is the whole sync bug: with no audio
+    path THROUGH the node, the sound has to travel AROUND it, and every route
+    around it lands in one of three traps (a VIDEO wired to the Save wins over
+    both the frame_rate input AND the image input; an unwired fps output
+    writes doubled frames at the old rate; target_fps rounds to an integer
+    multiple that a hard-typed rate downstream then contradicts).
+
+    Rate and sound ride INSIDE one object -- the v791 principle, one step
+    further. Returns None when this build has no VIDEO API, mirroring the
+    Media Loader convention."""
+    if not _HAS_VIDEO_API or frames is None or int(frames.shape[0]) == 0:
+        return None
+    rate = frame_rate if frame_rate else 16
+    if not isinstance(rate, Fraction):
+        rate = Fraction(rate).limit_denominator(1000000)
+    try:
+        return VideoFromComponents(VideoComponents(images=frames,
+                                                   frame_rate=rate,
+                                                   audio=audio))
+    except Exception as exc:      # never cost a finished interpolation
+        print("[PLS] Interpolate: the video output could not be built "
+              "(%s: %s) - the frames output is unaffected."
+              % (type(exc).__name__, exc))
+        return None
+
+
+def _sync_note(n_in, src_fps, n_out, out_fps):
+    """v887: the duration arithmetic, spelled out.
+
+    THE LAW, worth stating because it is the reassuring half: _timeline puts
+    source frame k at output index k*multiplier, and at out_fps = src*mult its
+    timestamp is k*mult / (mult*src) = k/src -- its ORIGINAL second. So the
+    interpolation itself cannot drift against a soundtrack. What it does do is
+    end a hair early: it emits mult*(n-1)+1 frames, not mult*n, so the clip is
+    short by (1 - 1/mult)/src seconds -- 31 ms at 16 fps doubled. A fixed tail,
+    never a drift. Anything bigger than this note says is a WRITTEN RATE that
+    does not match out_fps."""
+    if src_fps <= 0 or out_fps <= 0:
+        return ""
+    d_in = n_in / float(src_fps)
+    d_out = n_out / float(out_fps)
+    return ("duration %.3fs -> %.3fs (%+.0f ms; every source frame keeps its "
+            "own timestamp, so this is a tail, not a drift)"
+            % (d_in, d_out, 1000.0 * (d_out - d_in)))
+
+
 class ULSInterpolate:
     """Frame interpolation with a clean pyramid, honest knobs and counted memory."""
 
@@ -524,6 +649,17 @@ class ULSInterpolate:
                     "tooltip": "Pairs that differ by MORE than this are held, not blended. "
                                "Interpolating across a scene cut yields a dissolve; at the seam "
                                "of a joined sequence that is a certainty, not a risk. 0 disables."}),
+                  # APPENDED LAST on purpose: widget values restore by
+                  # position (guard #577). "keep" preserves the pre-v890
+                  # pass-through behaviour bit for bit.
+                  "audio_mode": (["keep", "stretch to output", "mute"], {
+                      "default": "keep",
+                      "tooltip": "What happens to a wired video's soundtrack. keep: passed "
+                                 "through untouched - right whenever the duration does not "
+                                 "change (plain fps doubling). stretch to output: retimed by "
+                                 "exactly the video's own factor and trimmed to the output "
+                                 "duration - the slow-motion mode; speech keeps its pitch and "
+                                 "stays on the lips. mute: the video output carries no sound."}),
             },
             "optional": {
                 # PIN ORDER NOTE: frames stays the FIRST pin (it merely moved
@@ -554,8 +690,26 @@ class ULSInterpolate:
         fail there, loudly and by name (the v823 wound class)."""
         return True
 
-    RETURN_TYPES = ("IMAGE", "INT", "FLOAT", "STRING")
-    RETURN_NAMES = ("frames", "frame_count", "fps", "interp_info")
+    # v887: `video` is APPENDED, never inserted. A link stores its origin as a
+    # SLOT INDEX, so putting the new output anywhere but the end would
+    # re-number every wire in every saved workflow -- the output-side twin of
+    # the widget serialisation law (#577). frames stays slot 0.
+    # v890 APPEND-ONLY on the OUTPUT side too (the v887 twin rule): links
+    # store their origin as a slot INDEX, so `audio` sits BEHIND everything
+    # that already existed. frames stays slot 0 forever.
+    RETURN_TYPES = ("IMAGE", "INT", "FLOAT", "STRING", "VIDEO", "AUDIO")
+    RETURN_NAMES = ("frames", "frame_count", "fps", "interp_info", "video",
+                    "audio")
+    OUTPUT_TOOLTIPS = (
+        "The interpolated frame batch.",
+        "How many frames came out: multiplier*(n-1)+1, never multiplier*n.",
+        "The rate these frames are meant to be written at. Wire it to the "
+        "Save's frame_rate -- or use the video output and wire nothing.",
+        "Readout: arch, counts, gates, timing, and the duration arithmetic.",
+        "The interpolated frames, the NEW rate and the source clip's ORIGINAL "
+        "audio in one object. Wire this to the Save and the sound stays in "
+        "sync without an fps wire; audio only rides along when a video was "
+        "wired IN (a bare frame batch carries no sound).")
     FUNCTION = "interpolate"
     CATEGORY = "Polyhedron/Video"
     # v599: the two claims this text used to make were both false, and one of
@@ -582,6 +736,7 @@ class ULSInterpolate:
                     multiplier=2, source_fps=16.0, target_fps=32.0,
                     precision="float32", ensemble=True, fast_mode=True,
                     scale_factor=1.0, static_skip=0.0, cut_guard=0.0,
+                    audio_mode="keep",
                     video=None):
         ckpt_name = _strip_deco(ckpt_name)  # v829: diamond+size decoration
         arch_ver = _arch_for(ckpt_name)
@@ -629,7 +784,12 @@ class ULSInterpolate:
                     "unchanged at %.2f" % (n, source_fps))
             if fps_note:
                 info += " | " + fps_note
-            return (frames, n, float(source_fps), info)
+            _early_audio = _audio_of(video)
+            if audio_mode == "mute":
+                _early_audio = None
+            return (frames, n, float(source_fps), info,
+                    _build_video(frames, _early_audio, source_fps),
+                    _early_audio)
 
         # ---- Timeline -----------------------------------------------------
         if rate_mode == "target_fps":
@@ -850,7 +1010,27 @@ class ULSInterpolate:
               % (_fmt_clock(wall), out_count, out_fps, per))
         if fps_note:
             info += " | " + fps_note
-        return (out, out_count, out_fps, info)
+
+        # ---- v887: the duration arithmetic, and the sound ------------------
+        sync = _sync_note(n, source_fps, out_count, out_fps)
+        if sync:
+            info += " | " + sync
+            print("[PLS] Interpolate: %s" % sync)
+        audio = _audio_of(video)
+        audio, retime_note = _retime_audio(audio, audio_mode, n, source_fps,
+                                           out_count, out_fps)
+        if retime_note:
+            info += " | " + retime_note
+        out_video = _build_video(out, audio, out_fps)
+        if out_video is not None:
+            print("[PLS] Interpolate: video output ready at %.2f fps, audio=%s"
+                  " - wire IT to the Save and no fps wire is needed; a bare "
+                  "'frames' wire still needs Interpolate.fps -> "
+                  "Save.frame_rate, or the doubled frames are written at the "
+                  "OLD rate."
+                  % (out_fps, "carried through" if audio is not None
+                     else "none (no video was wired in)"))
+        return (out, out_count, out_fps, info, out_video, audio)
 
 
 def _now():

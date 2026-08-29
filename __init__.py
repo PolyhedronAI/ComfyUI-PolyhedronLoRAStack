@@ -126,6 +126,121 @@ except Exception as e:
     print(f"[PLS] ✗ Polyhedron Interpolate unavailable — import failed: {e!r}")
     print("[PLS]   (usually torch or a changed Core device API). Other nodes still load.")
 
+# -- Attention / grading group (v372) --------------------------
+# Three nodes, one group, its own files. Attention patches the model's
+# attention backend, NAG applies Normalized Attention Guidance to a
+# conditioning, and Filter is the colour-grading node with a live preview.
+#
+# ROUTES, MEASURED BEFORE THE CUT: Attention and NAG register none and carry
+# no frontend at all. Filter DOES need three -- its live preview reads the
+# same .cube file the backend grades with, and presets load/save -- so they
+# live in their OWN module nodes/ph_filter_routes.py, following the rule the
+# Media Loader and Sampler set: one new module, one registration call, and
+# uls_routes.py / ph_media_routes.py / ph_sampler_routes.py all stay shut.
+# The console therefore still reports the same 28 media and 6 sampler paths,
+# plus 6 filter paths (3 routes x bare + /api alias).
+#
+# Each import is isolated: a changed Core API must not abort the pack.
+_ATTN_OK = _NAG_OK = _FILTER_OK = False
+try:
+    from .nodes.ph_attention import ULSAttention
+    _ATTN_OK = True
+except Exception as e:
+    print(f"[PLS] \u2717 Polyhedron Attention unavailable \u2014 import failed: {e!r}")
+    print("[PLS]   (usually torch or a changed Core attention API). Other nodes still load.")
+try:
+    from .nodes.ph_nag import ULSNag
+    _NAG_OK = True
+except Exception as e:
+    print(f"[PLS] \u2717 Polyhedron NAG unavailable \u2014 import failed: {e!r}")
+    print("[PLS]   (usually a changed comfy.ldm attention API). Other nodes still load.")
+try:
+    from .nodes.ph_filter import ULSFilter
+    _FILTER_OK = True
+except Exception as e:
+    print(f"[PLS] \u2717 Polyhedron Filter unavailable \u2014 import failed: {e!r}")
+    print("[PLS]   (usually numpy). Other nodes still load.")
+# ULSAudioStretch came along because ph_interpolate's audio_mode="stretch"
+# imports its machinery -- ONE source for the retime, shared between the
+# Interpolate node and this free-standing one. Registering it is the honest
+# option: the file is in the tree either way, it has its own guard, and it
+# opens no route. Leaving the class unregistered would be dead code that the
+# serialisation scanner reports on every run.
+_ASTRETCH_OK = False
+try:
+    from .nodes.ph_audio_stretch import ULSAudioStretch
+    _ASTRETCH_OK = True
+except Exception as e:
+    print(f"[PLS] \u2717 Polyhedron Audio Stretch unavailable \u2014 import failed: {e!r}")
+    print("[PLS]   (usually torch or PyAV). Other nodes still load.")
+
+# ── Workflow essentials group (v371) ───────────────────────
+# Thirteen nodes, one group, its own files. These are the pieces a real
+# Polyhedron graph is wired FROM: loaders (model / CLIP / VAE / upscale
+# model), the codec, seed and int sources, the switch pair, empty latent,
+# media info, the MiniMax reference builder and the note.
+#
+# NOT ONE OF THEM REGISTERS A SERVER ROUTE. Measured before the cut: no
+# routes.get/post in any of the nine carrier modules, and no fetch() in any
+# of their frontends. So uls_routes.py, ph_media_routes.py and
+# ph_sampler_routes.py all stay shut and the console keeps reporting the
+# same 28 media paths and 6 sampler paths as v370.
+#
+# ph_basics carries four of the thirteen (Load Model / Load CLIP / Load VAE /
+# Seed) and pulls in ph_te_detect and uls_noise; ph_empty_latent pulls in
+# uls_latent_math and uls_noise; ph_upscale_loader borrows the model card
+# from the Power Upscale node that is already here. Each import is isolated:
+# a changed Core API must not abort the pack.
+_BASICS_OK = _SWITCH_OK = _INT_OK = _ELAT_OK = False
+_MINFO_OK = _MMREF_OK = _NOTE_OK = _VAE_OK = _UPLOAD_OK = False
+try:
+    from .nodes.ph_basics import ULSLoadModel, ULSLoadCLIP, ULSLoadVAE, ULSSeed
+    _BASICS_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron loaders/seed unavailable — import failed: {e!r}")
+    print("[PLS]   (usually a changed ComfyUI Core sd/utils API). Other nodes still load.")
+try:
+    from .nodes.ph_switch import ULSAnySwitch, ULSAnySwitchInv
+    _SWITCH_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron Switch unavailable — import failed: {e!r}")
+try:
+    from .nodes.ph_int import ULSInt
+    _INT_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron Int unavailable — import failed: {e!r}")
+try:
+    from .nodes.ph_empty_latent import ULSEmptyLatent
+    _ELAT_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron Empty Latent unavailable — import failed: {e!r}")
+try:
+    from .nodes.ph_media_info import ULSMediaInfo
+    _MINFO_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron Media Info unavailable — import failed: {e!r}")
+try:
+    from .nodes.ph_minimax_ref import ULSMiniMaxReference
+    _MMREF_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron MiniMax Reference unavailable — import failed: {e!r}")
+try:
+    from .nodes.ph_note import ULSNote
+    _NOTE_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron Note unavailable — import failed: {e!r}")
+try:
+    from .nodes.ph_vae import ULSVAE
+    _VAE_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron VAE Codec unavailable — import failed: {e!r}")
+try:
+    from .nodes.ph_upscale_loader import ULSLoadUpscaleModel
+    _UPLOAD_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron Load Upscale Model unavailable — import failed: {e!r}")
+
+
 # Bridge — fragile, depends on ComfyUI/kijai internals. Already isolated.
 _BRIDGE_OK = False
 try:
@@ -238,6 +353,59 @@ if _INTERP_OK:
     NODE_CLASS_MAPPINGS["ULSInterpolate"] = ULSInterpolate
     NODE_DISPLAY_NAME_MAPPINGS["ULSInterpolate"] = "⬡ Polyhedron Interpolate"
 
+# Attention / grading group (v372)
+if _ATTN_OK:
+    NODE_CLASS_MAPPINGS["ULSAttention"] = ULSAttention
+    NODE_DISPLAY_NAME_MAPPINGS["ULSAttention"] = "⬡ Polyhedron Attention"
+if _NAG_OK:
+    NODE_CLASS_MAPPINGS["ULSNag"] = ULSNag
+    NODE_DISPLAY_NAME_MAPPINGS["ULSNag"] = "⬡ Polyhedron NAG"
+if _FILTER_OK:
+    NODE_CLASS_MAPPINGS["ULSFilter"] = ULSFilter
+    NODE_DISPLAY_NAME_MAPPINGS["ULSFilter"] = "⬡ Polyhedron Filter"
+if _ASTRETCH_OK:
+    NODE_CLASS_MAPPINGS["ULSAudioStretch"] = ULSAudioStretch
+    NODE_DISPLAY_NAME_MAPPINGS["ULSAudioStretch"] = "⬡ Polyhedron Audio Stretch"
+
+# ── Workflow essentials group (v371) ───────────────────────
+# Each behind its own _OK flag, appended at the END of the mappings so no
+# existing registration moves.
+if _BASICS_OK:
+    NODE_CLASS_MAPPINGS["ULSLoadModel"] = ULSLoadModel
+    NODE_DISPLAY_NAME_MAPPINGS["ULSLoadModel"] = "⬡ Polyhedron Load Model"
+    NODE_CLASS_MAPPINGS["ULSLoadCLIP"] = ULSLoadCLIP
+    NODE_DISPLAY_NAME_MAPPINGS["ULSLoadCLIP"] = "⬡ Polyhedron Load CLIP"
+    NODE_CLASS_MAPPINGS["ULSLoadVAE"] = ULSLoadVAE
+    NODE_DISPLAY_NAME_MAPPINGS["ULSLoadVAE"] = "⬡ Polyhedron Load VAE"
+    NODE_CLASS_MAPPINGS["ULSSeed"] = ULSSeed
+    NODE_DISPLAY_NAME_MAPPINGS["ULSSeed"] = "⬡ Polyhedron Seed"
+if _UPLOAD_OK:
+    NODE_CLASS_MAPPINGS["ULSLoadUpscaleModel"] = ULSLoadUpscaleModel
+    NODE_DISPLAY_NAME_MAPPINGS["ULSLoadUpscaleModel"] = "⬡ Polyhedron Load Upscale Model"
+if _VAE_OK:
+    NODE_CLASS_MAPPINGS["ULSVAE"] = ULSVAE
+    NODE_DISPLAY_NAME_MAPPINGS["ULSVAE"] = "⬡ Polyhedron VAE Codec"
+if _ELAT_OK:
+    NODE_CLASS_MAPPINGS["ULSEmptyLatent"] = ULSEmptyLatent
+    NODE_DISPLAY_NAME_MAPPINGS["ULSEmptyLatent"] = "⬡ Polyhedron Empty Latent"
+if _SWITCH_OK:
+    NODE_CLASS_MAPPINGS["ULSAnySwitch"] = ULSAnySwitch
+    NODE_DISPLAY_NAME_MAPPINGS["ULSAnySwitch"] = "⬡ Polyhedron Switch"
+    NODE_CLASS_MAPPINGS["ULSAnySwitchInv"] = ULSAnySwitchInv
+    NODE_DISPLAY_NAME_MAPPINGS["ULSAnySwitchInv"] = "⬡ Polyhedron Switch Inverse"
+if _INT_OK:
+    NODE_CLASS_MAPPINGS["ULSInt"] = ULSInt
+    NODE_DISPLAY_NAME_MAPPINGS["ULSInt"] = "⬡ Polyhedron Int"
+if _MINFO_OK:
+    NODE_CLASS_MAPPINGS["ULSMediaInfo"] = ULSMediaInfo
+    NODE_DISPLAY_NAME_MAPPINGS["ULSMediaInfo"] = "⬡ Polyhedron Media Info"
+if _MMREF_OK:
+    NODE_CLASS_MAPPINGS["ULSMiniMaxReference"] = ULSMiniMaxReference
+    NODE_DISPLAY_NAME_MAPPINGS["ULSMiniMaxReference"] = "⬡ Polyhedron MiniMax Reference"
+if _NOTE_OK:
+    NODE_CLASS_MAPPINGS["ULSNote"] = ULSNote
+    NODE_DISPLAY_NAME_MAPPINGS["ULSNote"] = "⬡ Polyhedron Note"
+
 WEB_DIRECTORY = "./web/js"
 
 try:
@@ -264,11 +432,21 @@ if _SAMPLER_OK:
     except Exception as e:
         print(f"[PLS] ⚠ Sampler routes not registered: {e}")
 
+# Polyhedron Filter routes: fourth module, fourth call. The Filter's live
+# preview must read the SAME .cube the backend grades with, so it needs an
+# endpoint -- but not at the price of re-opening a shared route file.
+if _FILTER_OK:
+    try:
+        from .nodes.ph_filter_routes import register_filter_routes
+        register_filter_routes()
+    except Exception as e:
+        print(f"[PLS] \u26a0 Filter routes not registered: {e}")
+
 _node_count = len(NODE_CLASS_MAPPINGS)
 _bridge_str = "✅" if _BRIDGE_OK else "⚠ unavailable"
 print(f"""
 ⚡ ============================================================
-   Polyhedron Suite  v370
+   Polyhedron Suite  v372
    {_node_count} Nodes  |  Bridge: {_bridge_str}
 ⚡ ============================================================
 """)

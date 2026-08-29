@@ -148,6 +148,16 @@ def tile_seed(seed, ix, iy, nx):
     return int(h & 0x7FFFFFFFFFFFFFFF)
 
 
+def drop_refine_stages(stages, joint_model):
+    """v883: with a joint audio-video model on the wire, the refine stages
+    cannot run (the model's forward reads the audio half of a latent that a
+    tile does not have) -- so they are DROPPED, whole, and the pixel path
+    (final ESRGAN + fit) is what remains. Returns the list unchanged when the
+    model is an ordinary image/video model. Pure data, so the guard can drive
+    it without comfy."""
+    return [] if joint_model else list(stages)
+
+
 def plan_stages(dual_moe, upscale_by, denoise, steps, cfg,
                 upscale_by_low, denoise_low, steps_low, cfg_low):
     """The MoE STAGE CHAIN as pure data (models stay in the node; the low

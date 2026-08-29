@@ -61,7 +61,10 @@ bei ComfyUI-/kijai-Updates passiert, und wo der eine offene Frontpunkt liegt.
 
 ## API-Wachposten (was bei Updates zuerst bricht)
 Niedrige Stabilität (beobachten): Canvas-Render-Pfad (Vue/Nodes-2.0),
-kijai-WanVideoWrapper-Interna, `comfy.lora.*`. Hohe Stabilität: `folder_paths.*`,
+kijai-WanVideoWrapper-Interna, `comfy.lora.*`, `comfy.ldm.modules.attention`
+(die NAG-Node patcht dort; die Attention-Node hängt zusätzlich an optionalen
+SageAttention-/Kitchen-Wheels, degradiert aber ehrlich — die Modusliste zeigt
+nur, was auf der Maschine wirklich lädt). Hohe Stabilität: `folder_paths.*`,
 das versteckte Persistenz-Widget, `api.fetchApi`/`api.apiURL` (Routen sind unter
 nacktem **und** `/api`-Pfad registriert).
 

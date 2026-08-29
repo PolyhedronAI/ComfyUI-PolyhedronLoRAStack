@@ -13,6 +13,7 @@
  */
 
 import { app } from "../../scripts/app.js";
+import { setHidden, refit } from "./ph_widget_vis.js";
 
 // v531 DIAG: per-file cache evidence. Every JS file caches INDIVIDUALLY in the
 // browser, so the Cockpit banner cannot vouch for THIS file being fresh. If this
@@ -51,14 +52,22 @@ function getWidget(node, name) {
 function applyMediaKindGrey(node) {
     try {
         const kind = getWidget(node, "media_kind")?.value || "auto";
+        let moved = false;
         for (const n of IMAGE_WIDGETS) {
             const w = getWidget(node, n);
-            if (w) w.disabled = (kind === "video");
+            if (!w) continue;
+            w.disabled = (kind === "video");
+            // v888: a row that cannot bite is GONE now, not greyed. It keeps
+            // its slot in node.widgets, so widgets_values is untouched (#577).
+            if (setHidden(w, kind === "video")) moved = true;
         }
         for (const n of VIDEO_WIDGETS) {
             const w = getWidget(node, n);
-            if (w) w.disabled = (kind === "image");
+            if (!w) continue;
+            w.disabled = (kind === "image");
+            if (setHidden(w, kind === "image")) moved = true;
         }
+        if (moved) refit(node);
         app.graph?.setDirtyCanvas(true, true);
     } catch (e) {
         console.warn("[PLS Save] grey:", e);

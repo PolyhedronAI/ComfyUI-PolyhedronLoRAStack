@@ -47,6 +47,7 @@
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { setHidden, refit } from "./ph_widget_vis.js";
 
 const NODE_TYPE = "ULSSampler";
 // live only in High + Low — the Handoff drives the split itself
@@ -360,11 +361,31 @@ function _inputLinked(node, name) {
 // We grey + lock it (w.disabled) and prefix its label with INACTIVE_MARK so the
 // state is visible even if the renderer does not grey disabled widgets. The base
 // label is captured once so the marker never stacks.
+// v888: it HIDES now. Frank: "so sieht es unfertig aus." The name and every
+// call site are unchanged on purpose -- what "off" LOOKS like is a rendering
+// decision, and moving it here keeps the mode logic above untouched. The
+// widget stays in node.widgets (values serialise BY INDEX -- #577), so a
+// hidden row keeps its slot and its value; only the pixels go. The label is
+// still restored on show, so INACTIVE_MARK can never bake into a visible row.
+// Returns true when the LAYOUT changed, so the caller refits once per pass
+// instead of once per widget.
+let _visMoved = false;
+
 function _setDisabled(w, disabled) {
-    if (!w) return;
+    if (!w) return false;
     if (w._uls_baseLabel === undefined) w._uls_baseLabel = (w.label != null) ? w.label : w.name;
     w.disabled = disabled;
-    w.label = disabled ? INACTIVE_MARK + w._uls_baseLabel : w._uls_baseLabel;
+    w.label = w._uls_baseLabel;
+    const moved = setHidden(w, disabled);
+    if (moved) _visMoved = true;
+    return moved;
+}
+
+/* Did this pass move any row? Reads AND clears -- one answer per pass. */
+function _visChanged(_node) {
+    const moved = _visMoved;
+    _visMoved = false;
+    return moved;
 }
 
 // ── Apply the mode state: live path enabled, off path disabled ──────────────
@@ -413,6 +434,11 @@ function _applyModeState(node) {
         for (const name of SINGLE_ONLY) _setDisabled(_findWidget(node, name), true);
     }
 
+    // v888: ONE refit per pass, and only when a row really appeared or went.
+    // Per-widget refitting would re-measure the node a dozen times inside a
+    // single mode switch; _setDisabled returns whether the layout moved so
+    // this stays a single, cheap decision.
+    if (_visChanged(node)) refit(node);
     if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
 }
 

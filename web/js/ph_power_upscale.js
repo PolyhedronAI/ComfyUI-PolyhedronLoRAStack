@@ -21,6 +21,7 @@
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { setHidden, refit } from "./ph_widget_vis.js";
 
 // v531 doctrine: every JS file caches INDIVIDUALLY in Firefox -> self-proving banner.
 // (v548: this file never had one - which is exactly why the v547 silent no-op below
@@ -32,8 +33,15 @@ const NODE_TYPE = "ULSPowerUpscale";
 // v546: + the per-stage sampler/scheduler. They need NO further gate: this node is a
 // STAGE CHAIN, not a boundary split — stage L is an INDEPENDENT run with its own
 // schedule. (Contrast the Sampler, where scheduler_low only bites in "Wan MoE parity".)
+// v894: sigma_shift_low was missing from this list. It arrived in v851, went
+// into the canon and into the twin/display arrays, and never reached HERE - so
+// Single showed an active dial that reaches nothing (plan_stages(false, ...)
+// makes one stage tagged 'single'; model_low is read only where the tag is
+// 'low'). The backend now skips the low half in Single too; this list is what
+// stops the user dialling it in the first place. uls_sampler.js has carried
+// sigma_shift_low in its own DUAL_ONLY since v839 - the two nodes agree again.
 const DUAL_ONLY = ["upscale_by_low", "denoise_low", "steps_low", "cfg_low",
-                   "sampler_low", "scheduler_low"];
+                   "sampler_low", "scheduler_low", "sigma_shift_low"];
 
 // ── v546: canonical (SERIALISED) widget order = INPUT_TYPES order. The two new fields
 //    are appended at the END, so every existing index keeps its slot in old saves. ──
@@ -501,11 +509,15 @@ function _findWidget(node, name) {
 // We grey + lock it (w.disabled) and prefix its label with INACTIVE_MARK so the
 // state is visible even if the renderer does not grey disabled widgets. The base
 // label is captured once so the marker never stacks.
+// v888: it HIDES now -- see web/js/ph_widget_vis.js for the why and the
+// mechanics. Name and call sites unchanged; the widget keeps its slot in
+// node.widgets, so widgets_values is untouched (#577).
 function _setDisabled(w, disabled) {
-    if (!w) return;
+    if (!w) return false;
     if (w._uls_baseLabel === undefined) w._uls_baseLabel = (w.label != null) ? w.label : w.name;
     w.disabled = disabled;
-    w.label = disabled ? INACTIVE_MARK + w._uls_baseLabel : w._uls_baseLabel;
+    w.label = w._uls_baseLabel;
+    return setHidden(w, disabled);
 }
 
 // ── Apply the mode state: stage-L dials live only in High + Low ──────────────
@@ -515,8 +527,13 @@ function _applyModeState(node) {
     const pill = _findWidget(node, "dual_moe");
     const dual = pill ? !!pill.value : false;
 
-    for (const name of DUAL_ONLY) _setDisabled(_findWidget(node, name), !dual);
+    let moved = false;
+    for (const name of DUAL_ONLY) {
+        if (_setDisabled(_findWidget(node, name), !dual)) moved = true;
+    }
 
+    // v888: ONE refit per pass, and only when a row really appeared or went.
+    if (moved) refit(node);
     if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
 }
 
@@ -814,7 +831,11 @@ function _procFit(node) {
 }
 // v565: the pixel stage (P) feeds the same pane as the refine stages (H / L).
 // It arrives as finished RGB, so it needs no latent2rgb - see _make_pixel_probe.
-const STAGE_MARK = { high: "H", low: "L", pixel: "P" };
+// v885: a THIRD stage - the input, sent once before any pass finishes
+// (nodes/ph_power_upscale.py::_emit_input_preview). The v565 lesson
+// applies unchanged: a stage this pane does not know must SAY so ("?"),
+// never guess - so a new stage is added HERE, not left to the fallback.
+const STAGE_MARK = { input: "IN", high: "H", low: "L", pixel: "P" };
 // v567: the pane shares the backend's clock. elapsed/eta ride the probe
 // payload, so console, bar and HUD tick on the SAME numbers - Frank's
 // congruence ask. Format mirrors the backend's _fmt_clock exactly.
@@ -971,16 +992,25 @@ function _procApply(node, d) {
           ((d.eta !== undefined && d.eta !== null)
               ? " · ETA ~" + _fmtClock(d.eta) : "")
         : "";
-    node._procHud.textContent = ((d.stage === "pixel")
+    // v885: the input frame has no tile and no step - counting them would be
+    // a confident lie. It states what it IS: the source, its size, its length.
+    node._procHud.textContent = ((d.stage === "input")
+        ? st + " · source " + d.canvas[0] + "×" + d.canvas[1] +
+          " · " + d.steps + (d.steps === 1 ? " frame" : " frames")
+        : (d.stage === "pixel")
         ? st + " · Chunk " + d.tile + "/" + d.tiles +
           " · Frame " + d.step + "/" + d.steps
         : st + " · Tile " + d.tile + "/" + d.tiles +
           " · Step " + d.step + "/" + d.steps) + clk;
     if (node._procMapLbl) {
         const nT = Math.max(1, d.tiles | 0);
-        const noun = (d.stage === "pixel") ? (nT === 1 ? "Chunk" : "chunks")
-                                           : (nT === 1 ? "Tile"  : "tiles");
-        node._procMapLbl.textContent = nT + " " + noun;
+        if (d.stage === "input") {
+            node._procMapLbl.textContent = "source";   // v885: not a grid yet
+        } else {
+            const noun = (d.stage === "pixel") ? (nT === 1 ? "Chunk" : "chunks")
+                                               : (nT === 1 ? "Tile"  : "tiles");
+            node._procMapLbl.textContent = nT + " " + noun;
+        }
     }
     const cw = Math.max(1, d.canvas[0]), ch = Math.max(1, d.canvas[1]);
     // v579 hid the minimap when a single tile filled the whole stage: the orange

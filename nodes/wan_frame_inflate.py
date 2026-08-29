@@ -143,6 +143,12 @@ class ULSWanFrameInflate:
         return (embeds,)
 
 
+try:  # package import (normal ComfyUI load)
+    from . import uls_pick_frame_core as _pf
+except ImportError:  # script import (tests, tooling)
+    import uls_pick_frame_core as _pf
+
+
 class ULSImagePickFrame:
     """
     Pick a single frame from a decoded image batch. Companion to
@@ -155,16 +161,26 @@ class ULSImagePickFrame:
             "required": {
                 "images": ("IMAGE",),
                 "frame_index": ("INT", {
-                    "default": -1, "min": -1, "max": 1000, "step": 1,
+                    "default": -1, "min": -4096, "max": 4096, "step": 1,
                     "tooltip": (
-                        "Which frame to pick (0-based). Use -1 for the "
-                        "middle frame (recommended for inflated T2I runs — "
-                        "the sampler converges most cleanly on the "
-                        "central frame, since the first frame can carry "
-                        "anchor artifacts and the last can be slightly "
-                        "blurred by motion continuity)."
+                        "Which frame to pick (0-based). In the default "
+                        "'middle (legacy)' mode, -1 means the MIDDLE frame "
+                        "(recommended for inflated T2I runs — the sampler "
+                        "converges most cleanly on the central frame, since "
+                        "the first frame can carry anchor artifacts and the "
+                        "last can be slightly blurred by motion continuity). "
+                        "In 'index' and 'range' it is Core's convention "
+                        "instead: -1 is the LAST frame. The mode below says "
+                        "which reading applies."
                     )
                 }),
+                # v902: APPENDED, never inserted -- widgets_values is
+                # positional and an insert would shift every saved graph.
+                "mode": (_pf.MODES, {"default": _pf.MODES[0],
+                                     "tooltip": _pf.MODE_TOOLTIP}),
+                "count": ("INT", {"default": 1, "min": 1, "max": 4096,
+                                  "step": 1,
+                                  "tooltip": _pf.COUNT_TOOLTIP}),
             }
         }
 
@@ -177,23 +193,13 @@ class ULSImagePickFrame:
         "ULSWanFrameInflate. -1 picks the middle frame."
     )
 
-    def pick(self, images, frame_index):
-        n = images.shape[0]
-        if n == 0:
-            print("[ULSImagePickFrame] ⚠ empty image batch — passing through")
-            return (images,)
-
-        if frame_index == -1:
-            # Middle frame: integer middle for odd, lower-middle for even
-            idx = n // 2
-        else:
-            idx = max(0, min(frame_index, n - 1))
-
-        picked = images[idx:idx+1]  # keep batch dimension
-        print(
-            f"[ULSImagePickFrame] ✓ picked frame {idx} of {n}  "
-            f"({'middle' if frame_index == -1 else 'explicit'})"
-        )
+    def pick(self, images, frame_index, mode=None, count=1):
+        # v902: the selection itself lives in nodes/uls_pick_frame_core.py
+        # so this class and the V3 class cannot drift apart (v898 lesson).
+        if mode is None:
+            mode = _pf.MODES[0]
+        picked, note = _pf.select(images, mode, frame_index, count)
+        print(f"[ULSImagePickFrame] ✓ {note}")
         return (picked,)
 
 

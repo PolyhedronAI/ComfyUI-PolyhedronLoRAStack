@@ -16,12 +16,14 @@ nodes/
   ph_save.py                               │  no Stack module imports these,
   ph_save_util.py                          │  and these import no Stack module
   ph_media_routes.py      its own routes ──┘
+  ph_sampler_routes.py    Sampler routes — same pattern, own module
+  ph_filter_routes.py     Filter routes — same pattern, own module (v372)
 web/js/
   uls_*.js                Stack frontend
   ph_media_loader.js      Media I/O frontend
   ph_save.js
 docs/
-  Polyhedron_Suite_*.pdf  the manual (Part I Media, Part II Stack)
+  Polyhedron_Suite_*.pdf  the manual (six parts + appendix)
   changelog-archive/      past release notes
 ```
 

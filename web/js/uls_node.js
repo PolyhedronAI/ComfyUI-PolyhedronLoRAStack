@@ -14,7 +14,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[Polyhedron Suite] uls_node.js loaded ✓");
+console.log("[Polyhedron LoRA Stack] uls_node.js loaded ✓");
 
 const NODE_TYPE        = "UltimateLoraStack";
 const NODE_TYPE_ENGINE = "ULSAccelerator";   // Polyhedron Engine
@@ -3268,6 +3268,50 @@ function drawCanvasTooltip(ctx, TX, TY, TW, label, hint, color) {
 const ENGINE_HEADER_H = 90;   // Title bar (~20) + pin zone (~30) + mode-buttons (22) + label (14) + padding
 const ENGINE_NODE_TYPE = NODE_TYPE_ENGINE;
 
+/* v877 -- the engine node could not be pushed together, and it lost an
+ * aspired width on every workflow load. Both are the v874 wound (ph_switch.js),
+ * a generation later, in a node whose twin was healed long ago: the STACK
+ * block keeps the user's width ("Preserve user-resized width -- only enforce
+ * minimum"), the ENGINE block did not.
+ *
+ * TWO defects, one family:
+ *   1. _engineHideConfigWidget ended with setSize(computeSize()) -- a hard
+ *      reset to LiteGraph's MINIMUM, run from onConfigure (every workflow
+ *      load) and from _ulsSync (every LoRA pick). An aspired width was gone
+ *      after every restart.
+ *   2. onResize floored the width at 700 -- a number nothing in the renderer
+ *      asks for. The engine ROW is narrower than the stack row (no group
+ *      column, no low-weight column), so the floor was inherited, not
+ *      measured. It made the node impossible to push together.
+ *
+ * ENGINE_MIN_W is COMPUTED from the drawn constants, not chosen:
+ *   header : PAD + 3*MODE_BTN_W + 2*MODE_GAP + 4 + pillW + PAD      = 196
+ *   row    : nameX(90) + NAME_MIN(120) + btnGap + WEIGHT_W
+ *            + btnGap + DEL_W + PAD                                 = 316
+ * The row is the binding constraint. 320 leaves the name field 124px.
+ */
+const ENGINE_MIN_W = 320;
+
+/* The width a FRESH engine node opens at. This is comfort, not a floor:
+ * onNodeCreated runs once, and grow-only keeps whatever the user then
+ * pulls it to. Separating the two is the point of this cut -- the old
+ * code used the same 700 for both, so the opening width WAS the floor. */
+const ENGINE_START_W = 700;
+
+/* Width is GROW-ONLY: never below ENGINE_MIN_W, never below what the node
+ * already holds. Height FOLLOWS the content -- removing a row MUST shrink the
+ * box, otherwise it freezes at its largest ever extent (the v874 lesson). */
+function fitEngineSize(node, contentH) {
+    const cur = (node.size && node.size[0]) || 0;
+    const w = Math.max(ENGINE_MIN_W, cur);
+    const h = (typeof contentH === "number" && contentH > 0)
+        ? contentH : ((node.size && node.size[1]) || 0);
+    node.size[0] = w;
+    node.size[1] = h;
+    if (node.setSize) node.setSize([w, h]);
+    return [w, h];
+}
+
 function newEngineRow() {
     return { enabled: true, name: "None", weight: 1.0,
              // Compat shims so shared helpers (openLoraSelect / openGroupPreviewOverlay)
@@ -3290,7 +3334,7 @@ app.registerExtension({
                           dragSrc: -1, dragDest: -1,
                           isEngine: true,
                           dareVariant: "channel" };
-            this.size[0] = Math.max(this.size[0], 700);
+            this.size[0] = Math.max(this.size[0], ENGINE_START_W);
             this._engineResize();
             setTimeout(() => this._engineHideConfigWidget?.(), 100);
         };
@@ -3298,9 +3342,7 @@ app.registerExtension({
         nodeType.prototype._engineResize = function () {
             if (!this._uls?.rows) return;
             const h = ENGINE_HEADER_H + (this._uls.rows.length + 1) * ROW_H + 8;
-            this.size[0] = Math.max(this.size[0] || 700, 700);
-            this.size[1] = h;
-            if (this.setSize) this.setSize([this.size[0], this.size[1]]);
+            fitEngineSize(this, h);
             this._uls.hoverRow = -1; this._uls.hoverZone = "";
             app.graph?.setDirtyCanvas(true, false);
         };
@@ -3308,7 +3350,7 @@ app.registerExtension({
         nodeType.prototype.onResize = function (size) {
             if (!this._uls?.rows) return;
             const minH = ENGINE_HEADER_H + (this._uls.rows.length + 1) * ROW_H + 8;
-            if (size[0] < 700) size[0] = 700;
+            if (size[0] < ENGINE_MIN_W) size[0] = ENGINE_MIN_W;
             if (size[1] < minH) size[1] = minH;
         };
 
@@ -3359,7 +3401,9 @@ app.registerExtension({
                     w.hidden = true;
                     w.type = "hidden";
                     w.computeSize = () => [0, -4];
-                    if (this.setSize) this.setSize(this.computeSize());
+                    // v877: was setSize(computeSize()) -- a hard reset to
+                    // LiteGraph's minimum on every workflow load. Grow-only.
+                    fitEngineSize(this);
                     break;
                 }
             }
