@@ -81,14 +81,15 @@ const POLY_CANVAS_NODES = new Set([
 // _ulsDomPanel. test_v943 pins that every class above is either here or
 // has a view -- a new painted node must be classified, never slip through.
 // public build (v374): the internal-only nodes are not listed here either.
+// v959: AnySwitch/-Inv left this list -- they carry a view now
+// (uls_extras_dom.js) and are classified through it.
 const VUE_USABLE = new Set([
-    "ULSAnySwitch", "ULSAnySwitchInv", "ULSEmptyLatent",
-    "ULSNote", "ULSSeed", "ULSWanSigmaSchedule",
+    "ULSEmptyLatent", "ULSNote", "ULSSeed", "ULSWanSigmaSchedule",
 ]);
 
 // v921: hand-kept -- it had drifted to v609 while the carrier was at
 // v920, and this string is what the About page shows the user.
-const PLUGIN_VERSION = "v375";
+const PLUGIN_VERSION = "v376";
 // v303: 8s — 3s false-positived on large workflows / slow first draws.
 // LiteGraph culls offscreen nodes (onDrawForeground never runs for them), so
 // the notice can still appear for an offscreen-but-healthy node; the draw

@@ -41,6 +41,16 @@
  *   spec.prepare()    optional; called before the first view is built
  *   spec.className    optional CSS class for the root element
  *   spec.label        optional; the console names the view with it
+ *   spec.header(node, chip)  optional (v962); build a small control into
+ *                     `chip`, which the switch point appends to the RIGHT of
+ *                     the node's Vue title bar (`.lg-node-header > div`, a
+ *                     flex row with the title at the left -- measured
+ *                     13.09.2026, frontend 1.49.6: the chip sits at the right,
+ *                     survives title change, resize and redraw). Vue owns
+ *                     that row: if a re-render drops the chip, the watch
+ *                     puts it back next tick. A spec may bring ONLY a header
+ *                     (no widgetName/render) -- then no DOM widget row is
+ *                     added at all.
  *   spec.signature(node)  optional (v941); a cheap value that changes when
  *                     the view should be redrawn -- checked every tick while
  *                     the view is on screen, render() only on a change. For
@@ -76,10 +86,11 @@ function specOf(node) {
 
 /** Register the DOM view of one node class. Safe to call before any node. */
 export function registerVueView(className, spec) {
-    if (!className || !spec || !spec.widgetName
-            || typeof spec.render !== "function") {
-        throw new Error("[ULS] registerVueView needs a class, a widgetName "
-                        + "and a render(node, root)");
+    const hasRow = !!(spec && spec.widgetName && typeof spec.render === "function");
+    const hasHeader = !!(spec && typeof spec.header === "function");
+    if (!className || !spec || (!hasRow && !hasHeader)) {
+        throw new Error("[ULS] registerVueView needs a class and either a widgetName "
+                        + "with a render(node, root) or a header(node, chip)");
     }
     _views.set(className, spec);
     startWatch();
@@ -92,17 +103,51 @@ function attach(node, spec) {
         _prepared.add(spec);
         try { spec.prepare?.(); } catch (e) { /* a view never breaks a node */ }
     }
-    const root = document.createElement("div");
-    if (spec.className) root.className = spec.className;
-    const widget = node.addDOMWidget(spec.widgetName, "div", root, {
-        serialize: false,   // frontend: keeps the view out of the PROMPT
-        hideOnZoom: false,
-    });
-    // The frontend does NOT copy options.serialize onto the widget, and
-    // LiteGraph's workflow writer reads widget.serialize only.
-    widget.serialize = false;
-    node._ulsVueView = { widget, root, shown: false };
+    let widget = null, root = null;
+    if (spec.widgetName) {                             // v962: header-only specs add no row
+        root = document.createElement("div");
+        if (spec.className) root.className = spec.className;
+        widget = node.addDOMWidget(spec.widgetName, "div", root, {
+            serialize: false,   // frontend: keeps the view out of the PROMPT
+            hideOnZoom: false,
+        });
+        // The frontend does NOT copy options.serialize onto the widget, and
+        // LiteGraph's workflow writer reads widget.serialize only.
+        widget.serialize = false;
+    }
+    node._ulsVueView = { widget, root, shown: false, chip: null };
     return node._ulsVueView;
+}
+
+/** v962: the flex row of the node's Vue title bar, or null while the Vue
+ *  element is not on screen (subgraph closed, node off-canvas, classic). */
+function headerRow(node) {
+    try {
+        const el = document.querySelector('[data-node-id="' + node.id + '"]');
+        return el ? el.querySelector(".lg-node-header > div") : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+/** v962: keep the header chip in the title bar while the view is shown.
+ *  Built once (spec.header), re-appended whenever Vue's re-render dropped it. */
+function syncHeader(node, spec, v) {
+    const row = headerRow(node);
+    if (!row) return;
+    if (v.chip && v.chip.parentElement === row) return;
+    if (!v.chip) {
+        const chip = document.createElement("span");
+        chip.className = "uls-vue-hdr";
+        // the title bar is the drag handle -- a click on the chip must not
+        // start a node drag or select the node
+        for (const ev of ["pointerdown", "mousedown"]) {
+            chip.addEventListener(ev, (e) => e.stopPropagation());
+        }
+        spec.header(node, chip);
+        v.chip = chip;
+    }
+    row.appendChild(v.chip);
 }
 const _prepared = new Set();
 
@@ -112,31 +157,36 @@ const _prepared = new Set();
 function syncNode(node, vue) {
     const spec = specOf(node);
     if (!spec) return;
-    const label = spec.label || spec.widgetName;
+    const label = spec.label || spec.widgetName || "header";
     if (vue) {
         if (spec.ready && !spec.ready(node)) return;   // not configured yet
         const v = attach(node, spec);
-        if (v.shown && !v.widget.hidden) {
-            if (spec.signature) {                      // v941: live, on change only
+        if (v.shown) {
+            if (v.widget && !v.widget.hidden && spec.signature) {   // v941: live, on change only
                 const sig = signatureOf(spec, node);
                 if (sig !== v.sig) {
                     v.sig = sig;
                     spec.render(node, v.root);
                 }
             }
+            if (spec.header) syncHeader(node, spec, v);           // v962: Vue may have dropped it
             return;
         }
-        v.widget.hidden = false;
         v.shown = true;
-        v.sig = spec.signature ? signatureOf(spec, node) : undefined;
-        spec.render(node, v.root);                     // state may have moved
+        if (v.widget) {
+            v.widget.hidden = false;
+            v.sig = spec.signature ? signatureOf(spec, node) : undefined;
+            spec.render(node, v.root);                 // state may have moved
+        }
+        if (spec.header) syncHeader(node, spec, v);
         node.setDirtyCanvas?.(true, true);
         return label;
     } else {
         const v = node._ulsVueView;
         if (!v) return;                                // never attached
-        if (!v.shown && v.widget.hidden) return;
-        v.widget.hidden = true;
+        if (!v.shown) return;
+        if (v.widget) v.widget.hidden = true;
+        if (v.chip) { v.chip.remove(); v.chip = null; }   // v962: nothing of ours in the title bar
         v.shown = false;
         spec.leave?.(node);
         node.setDirtyCanvas?.(true, true);
@@ -168,7 +218,7 @@ function signatureOf(spec, node) {
 export function refreshVueView(node) {
     const spec = specOf(node);
     const v = node?._ulsVueView;
-    if (!spec || !v || !v.shown) return false;
+    if (!spec || !v || !v.shown || !v.widget) return false;
     spec.render(node, v.root);
     return true;
 }

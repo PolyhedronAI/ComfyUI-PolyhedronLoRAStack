@@ -16,6 +16,13 @@
  * state the node changes by itself carry a signature, so the switch point
  * redraws them when that state moves (a word count while typing).
  *
+ * v959 adds AnySwitch/-Inv's status line at the foot (the backend's
+ * pls_switch text, painted only AFTER a run -- which is why no parity sheet
+ * ever showed the gap); the view calls the node's own switchStatusLine, the
+ * canvas paints from the same function. v962 moves the Filter's Reset into
+ * the TITLE BAR through spec.header (uls_vue_views.js), where the painted
+ * node has it; the v941 foot row is gone.
+ *
  * Not built, on purpose: WanSigmaSchedule's inline output dots (deprecated
  * node; its outputs work under Nodes 2.0) and the Load nodes' slot "x" (a
  * custom canvas widget -- measured separately before anything is built).
@@ -25,6 +32,7 @@ import { getValue, setValue, addIntPreset, removeIntPreset, INT_EMPTY_HINT } fro
 import { _pfReset } from "./ph_filter.js";
 import { _barLines, _counterText } from "./ph_clip_encode.js";
 import { loadStatusLine } from "./ph_basics.js";
+import { switchStatusLine } from "./ph_switch.js";
 // public build: ULSEverywhere is an internal-only node -- its view and the
 // ph_everywhere.js import are not carried here (v374).
 
@@ -89,13 +97,21 @@ function renderInt(node, root) {
     root.appendChild(box);
 }
 
-// ── Filter: the Reset chip ─────────────────────────────────────────────────
-function renderFilter(node, root) {
-    root.textContent = "";
+// ── Filter: the Reset chip -- in the TITLE BAR, where the painted node has it ─
+// v941 put it in a row at the foot; v962 moves it up through spec.header, so
+// the Vue node carries it top right like classic. Same _pfReset either way.
+function renderFilter(node, chip) {
+    chip.textContent = "";
     const b = el("button", "uls-x-btn", "Reset");
     b.title = "Every grading control back to its default";
     b.onclick = () => _pfReset(node);
-    root.appendChild(b);
+    chip.appendChild(b);
+}
+
+// ── AnySwitch / AnySwitchInv: the status line at the foot (after a run) ──────
+function renderSwitchStatus(node, root) {
+    root.textContent = "";
+    root.appendChild(el("div", "uls-x-line", switchStatusLine(node)));
 }
 
 // ── CLIP Text Encode: the word band ────────────────────────────────────────
@@ -123,10 +139,9 @@ registerVueView("ULSInt", Object.assign({}, common, {
     signature: (node) => JSON.stringify([(node._phi && node._phi.rows) || [], getValue(node)]),
     render: renderInt,
 }));
-registerVueView("ULSFilter", Object.assign({}, common, {
-    widgetName: "uls_filter_dom", label: "Filter reset",
-    render: renderFilter,
-}));
+registerVueView("ULSFilter", { label: "Filter reset", prepare: ensureCss,
+    header: renderFilter,                   // v962: title bar, no widget row
+});
 registerVueView("ULSCLIPTextEncode", Object.assign({}, common, {
     widgetName: "uls_cte_dom", label: "CLIP word band",
     signature: (node) => _counterText(node) + "|" + Math.round((node.size && node.size[0]) || 0),
@@ -141,3 +156,10 @@ const loadSpec = () => Object.assign({}, common, {
 registerVueView("ULSLoadCLIP", loadSpec());
 registerVueView("ULSLoadModel", loadSpec());
 registerVueView("ULSLoadVAE", loadSpec());
+const switchSpec = () => Object.assign({}, common, {
+    widgetName: "uls_switch_status_dom", label: "Switch status",
+    signature: (node) => switchStatusLine(node),
+    render: renderSwitchStatus,
+});
+registerVueView("ULSAnySwitch", switchSpec());
+registerVueView("ULSAnySwitchInv", switchSpec());

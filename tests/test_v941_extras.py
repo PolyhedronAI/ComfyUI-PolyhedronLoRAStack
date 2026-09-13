@@ -104,6 +104,8 @@ const _barLines = (n) => ["L1", "L2"];
 const _counterText = (n) => "CT";
 const loadStatusLine = (n) => ({ text: "STATUS", colour: "#ff8c00" });
 const fedLine = (n) => "FED";
+// v959/v962 views live in the same file; their piece is stubbed so the module loads
+const switchStatusLine = (n) => "SW";
 """
 V_TAIL = r"""
 const out = {};
@@ -121,7 +123,8 @@ out.prevented = prevented;
 SPECS.ULSInt.render({ _phi: { rows: [] } }, r);
 out.hint = (find(r, "uls-x-hint")[0] || {}).textContent;
 out.int_ready = [SPECS.ULSInt.ready({ _phi: {} }), SPECS.ULSInt.ready({})];
-SPECS.ULSFilter.render({}, r); find(r, "uls-x-btn")[0].onclick(); out.filter = calls.splice(0);
+SPECS.ULSFilter.header({}, r); find(r, "uls-x-btn")[0].onclick(); out.filter = calls.splice(0);   // v962: header chip
+out.filter_no_row = !SPECS.ULSFilter.widgetName && !SPECS.ULSFilter.render;
 SPECS.ULSCLIPTextEncode.render({}, r); out.band = find(r, "uls-x-line").map(e => e.textContent);
 out.cte_sig = SPECS.ULSCLIPTextEncode.signature({ size: [300, 100] });
 SPECS.ULSLoadCLIP.render({}, r); const ln = find(r, "uls-x-line")[0]; out.load = [ln.textContent, ln.style.color];
@@ -155,16 +158,19 @@ def main():
     if v is None:
         check(False, "views harness ran: " + err)
         return 1
-    check(v["classes"] == sorted(["ULSInt", "ULSFilter", "ULSCLIPTextEncode", "ULSLoadCLIP",
-                                  "ULSLoadModel", "ULSLoadVAE"]),
-          "V  seven classes register a view (%s)" % v["classes"])
+    six = ["ULSInt", "ULSFilter", "ULSCLIPTextEncode", "ULSLoadCLIP", "ULSLoadModel", "ULSLoadVAE"]
+    # v959 registers the two switches in this file too (guarded by test_v959);
+    # this guard pins that the six of v941 are still all there.
+    check(all(c in v["classes"] for c in six),
+          "V  the six v941 classes register a view (%s)" % v["classes"])
     check(v["chips"] == [["low", True], ["9", False]],
           "V  Int: one chip per preset, the current value marked, nameless shows its value")
     check(v["int_calls"] == [["setValue", 9], ["remove", 0], ["add"]] and v["prevented"],
           "V  Int: click selects, right-click removes (no context menu), '+' adds -- the SHARED pieces")
     check(v["hint"] == "HINT" and v["int_ready"] == [True, False],
           "V  Int: the SHARED empty hint; ready only once the node has its chip state")
-    check(v["filter"] == [["reset"]], "V  Filter: Reset calls the SHARED _pfReset")
+    check(v["filter"] == [["reset"]] and v["filter_no_row"],
+          "V  Filter: the title-bar Reset chip calls the SHARED _pfReset; no widget row (v962)")
     check(v["band"] == ["L1", "L2"] and v["cte_sig"] == "CT|300",
           "V  CLIP Encode: the band shows the SHARED _barLines; signature = counter text + width")
     check(v["load"] == ["STATUS", "#ff8c00"] and v["load_same"],

@@ -56,8 +56,9 @@ def main():
     # (AnySwitch x2, Empty Latent, Note, Seed, Wan Sigma Schedule), 8 with a
     # view (Stack, Engine, CLIP Text Encode, Filter, Int, Load CLIP/Model/VAE);
     # the internal tree counts 11 / 9 with its six internal-only nodes.
-    check(len(usable) == 6 and len(painted & views) == 8,
-          "C  today: 6 measured usable, 8 with a view (%d / %d)" % (len(usable), len(painted & views)))
+    # v376 (internal v959): AnySwitch x2 gained a view -> 4 / 10.
+    check(len(usable) == 4 and len(painted & views) == 10,
+          "C  today: 4 measured usable, 10 with a view (%d / %d)" % (len(usable), len(painted & views)))
     code = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
     code = re.sub(r"^\s*//.*$", "", code, flags=re.M)
     check(re.search(r"if\s*\(\s*n\._ulsDomPanel\s*\|\|\s*VUE_USABLE\.has\(t\)\s*\)\s*\{\s*dropNotice\(n\);\s*continue;", code)

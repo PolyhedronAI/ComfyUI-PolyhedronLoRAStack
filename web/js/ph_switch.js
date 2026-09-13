@@ -131,6 +131,14 @@ function tidyOutputs(node) {
 
 /* ------------------------------ registration ---------------------------- */
 
+/** The status line the painted node writes at its foot after a run (the
+ *  backend's pls_switch text). One reader for both renderers (v959): the
+ *  canvas paints it, the Nodes 2.0 view (uls_extras_dom.js) lists it. */
+export function switchStatusLine(node) {
+    const t = node && node._plsStatus;
+    return t ? String(t) : "";
+}
+
 app.registerExtension({
     name: "polyhedron.switch",
 
@@ -179,12 +187,13 @@ app.registerExtension({
         const onDrawForeground = nodeType.prototype.onDrawForeground;
         nodeType.prototype.onDrawForeground = function (ctx) {
             onDrawForeground?.apply(this, arguments);
-            if ((this.flags && this.flags.collapsed) || !this._plsStatus) return;
+            const status = switchStatusLine(this);
+            if ((this.flags && this.flags.collapsed) || !status) return;
             ctx.save();
             ctx.font = "11px Arial";
             ctx.fillStyle = "#9a9a9a";
             ctx.textAlign = "left";
-            ctx.fillText(this._plsStatus, 8, this.size[1] - 5);
+            ctx.fillText(status, 8, this.size[1] - 5);
             ctx.restore();
         };
     },
