@@ -51,6 +51,7 @@ SAMPLER_ROUTES = (
     "/pls/sampler/preview_mode",
     "/pls/sampler/tae_status",
     "/pls/sampler/tae_install",
+    "/pls/sampler/tae_warm",      # v374: the v920 warm-up, ported into this module
 )
 
 

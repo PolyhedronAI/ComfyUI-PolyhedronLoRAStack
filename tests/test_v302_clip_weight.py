@@ -20,6 +20,7 @@ need ComfyUI/torch (pattern follows test_v267):
   [3] Behavioural check of the combined-zero filter logic (pure re-impl).
 """
 import os
+import re
 import ast
 import sys
 import math
@@ -92,7 +93,9 @@ check("seq calls load_lora(m, c, name, w, wc)",
 check("old linked call gone",
       "loader.load_lora(m, c, name, w, w)" not in src)
 n_fb = src.count("_apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)")
-check(f"all 10 merge fallbacks pass clip weights (found {n_fb})", n_fb == 10)
+# public v374: an eleventh fallback came with the internal v913-v935 line
+# (Baked apply / PDD); every one of them still passes valid_clip_weights.
+check(f"all 11 merge fallbacks pass clip weights (found {n_fb})", n_fb == 11)
 check("no fallback left without clip weights",
       "_apply_seq(loader, model, clip, valid_names, valid_weights)" not in src)
 check("merge picks weight via _is_te_base",
@@ -101,8 +104,7 @@ check("DARE seed unchanged (model weights only)",
       src.count("_dare_seed(valid_names, valid_weights)") == 2
       and "_dare_seed(valid_names, valid_clip_weights)" not in src)
 check("OOM retry carries clip_weights",
-      "force_resolve_device=\"cpu\",\n"
-      "                                                 clip_weights=clip_weights)" in src)
+      re.search(r'force_resolve_device="cpu",\s*clip_weights=clip_weights', src) is not None)   # v374: handoff= follows since v913
 check("apply_lora_set keeps CLIP-only rows",
       "abs(float(w)) >= 1e-6 or abs(float(wc)) >= 1e-6" in src)
 check("stack site collects grp_clip", "grp_clip = [round(_row_clip_weight(r, w), 4)" in src)

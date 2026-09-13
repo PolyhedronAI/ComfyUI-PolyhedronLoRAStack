@@ -72,6 +72,7 @@ if "offsetParent" not in REFIT or "clientWidth" not in REFIT:
 # DRIVEN -- mock with togglable layout; run the REAL _refit, then a MUTANT.
 # ---------------------------------------------------------------------------
 BODY = """
+const vueFieldFor = () => null;   // v952: no Vue field in this harness
 // togglable layout: an unlaid-out textarea reports offsetParent=null, clientWidth=0, and a
 // collapsed scrollHeight; once laid out it reports a parent, a real width, and CONTENT_H.
 let LAID = false;
@@ -130,7 +131,7 @@ def run(refit_src, label):
         + _const("FIELD_NAMES") + "\n"
         + PRELUDE
         + _lift("function _visibleFields(node)") + "\n"
-        + _lift("function _contentH(w)") + "\n"
+        + _lift("function _contentH(w, el)") + "\n"
         + refit_src + "\n"
         + BODY
     )

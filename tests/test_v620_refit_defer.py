@@ -175,7 +175,7 @@ console.log(JSON.stringify({ deferHeight, deferSizes, fitHeight, grew }));
        _const("NEG_GAP"), _const("HIDDEN_PREFIX"), _const("FIELD_NAMES"),  # v715: BAR_H gone
        _lift("function _w(node, name)"),
        _lift("function _visibleFields(node)"),
-       _lift("function _contentH(w)"),
+       _lift("function _contentH(w, el)"),
        _lift("function _refit(node)"),
        _lift("function _refitNextFrame(node)"),
        _lift("function _extConnected(node, inputName)"),

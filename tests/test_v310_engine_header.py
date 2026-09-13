@@ -84,8 +84,10 @@ check("header hover checked FIRST in onMouseMove (before DARE pill)",
 print("\n[4] Tooltip")
 check("tooltip overlay guarded by weightHdr zone",
       'uls.hoverZone === "weightHdr" && uls._weightHdrRect' in eng_js)
+# v374: the tooltip lines are shared (WEIGHT_HDR_TIP_LINES, defined above the
+# Engine section since v915) -- the Engine reads them, the text lives once.
 check("tooltip explains Shift+Click",
-      "Shift+Click" in eng_js)
+      "Shift+Click" in js and "WEIGHT_HDR_TIP_LINES" in eng_js)
 check("tooltip anchored LEFT of composite",
       "hr.x - TW - 8" in eng_js)
 

@@ -145,6 +145,10 @@ def run_seam():
         def make_noise(kind, shape, seed, strength):
             return _T(shape)
 
+        @staticmethod
+        def noise_log_tag(kind, seed):      # v916: the console helper
+            return "noise=%s" % kind
+
     class _MM:
         @staticmethod
         def intermediate_device():
@@ -227,6 +231,10 @@ def run_mutations():
             @staticmethod
             def make_noise(kind, shape, seed, strength):
                 return _T(shape)
+
+            @staticmethod
+            def noise_log_tag(kind, seed):      # v916: the console helper
+                return "noise=%s" % kind
 
         class _MM:
             @staticmethod
