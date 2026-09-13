@@ -64,6 +64,20 @@ COLORED_BETA = {"pink": 1.0, "brown": 2.0, "blue": -1.0}
 # Types whose seed/strength do nothing (used by the JS to grey those widgets).
 SEEDLESS_TYPES = ["zeros"]
 
+
+def noise_log_tag(noise_type, noise_seed):
+    """v916: the console fragment for an Empty Latent's init noise.
+
+    For a seedless type the seed is NOT printed: the latent is all zeros and
+    the sampler's NOISE source makes every bit of noise the model sees
+    (v685 measured this -- at sigma 1.0 the latent is multiplied by zero).
+    Printing a hidden, auto-rolling seed next to "zeros" reads as if it
+    mattered; on 05.09. it cost a whole A/B session. Pure, no torch."""
+    if noise_type in SEEDLESS_TYPES:
+        return ("noise=%s (init noise off; the sampler's NOISE source seeds "
+                "the run)" % noise_type)
+    return "noise=%s seed=%s" % (noise_type, noise_seed)
+
 _FRACTAL_OCTAVES = 5
 _FRACTAL_PERSISTENCE = 0.5
 

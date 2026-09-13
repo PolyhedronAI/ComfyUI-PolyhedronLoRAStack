@@ -90,6 +90,38 @@ function getPresets(node) {
     } catch { return []; }
 }
 
+// ─── v941: pieces shared with the Nodes 2.0 view (uls_extras_dom.js) ───────
+// Moved VERBATIM out of onMouseDown / the draw code; the painted chips call
+// them, the view calls the same.
+
+/** The hint beside "+" while no preset exists. */
+const INT_EMPTY_HINT = "name a value";
+
+/** "+": ask for a name and a value, add the preset, select it. */
+function addIntPreset(node) {
+    const st = node._phi; if (!st) return false;
+    const name = prompt("Preset name", "");
+    if (name === null) return false;
+    const raw = prompt("Value", String(getValue(node)));
+    if (raw === null) return false;
+    const v = parseInt(raw, 10);
+    if (!Number.isFinite(v)) return false;
+    const rows = st.rows.slice();
+    rows.push({ name: String(name), value: v });
+    setPresets(node, rows);
+    setValue(node, v);
+    return true;
+}
+
+/** Right-click on a chip: drop that preset. */
+function removeIntPreset(node, i) {
+    const st = node._phi; if (!st) return false;
+    const rows = st.rows.slice();
+    rows.splice(i, 1);
+    setPresets(node, rows);
+    return true;
+}
+
 function setPresets(node, rows) {
     let w = widget(node, "preset_config");
     if (!w) w = node.addWidget("text", "preset_config", "", () => {});
@@ -235,7 +267,7 @@ app.registerExtension({
                     ctx.fillStyle = "#5a5a6a";
                     ctx.font = "italic 10px 'Segoe UI',Arial";
                     ctx.textAlign = "left";
-                    ctx.fillText("name a value", a.x + a.w + 6, a.y + a.h / 2 + 0.5);
+                    ctx.fillText(INT_EMPTY_HINT, a.x + a.w + 6, a.y + a.h / 2 + 0.5);
                 }
             }
             ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
@@ -263,9 +295,7 @@ app.registerExtension({
             for (const z of st.zones) {
                 if (!inRect(lx, ly, z)) continue;
                 if (e && e.button === 2) {
-                    const rows = st.rows.slice();
-                    rows.splice(z.i, 1);
-                    setPresets(this, rows);
+                    removeIntPreset(this, z.i);         // v941: shared with the Nodes 2.0 view
                     return true;
                 }
                 setValue(this, z.row.value);
@@ -273,16 +303,7 @@ app.registerExtension({
             }
 
             if (inRect(lx, ly, st.addZone)) {
-                const name = prompt("Preset name", "");
-                if (name === null) return true;
-                const raw = prompt("Value", String(getValue(this)));
-                if (raw === null) return true;
-                const v = parseInt(raw, 10);
-                if (!Number.isFinite(v)) return true;
-                const rows = st.rows.slice();
-                rows.push({ name: String(name), value: v });
-                setPresets(this, rows);
-                setValue(this, v);
+                addIntPreset(this);                 // v941: shared with the Nodes 2.0 view
                 return true;
             }
             return false;   // everything above belongs to LiteGraph's widget
@@ -295,3 +316,6 @@ app.registerExtension({
         };
     },
 });
+
+// v941: for the Nodes 2.0 view
+export { getValue, setValue, setPresets, addIntPreset, removeIntPreset, INT_EMPTY_HINT };

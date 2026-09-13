@@ -556,10 +556,20 @@ function _taeToast(title, text, goLabel, onGo) {
 function _checkTaePreview(node, modeValue) {
     const bare = stripMode(modeValue);
     if (!bare.includes("TAE")) return;
-    const tae = bare.includes("lighttaew2_1") ? "lighttaew2_1" : "taew2_1";
+    // v918: taeh3 joins; longest token first (taew2_1 is a substring of lighttaew2_1)
+    const tae = bare.includes("lighttaew2_1") ? "lighttaew2_1"
+              : bare.includes("taeh3") ? "taeh3" : "taew2_1";
     node._plsTaeWarned = node._plsTaeWarned || {};
     if (node._plsTaeWarned[tae]) return;
     _samplerFetch("/pls/sampler/tae_status", { mode: tae }).then((st) => {
+        // v920: taeh3 present -> warm the decoder NOW (build, fp16, one 8x8
+        // frame on the GPU) so the first run's step 1->2 gap is gone. Fire
+        // and forget; the console prints "[PLS] preview: taeh3 warm ...".
+        if (st && st.ok && st.found && tae === "taeh3") {
+            node._plsTaeWarned[tae] = true;
+            _samplerFetch("/pls/sampler/tae_warm", { name: tae }).catch(() => {});
+            return;
+        }
         if (!st || !st.ok || st.found) return;
         node._plsTaeWarned[tae] = true;
         const info = "'" + st.file + "' is not in " + st.folder + " -- the "

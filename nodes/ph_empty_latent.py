@@ -395,11 +395,11 @@ class ULSEmptyLatent:
                      " (frames snapped %d -> %d onto the 17k+5 grid)") % (
                 frames_in, frame_count)
         print("[PLS] Empty Latent: type=minimax_h3 %s -> %d frame%s = %.2f s "
-              "@ %d fps | video %s + audio %s | noise=%s seed=%s%s"
+              "@ %d fps | video %s + audio %s | %s%s"
               % (src, frame_count, "" if frame_count == 1 else "s",
                  frame_count / float(M.MINIMAX_FPS),
                  M.MINIMAX_FPS, tuple(video.shape), tuple(audio.shape),
-                 noise_type, noise_seed, note))
+                 uls_noise.noise_log_tag(noise_type, noise_seed), note))
         lat = {"samples": samples}
         return (positive, negative, lat,
                 video.shape[4], video.shape[3], w, h)
@@ -454,7 +454,7 @@ class ULSEmptyLatent:
                 lat = dict(lat)
                 lat["samples"] = noise.to(base.device, dtype=base.dtype)
             print(f"[PLS] Empty Latent: type=wan shape={tuple(lat['samples'].shape)} "
-                  f"noise={noise_type} seed={noise_seed} "
+                  f"{uls_noise.noise_log_tag(noise_type, noise_seed)} "
                   f"i2v={'yes' if start_image is not None else 'no'} "
                   f"vae={'exact' if vae_ch else 'default'}")
             return (pos, neg, lat) + _size_outputs(lat["samples"], width, height)
@@ -475,7 +475,7 @@ class ULSEmptyLatent:
                     lat["samples"] = noise.to(base.device, dtype=base.dtype)
                 print(f"[PLS] Empty Latent: type={key} "
                       f"shape={tuple(lat['samples'].shape)} "
-                      f"noise={noise_type} seed={noise_seed} source=core")
+                      f"{uls_noise.noise_log_tag(noise_type, noise_seed)} source=core")
                 return ((positive, negative, lat)
                         + _size_outputs(lat["samples"], width, height))
             print(f"[PLS] Empty Latent: type={key} -- host has no "
@@ -486,7 +486,7 @@ class ULSEmptyLatent:
         samples = uls_noise.make_noise(noise_type, shape, noise_seed, noise_strength)
         samples = samples.to(comfy.model_management.intermediate_device())
         print(f"[PLS] Empty Latent: type={key} shape={tuple(samples.shape)} "
-              f"noise={noise_type} seed={noise_seed} "
+              f"{uls_noise.noise_log_tag(noise_type, noise_seed)} "
               f"source={'vae' if (vae_ch or vae_sdiv) else 'spec'}")
         return ((positive, negative, {"samples": samples})
                 + _size_outputs(samples, width, height))

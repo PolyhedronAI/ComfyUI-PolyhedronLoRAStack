@@ -481,6 +481,21 @@ function toastNoModel(node) {
     } catch (e) { /* never break the ui */ }
 }
 
+// v941: the status line under the Load nodes -- ONE source for the painted
+// line and the Nodes 2.0 view. Moved verbatim from onDrawForeground (v827/v829:
+// the amber "no model connected" warning on Load CLIP).
+function loadStatusLine(node, cls) {
+    let text = node._plsStatus ? String(node._plsStatus) : "";
+    let colour = "#9a9a9a";
+    if ((cls || node.comfyClass || node.type) === "ULSLoadCLIP" && modelUnlinked(node)) {
+        // v829: same words as the bubble -- ONE source
+        // (NO_MODEL_TEXT), two voices.
+        text = "\u26a0 " + NO_MODEL_TEXT;
+        colour = AMBER;
+    }
+    return { text, colour };
+}
+
 function modelUnlinked(node) {
     const inp = (node.inputs || []).find((i) => i && i.name === "model");
     return !inp || inp.link == null;
@@ -631,14 +646,7 @@ app.registerExtension({
             // where the status lives. The header check (safetensors
             // slate, no weights read) still runs either way -- the
             // warning names exactly what is missing, nothing more.
-            let text = this._plsStatus ? String(this._plsStatus) : "";
-            let colour = "#9a9a9a";
-            if (nodeData.name === "ULSLoadCLIP" && modelUnlinked(this)) {
-                // v829: same words as the bubble -- ONE source
-                // (NO_MODEL_TEXT), two voices.
-                text = "\u26a0 " + NO_MODEL_TEXT;
-                colour = AMBER;
-            }
+            let { text, colour } = loadStatusLine(this, nodeData.name);   // v941: shared with the Nodes 2.0 view
             if (!text) return;
             ctx.save();
             ctx.font = "11px Arial";
@@ -653,3 +661,6 @@ app.registerExtension({
         };
     },
 });
+
+// v941: for the Nodes 2.0 view
+export { loadStatusLine };

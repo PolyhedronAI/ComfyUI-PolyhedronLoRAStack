@@ -186,7 +186,7 @@ def ensure_weights(folder, name, registry, tag="provision", _fetch=None,
                 next_mark = 0
                 print("[PLS] %s: downloading '%s' (%s)%s"
                       % (tag, name, spec["file"],
-                         " ~%d MB" % (total >> 20) if total else ""))
+                         " ~%d MiB" % (total >> 20) if total else ""))
                 while True:
                     b = resp.read(1 << 20)
                     if not b:
@@ -194,11 +194,11 @@ def ensure_weights(folder, name, registry, tag="provision", _fetch=None,
                     out.write(b)
                     got += len(b)
                     if got >= next_mark:
-                        print("[PLS] %s: %d%s MB"
+                        print("[PLS] %s: %d%s MiB"
                               % (tag, got >> 20,
                                  "/%d" % (total >> 20) if total else ""))
                         next_mark = got + (32 << 20)
-                print("[PLS] %s: download done (%d MB), verifying sha256"
+                print("[PLS] %s: download done (%d MiB), verifying sha256"
                       % (tag, got >> 20))
         got_hash = sha256_file(part)
         if got_hash != spec["sha256"]:

@@ -74,3 +74,10 @@ nacktem **und** `/api`-Pfad registriert).
 **Practical-RIFE** (hzwer), by way of **ComfyUI-Frame-Interpolation**
 (Fannovel16). MIT licence, copied verbatim, not modified. Attribution and
 reasoning in `nodes/vfi/NOTICE.md`. Used by ⬡ Polyhedron Interpolate.
+
+`nodes/vendor/taehv/taehv.py` — the TAEHV tiny video autoencoder from
+**taehv** (madebyollin, Ollin Boer Bohan). MIT licence, copied verbatim, not
+modified; the LICENSE file sits next to it, provenance and the reason for
+vendoring (Core has no H3 branch for 24 latent channels) in
+`nodes/vendor/taehv/SOURCE.md`. Used by ⬡ Polyhedron Sampler for the
+"Video · TAE (taeh3)" live preview (v374 / internal v918).

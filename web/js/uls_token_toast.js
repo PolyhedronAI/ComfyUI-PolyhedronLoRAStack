@@ -89,13 +89,15 @@ app.registerExtension({
                         0,   // life 0 = sticky: an over-limit run must not auto-vanish
                     );
                 } else if (info.near_limit) {
-                    toast(
-                        "warn",
-                        "Token budget almost full",
-                        `Prompt is ${worst}/${info.limit} tokens ` +
-                        `(warn at ${info.warn_at}). Quality may start to degrade.`,
-                        6000,
-                    );
+                    // v911 — the SECOND half of the v908 wound. That cut gated
+                    // the over-budget claim and left this one saying "quality
+                    // may start to degrade" on every encoder. The effect it
+                    // points at (motion slowing, grid patterns) comes from a
+                    // fixed 512-wide buffer; on a capless encoder nothing is
+                    // cut and that buffer is not on the path. nearNotice() is
+                    // a pure function so the guard can DRIVE both wordings.
+                    const n = nearNotice(info);
+                    toast("warn", n.summary, n.detail, 6000);
                 }
             } catch (e) {
                 console.warn("[PLS Tokens] toast hook:", e);
@@ -103,3 +105,31 @@ app.registerExtension({
         };
     },
 });
+
+// v911 -- the "almost full" wording, as a pure function so the guard can run
+// it instead of reading it.
+//
+// DELIBERATELY DEFINED BELOW the hook (function declarations hoist, so the
+// call above works): test_v908_toast_truth.py splits this file at the FIRST
+// `info.can_truncate` to inspect the over-budget branches. Moving this
+// function above the hook would hand that guard the wrong branch pair and
+// turn a healthy tree red -- the failure mode _lift.py was written about.
+export function nearNotice(info) {
+    const worst = Math.max(info.pos, info.neg);
+    const named = info.encoder ? ` (${info.encoder})` : "";
+    if (info.can_truncate) {
+        return {
+            summary: "Token budget almost full",
+            detail: `Prompt is ${worst}/${info.limit} tokens ` +
+                    `(warn at ${info.warn_at}). Quality may start to degrade ` +
+                    `as the budget fills.`,
+        };
+    }
+    return {
+        summary: "At your own token mark",
+        detail: `Prompt is ${worst}/${info.limit} tokens ` +
+                `(warn at ${info.warn_at}). Nothing is cut${named} — this mark ` +
+                `is yours, not the encoder's. The report says what length ` +
+                `really costs on this model.`,
+    };
+}

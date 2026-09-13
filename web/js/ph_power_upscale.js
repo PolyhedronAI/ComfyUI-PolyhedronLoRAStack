@@ -688,6 +688,12 @@ function _buildViewer(node) {
     const w = node.addDOMWidget("pls_pu_result", "div", box,
         { serialize: false, hideOnZoom: false });   // v542: survive zoom-out
     w.computeSize = (width) => [width, node._pvPrevH];
+    // v939 (S0 click-wall audit, 10.09.): hiding only the inner box left the
+    // frontend's DOM-widget container clickable -- 320 px wide, from the node's
+    // bottom to the screen's, over the node and its neighbours. The WIDGET is
+    // what the overlay honours; it follows the pane from here on.
+    node._pvW = w;
+    w.hidden = true;
     return w;
 }
 
@@ -723,8 +729,15 @@ function _pvApply(node, list) {
             Math.min(PV_MAX_H, Math.round(boxW * ih / iw) + barH));
         if (grew || Math.abs(fitH - node._pvPrevH) > 2) {   // deadband (v531)
             node._pvPrevH = fitH;
+            if (node._pvW) node._pvW.hidden = false;   // counted by computeSize below
             node.setSize([boxW, node.computeSize()[1]]);
         }
+        // v939: the widget is released only once it HAS a height -- also when
+        // the deadband above skipped the resize. A shown DOM widget with height
+        // 0 gets a negative container height, which the browser rejects; after
+        // a renderer round trip the container falls back to full canvas
+        // height: the click wall again.
+        if (node._pvW && node._pvPrevH > 0) node._pvW.hidden = false;
         _pvShow(node, 0);
         if (multi) _pvPlay(node);   // plays once - loop is off by default (v534)
         node.setDirtyCanvas(true, true);
@@ -923,6 +936,8 @@ function _buildProcView(node) {
     const w = node.addDOMWidget("pls_pu_process", "div", box,
         { serialize: false, hideOnZoom: false });   // v542: survive zoom-out
     w.computeSize = (width) => [width, node._procH];
+    node._procW = w;       // v939: the widget follows the pane (see pls_pu_result)
+    w.hidden = true;
     return w;
 }
 
@@ -952,6 +967,7 @@ function _pvHide(node) {
     if (!node._pvBox || node._pvBox.style.display === "none") return;
     _pvStop(node);                                        // the loop stops too
     node._pvBox.style.display = "none";
+    if (node._pvW) node._pvW.hidden = true;               // v939
     node._pvPrevH = 0;
     node.setSize([node.size[0], node.computeSize()[1]]);   // height only (v531)
     node.setDirtyCanvas(true, true);
@@ -960,6 +976,7 @@ function _pvHide(node) {
 function _procHide(node) {
     if (!node._procBox || !node._procSeen) return;
     node._procBox.style.display = "none";
+    if (node._procW) node._procW.hidden = true;           // v939
     node._procH = 0;
     node._procSeen = false;                                // re-arms for next run
     node.setSize([node.size[0], node.computeSize()[1]]);   // height only (v531)
@@ -971,6 +988,7 @@ function _procApply(node, d) {
     if (!node._procSeen) {   // first data: reveal ONCE (a collapse is respected)
         node._procSeen = true;
         node._procBox.style.display = "block";
+        if (node._procW) node._procW.hidden = false;      // v939
         _pvHide(node);   // v601: and the LAST run's result stops pretending to be this one
 
         // v592: widen HERE - seconds into the run, not when it is over. This is

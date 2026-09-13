@@ -117,9 +117,6 @@ const CUSTOM_LABEL = "— Custom —";
 // box from draw()'s `height` argument. ComfyUI passes the fixed NODE_WIDGET_HEIGHT
 // (~20) there, NOT the computeSize height. We size from widget._h (our own reserved
 // budget), which is authoritative and feedback-free. ***
-const PREVIEW_MIN_H = 120;   // floor for the height budget (smallest box + pads)
-const PREVIEW_MAX_H = 420;   // ceiling on the height budget (lower-edge drag)
-const PREVIEW_DEF_H = 172;   // default height budget on drop
 const BOX_MIN = 64;          // smallest the noise box is ever drawn (MIN size)
 const BOX_MAX_W = 320;       // maximum box width  (MAX size / "maximale Breite")
 const BOX_MAX_H = 320;       // maximum box height (MAX size)
@@ -260,21 +257,6 @@ function _framePill(node) {
 // budget), keeping the latent aspect, bounded by BOX_MIN and BOX_MAX_W/H. Shared by
 // computeSize (so the node hugs the box) and draw (so it renders the same box). `width`
 // is the widget width LiteGraph passes to both; `desiredH` is widget._h (drag budget).
-function _fitBox(width, desiredH, aspect) {
-    const a = (aspect && aspect > 0) ? aspect : 1;
-    const availW = Math.max(BOX_MIN, width - 2 * PREV_MARGIN - PREV_GAP - TEXT_COL_W);
-    const budget = Math.max(PREVIEW_MIN_H, Math.min(PREVIEW_MAX_H, desiredH || PREVIEW_DEF_H));
-    const availH = Math.max(BOX_MIN, budget - TOP_PAD - PREV_BOTTOM);
-    // largest rectangle with the latent aspect fitting (availW x availH), then capped
-    let boxH = availH;
-    let boxW = boxH * a;
-    if (boxW > availW)    { boxW = availW;    boxH = boxW / a; }
-    if (boxW > BOX_MAX_W) { boxW = BOX_MAX_W; boxH = boxW / a; }
-    if (boxH > BOX_MAX_H) { boxH = BOX_MAX_H; boxW = boxH * a; }
-    boxW = Math.max(BOX_MIN, boxW);
-    boxH = Math.max(BOX_MIN, boxH);
-    return { w: boxW, h: boxH };
-}
 
 
 // v685 -- hide the legacy noise controls without touching the canon.
@@ -299,6 +281,16 @@ function _hideLegacyNoise(node) {
         if (!LEGACY_NOISE.includes(w.name)) continue;
         w.type = "hidden";
         w.computeSize = () => [0, -4];   // -4 cancels LiteGraph's row spacing
+        // v916: a hidden control widget still fires after every queue --
+        // ComfyUI walks node.widgets, not the drawn ones -- so the hidden
+        // noise_seed kept re-rolling on "randomize" and every run serialised
+        // a different value into the PNG (and the console printed it, next
+        // to noise=zeros, as if it mattered). Pin it to "fixed": the seed is
+        // inert for zeros (v685), and the sampler's NOISE source is the one
+        // that counts. Value only -- the widget stays in widgets_values.
+        if (w.name === "control_after_generate" && w.value !== "fixed") {
+            w.value = "fixed";
+        }
         n++;
     }
     return n;
@@ -382,8 +374,11 @@ async function _fetchPresets() {
 function _refreshPresetCombo(node, comboW, presets) {
     const ordered = _orderedPresets(presets);
     node._uls_presets = ordered;
-    // values = user presets first, then built-ins (no dead placeholder)
-    comboW.options.values = ordered.map(_presetLabel);
+    // values = user presets first, then built-ins. v951: the Custom label is
+    // listed LAST -- it is a state the combo can legitimately show, and Nodes
+    // 2.0 paints a red "value not in list" frame around any value it cannot
+    // find (measured 12.09.). Picking it stays a no-op (see the callback).
+    comboW.options.values = ordered.map(_presetLabel).concat([CUSTOM_LABEL]);
     _syncPresetCombo(node, comboW);   // show the matching preset, or Custom
     if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
 }

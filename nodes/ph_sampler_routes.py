@@ -22,7 +22,7 @@ Every handler imports uls_sampler LAZILY, so this module stays importable even
 when the heavy node is unavailable, and a duplicate path can never abort
 plugin startup.
 
-Routes (3), each registered under the bare path AND the /api alias:
+Routes (4), each registered under the bare path AND the /api alias:
     POST /pls/sampler/preview_mode
     POST /pls/sampler/tae_status
     POST /pls/sampler/tae_install
@@ -102,6 +102,27 @@ async def handle_sampler_tae_install(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "path": str(path)})
 
 
+async def handle_sampler_tae_warm(request: web.Request) -> web.Response:
+    """v920 (public v374): warm the taeh3 preview decoder off-loop the moment
+    the mode is picked (build + fp16 on the GPU + one 8x8 frame), so the first
+    run does not pay the cuDNN/allocator cost between step 1 and 2. Never an
+    error for the user: a failure just means the old price on the first run."""
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad json"}, status=400)
+    name = data.get("name") or data.get("mode") or ""
+    try:
+        import asyncio
+        from .uls_sampler import tae_warm
+        loop = asyncio.get_running_loop()   # house rule since v577
+        status = await loop.run_in_executor(None, tae_warm, name)
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)[:300]})
+    print("[PLS] preview: %s" % status)
+    return web.json_response({"ok": True, "status": status})
+
+
 def register_sampler_routes():
     """Register the Polyhedron Sampler endpoints on the ComfyUI PromptServer.
 
@@ -122,6 +143,7 @@ def register_sampler_routes():
         ("POST", "/pls/sampler/preview_mode", handle_sampler_preview_mode),
         ("POST", "/pls/sampler/tae_status",   handle_sampler_tae_status),
         ("POST", "/pls/sampler/tae_install",  handle_sampler_tae_install),
+        ("POST", "/pls/sampler/tae_warm",     handle_sampler_tae_warm),
     ]
     registered = 0
     for method, path, handler in routes:

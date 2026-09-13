@@ -34,9 +34,12 @@ class ULSInspectorV3(io.ComfyNode):
                 "the prompt? Emits a STRING report. Wire into a Show Text node."
             ),
             inputs=[
+                # v910: optional, exactly like the legacy form. A muted source
+                # must not make ComfyUI paint this passive node as an error.
                 io.String.Input("uls_config_out", default='{"rows":[]}',
-                                multiline=False, force_input=True),
-                io.String.Input("prompt", default="", multiline=True, force_input=True),
+                                multiline=False, force_input=True, optional=True),
+                io.String.Input("prompt", default="", multiline=True,
+                                force_input=True, optional=True),
             ],
             outputs=[
                 io.String.Output(display_name="inspector_report"),
@@ -44,7 +47,11 @@ class ULSInspectorV3(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, uls_config_out, prompt) -> io.NodeOutput:
+    def execute(cls, uls_config_out=None, prompt=None) -> io.NodeOutput:
         from .uls_stack_node import ULSInspector
         out = ULSInspector().inspect(uls_config_out=uls_config_out, prompt=prompt)
-        return io.NodeOutput(*out)
+        # v910: inspect() now answers with the legacy {"ui": ..., "result": ...}
+        # dict so the notice payload survives BOTH registrations. NodeOutput
+        # reads exactly that shape -- the legacy class stays the one source of
+        # truth, as this module has promised since stage 3.
+        return io.NodeOutput.from_dict(out)

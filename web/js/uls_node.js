@@ -160,6 +160,12 @@ let _lastCursorPos       = 0;  // selectionStart zum Zeitpunkt des Blur
 
 document.addEventListener("focusin", (e) => {
     const el = e.target;
+    // v939: our OWN transient inputs (weight / order input, picker search --
+    // every Polyhedron popup carries an id starting "uls-") are never the
+    // prompt field the trigger button means. Before, typing a weight made the
+    // weight input the target; it is removed on Enter, and the next \u21b5
+    // "inserted" into nothing (measured 10.09., probe H3).
+    if (el.closest && el.closest('[id^="uls-"], .uls-dom')) return;
     if (el.tagName === "TEXTAREA" || (el.tagName === "INPUT" && el.type === "text")) {
         _lastFocusedTextarea = el;
     }
@@ -167,7 +173,10 @@ document.addEventListener("focusin", (e) => {
 
 document.addEventListener("selectionchange", () => {
     const el = document.activeElement;
-    if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) {
+    // v939: track the cursor of the REMEMBERED field only (as focusout does).
+    // Any focused input used to overwrite it -- typing "3" into the order input
+    // moved the insert point of the prompt to character 1 (measured 10.09.).
+    if (el && el === _lastFocusedTextarea) {
         _lastCursorPos = el.selectionStart ?? 0;
     }
 }, true);
@@ -248,7 +257,9 @@ function deriveTrigger(loraName, meta) {
  */
 function insertTriggerAtCursor(triggerText) {
     const el  = _lastFocusedTextarea;
-    if (!el) {
+    // v939: a field that has left the page is no target -- report "not
+    // inserted" instead of writing into nothing.
+    if (!el || !el.isConnected) {
         // Kein Textfeld fokussiert → Feedback ans Canvas
         return false;
     }
@@ -267,8 +278,13 @@ function insertTriggerAtCursor(triggerText) {
     const newPos = pos + insert.length;
 
     // Wert setzen (React-kompatibel für ComfyUI-Widgets)
+    // v939: the setter of the element's OWN kind -- the TEXTAREA setter on an
+    // INPUT throws "Illegal invocation" (it did, silently, since the target
+    // could be a text input).
     const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLTextAreaElement.prototype, "value"
+        (el instanceof window.HTMLInputElement)
+            ? window.HTMLInputElement.prototype
+            : window.HTMLTextAreaElement.prototype, "value"
     )?.set;
     if (nativeInputValueSetter) {
         nativeInputValueSetter.call(el, newVal);
@@ -513,8 +529,25 @@ function openTriggerSelectPopup(triggers, weight, e) {
  * @param {function} onChange         — called with the new composite mode key after persistence kicks off
  * @param {function} onToggle         — called (which, value) when a Cleanup switch flips
  */
-function showGroupModePopup(group, currentMode, currentDareVariant, currentTrim, currentResolve, currentTrimAmount, clickEvent, onChange, onToggle) {
+// v913: how the LoRAs reach the model -- node-wide, same for every group.
+//   auto   = baked (v917: the field A/B of 05.09. decided; bypass by hand)
+//   bypass = Core forward hook, base weights untouched (no int8 requant)
+//   patch  = baked into the weights (the pre-v913 path)
+const APPLY_STEPS = ["auto", "bypass", "patch"];
+const APPLY_INFO = {
+    auto:   { label: "Auto",   color: "#9a9aaa",
+              hint: "baked on every model (field-measured 05.09.: better and ~10 % faster per step on H3 int8); Bypass is the hand switch" },
+    bypass: { label: "Bypass", color: "#7af0c0",
+              hint: "LoRAs run as a forward hook, base weights untouched -- no requantising on int8 / nvfp4" },
+    patch:  { label: "Baked",  color: "#f0c87a",
+              hint: "LoRAs are folded into the weights (classic) -- on int8 / nvfp4 every apply resamples the layer's scale" },
+};
+function applyNorm(v) { return APPLY_STEPS.includes(v) ? v : "auto"; }
+function applyNext(v) { return APPLY_STEPS[(APPLY_STEPS.indexOf(applyNorm(v)) + 1) % APPLY_STEPS.length]; }
+
+function showGroupModePopup(group, currentMode, currentDareVariant, currentTrim, currentResolve, currentTrimAmount, clickEvent, onChange, onToggle, currentApply) {
     document.getElementById("uls-mode-popup")?.remove();
+    let   applyOn = applyNorm(currentApply);
 
     const curDV   = currentDareVariant || "channel";
     let   trimOn  = !!currentTrim;
@@ -790,6 +823,49 @@ function showGroupModePopup(group, currentMode, currentDareVariant, currentTrim,
     }
     paintCleanup();
 
+    // ── v913: Apply section (node-wide, not per group) ──────────────────
+    const applyHead = document.createElement("div");
+    applyHead.style.cssText = "padding:7px 10px 3px; font-size:10px; color:#888; border-top:1px solid #2a2a3a;"
+        + "letter-spacing:0.5px;";
+    applyHead.textContent = "APPLY -- whole node";
+    wrap.appendChild(applyHead);
+    const applyRows = [];
+    for (const key of APPLY_STEPS) {
+        const info = APPLY_INFO[key];
+        const row = document.createElement("div");
+        const box = document.createElement("div");
+        const txt = document.createElement("div");
+        const lbl = document.createElement("div");
+        const hnt = document.createElement("div");
+        const paintA = () => {
+            const on = applyOn === key;
+            row.style.cssText = `padding:6px 10px; cursor:pointer; display:flex; align-items:center; gap:10px;`
+                + `background:${on ? info.color + "22" : "transparent"};`
+                + `border-left:3px solid ${on ? info.color : "transparent"};`;
+            box.textContent = on ? "\u25cf" : "";
+            box.style.color = info.color;
+            lbl.style.color = on ? info.color : "#d0d0e0";
+        };
+        box.style.cssText = `width:24px;height:18px;border-radius:9px;border:1px solid ${info.color};`
+            + "display:flex;align-items:center;justify-content:center;font-size:10px;flex-shrink:0;";
+        txt.style.cssText = "flex:1; min-width:0;";
+        lbl.style.cssText = "font-weight:bold;";
+        lbl.textContent = info.label;
+        hnt.style.cssText = "font-size:10px; color:#888; margin-top:2px;";
+        hnt.textContent = info.hint;
+        txt.appendChild(lbl); txt.appendChild(hnt);
+        row.appendChild(box); row.appendChild(txt);
+        row.addEventListener("mousedown", (ev) => {
+            ev.preventDefault(); ev.stopPropagation();
+            applyOn = key;
+            onToggle?.("apply", key);
+            applyRows.forEach(p => p());
+        });
+        applyRows.push(paintA);
+        paintA();
+        wrap.appendChild(row);
+    }
+
     // ── Footer: deliberate close ─────────────────────────────────────────
     // The popup no longer closes on a mode click, so it needs an explicit
     // dismiss. "Done" + click-outside + Escape all route through close().
@@ -933,6 +1009,187 @@ function newRow() {
 }
 
 // ─── Conflict-Analyse ──────────────────────────────────────────────────────
+
+// ─── v937: pieces shared by the painted Stack and its Nodes 2.0 view ──────────
+// Moved here VERBATIM from the Stack's onMouseDown so that the DOM view
+// (uls_stack_dom.js) CALLS them instead of rebuilding them -- a second copy
+// would be a second truth and drift the first time either is fixed. The
+// painted path calls the very same functions; under the classic renderer
+// nothing changes (the only edits: `this` -> `node`, the early `return true`
+// -> `return`, and an optional onChange after every state change).
+
+/** Tooltip of the weight column header -- one text for every view. */
+const WEIGHT_HDR_TIP_LINES = [
+    "Weight / CLIP Strength",
+    "Click: model weight.  Shift+Click: set a per-LoRA",
+    "CLIP strength (decoupled).  Shift+\u25C0 \u25B6 steps it.",
+    "Enter the model weight again to re-link.",
+];
+
+/** \u21b5 on a row: its trigger word(s) at the cursor of the last prompt field
+ *  (one trigger: inserted + toast; several: the choice popup). */
+function insertRowTrigger(row, e) {
+    const toastPos = { x: e.clientX - 10, y: e.clientY - 36 };
+
+    if (row.name === "None") {
+        showInsertToast("No LoRA selected", false, toastPos);
+        return;
+    }
+    const doInsert = (meta) => {
+        const triggers = deriveTriggers(row.name, meta);
+        if (triggers.length <= 1) {
+            const text = `(${triggers[0]}:1.00)`;
+            showInsertToast(text, insertTriggerAtCursor(text), toastPos);
+        } else {
+            openTriggerSelectPopup(triggers, "1.00", e);
+        }
+    };
+    const cached = metaCache.get(row.name);
+    if (cached !== undefined) doInsert(cached);
+    else fetchMeta(row.name).then(doInsert);
+}
+
+/** A group's stack-order input (1-8, 0 = clear) with the reassign confirm on
+ *  a visible collision. onChange (optional) runs after every state change --
+ *  the painted view passes none, the DOM view redraws itself. */
+function openStackOrderInput(node, row, e, onChange) {
+    const uls = node._uls;
+    // Dedicated integer input — no decimals, range 1-8
+    document.getElementById("uls-weight-input")?.remove();
+    const canvasScale = app.canvas?.ds?.scale ?? 1;
+    const orderClickPos = { x: e.clientX, y: e.clientY }; // for the conflict dialog
+    const el = document.createElement("div");
+    el.id = "uls-weight-input";
+    el.style.cssText = [
+        `position:fixed`,
+        `left:${e.clientX - 50}px`,
+        `top:${e.clientY - 44}px`,
+        "z-index:999999",
+        "background:#14141e",
+        "border:1px solid #3a3a5a",
+        "border-radius:8px",
+        "padding:10px 12px",
+        "box-shadow:0 4px 20px rgba(0,0,0,0.8)",
+        "font:12px 'Segoe UI',Arial,sans-serif",
+    ].join(";");
+    const lbl = document.createElement("div");
+    lbl.style.cssText = "color:#888;font-size:10px;margin-bottom:6px;";
+    lbl.textContent = "Stack Order  (1–8,  0 = clear)";
+    el.appendChild(lbl);
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.inputMode = "numeric";
+    const curVal = ((uls.groupOrder || {})[row.group] ?? "");
+    inp.value = curVal !== "" ? String(curVal) : "";
+    inp.style.cssText = [
+        "width:60px",
+        "background:#1a1030",
+        "border:1px solid #f0c050",
+        "border-radius:4px",
+        "color:#f0c050",
+        "padding:4px 8px",
+        "font:bold 14px monospace",
+        "outline:none",
+        "text-align:center",
+    ].join(";");
+    el.appendChild(inp);
+    document.body.appendChild(el);
+    requestAnimationFrame(() => {
+        el.style.transform = `scale(${canvasScale})`;
+        el.style.transformOrigin = "top left";
+        const r = el.getBoundingClientRect();
+        if (r.right  > window.innerWidth  - 8) el.style.left = `${window.innerWidth  - r.width  - 8}px`;
+        if (r.bottom > window.innerHeight - 8) el.style.top  = `${window.innerHeight - r.height - 8}px`;
+        inp.focus(); inp.select();
+    });
+    const applyOrder = () => {
+        el.remove();
+        if (!uls.groupOrder) uls.groupOrder = {};
+        const raw = parseInt(inp.value, 10);
+        if (isNaN(raw) || raw <= 0) {
+            delete uls.groupOrder[row.group];
+            node._ulsSync(); app.graph?.setDirtyCanvas(true, false); onChange?.();
+            return;
+        }
+        const n = Math.max(1, Math.min(8, raw));
+
+        // Which group (if any) currently holds this number?
+        const conflict = Object.entries(uls.groupOrder)
+            .find(([g, num]) => g !== row.group && num === n);
+
+        if (conflict) {
+            const otherGroup = conflict[0];
+            // Is the conflicting group still present among the
+            // live rows? A group goes "orphaned" when no active
+            // LoRA row carries that category anymore, yet its
+            // groupOrder entry lingers (invisible, no badge to
+            // see or clear). Such a ghost has no say — reclaim
+            // its number silently. Only a CURRENTLY VISIBLE
+            // group triggers a confirm, because that's a real
+            // user-facing collision they can act on.
+            const liveGroups = new Set(
+                (uls.rows || [])
+                    .map(r => r && r.group)
+                    .filter(g => g && g !== "—"));
+            const otherIsOrphan = !liveGroups.has(otherGroup);
+
+            if (otherIsOrphan) {
+                // Reclaim from the ghost — drop its stale entry.
+                delete uls.groupOrder[otherGroup];
+                uls.groupOrder[row.group] = n;
+                node._ulsSync(); app.graph?.setDirtyCanvas(true, false); onChange?.();
+                return;
+            }
+
+            // Visible collision → ask before stealing the slot.
+            const otherLabel = otherGroup.toUpperCase();
+            const thisLabel = row.group.toUpperCase();
+            // anchor the dialog near the click
+            const sp = orderClickPos;
+            showConfirmDialog({
+                title: "Stack order already in use",
+                message:
+                    `Stack order ${n} is already assigned to group ` +
+                    `"${otherLabel}".\n\nReassign ${n} to "${thisLabel}"? ` +
+                    `"${otherLabel}" will be left without an order number.`,
+                confirmLabel: `Reassign to ${thisLabel}`,
+                cancelLabel: "Keep current",
+                screenPos: sp,
+                onConfirm: () => {
+                    delete uls.groupOrder[otherGroup];
+                    uls.groupOrder[row.group] = n;
+                    node._ulsSync(); app.graph?.setDirtyCanvas(true, false); onChange?.();
+                },
+                onCancel: () => {
+                    // Flash the existing holder so the user sees who owns it.
+                    uls._orderConflictGroup = otherGroup;
+                    app.graph?.setDirtyCanvas(true, false); onChange?.();
+                    setTimeout(() => {
+                        uls._orderConflictGroup = null;
+                        app.graph?.setDirtyCanvas(true, false); onChange?.();
+                    }, 1200);
+                },
+            });
+            return;
+        }
+        uls.groupOrder[row.group] = n;
+        node._ulsSync(); app.graph?.setDirtyCanvas(true, false); onChange?.();
+    };
+    inp.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter")  { ev.preventDefault(); applyOrder(); }
+        if (ev.key === "Escape") { el.remove(); }
+        ev.stopPropagation();
+    });
+    setTimeout(() => {
+        const closeH = (ev) => {
+            if (!el.contains(ev.target)) {
+                applyOrder();
+                document.removeEventListener("pointerdown", closeH, true);
+            }
+        };
+        document.addEventListener("pointerdown", closeH, true);
+    }, 200);
+}
 
 function checkConflicts(rows) {
     if (!rows || !Array.isArray(rows)) return [];
@@ -1161,10 +1418,13 @@ app.registerExtension({
                             if (!node._uls.groupTrimAmount) node._uls.groupTrimAmount = {};
                             if (typeof value === "number") node._uls.groupTrimAmount[row.group] = value;
                             else                           delete node._uls.groupTrimAmount[row.group];
+                        } else if (which === "apply") {
+                            // v913: node-wide -- one value for every group.
+                            node._uls.apply = applyNorm(value);
                         }
                         node._ulsSync?.();
                         app.graph?.setDirtyCanvas(true, false);
-                    });
+                    }, applyNorm(node._uls.apply));
                 }
             }, true);
 
@@ -1270,6 +1530,7 @@ app.registerExtension({
                 group_trim_amount: this._uls.groupTrimAmount || {},
                 flatMode: this._uls.flatMode || false,
                 groupOrder: this._uls.groupOrder || {},
+                apply: applyNorm(this._uls.apply),   // v913
             });
         };
 
@@ -1337,6 +1598,7 @@ app.registerExtension({
                     this._uls.groupResolve = (d.group_resolve && typeof d.group_resolve === "object") ? d.group_resolve : {};
                     // v261: restore per-group Trim strength.
                     this._uls.groupTrimAmount = (d.group_trim_amount && typeof d.group_trim_amount === "object") ? d.group_trim_amount : {};
+                    this._uls.apply = applyNorm(d.apply);   // v913
                     this._uls.rows.forEach(r => ensurePreview(r.name));
                     this._ulsResize();
                 } catch {}
@@ -1405,6 +1667,7 @@ app.registerExtension({
                 flatMode: this._uls.flatMode || false,
                 groupOrder: this._uls.groupOrder || {},
                 dare_variant: "channel",
+                apply: applyNorm(this._uls.apply),   // v913
             });
             // Widget nach jedem Sync verstecken
             this._ulsHideConfigWidget?.();
@@ -1494,6 +1757,27 @@ app.registerExtension({
                 ctx.fillText(flat ? "LIST STACK" : "GROUP STACK", pillX + pillW/2, pillY + pillH/2);
                 ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
                 uls._flatModePillRect = { x: pillX, y: pillY, w: pillW, h: pillH };
+
+                // v915: Apply pill (node-wide: Auto / Bypass / Baked), right of the
+                // flat pill -- the value already lives in the group popup since
+                // v913; this makes it visible without opening one.
+                {
+                    const ap    = applyNorm(uls.apply);
+                    const info  = APPLY_INFO[ap];
+                    const aHov  = uls.hoverZone === "applyPill";
+                    const aW    = 58, aX = pillX + pillW + 6;
+                    ctx.fillStyle = aHov ? info.color + "33" : info.color + "18";
+                    roundRect(ctx, aX, pillY, aW, pillH, 8); ctx.fill();
+                    ctx.strokeStyle = aHov ? info.color : info.color + "88";
+                    ctx.lineWidth = 1;
+                    roundRect(ctx, aX, pillY, aW, pillH, 8); ctx.stroke();
+                    ctx.font = "bold 9px 'Segoe UI',Arial";
+                    ctx.fillStyle = info.color;
+                    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+                    ctx.fillText(info.label.toUpperCase(), aX + aW/2, pillY + pillH/2);
+                    ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+                    uls._applyPillRect = { x: aX, y: pillY, w: aW, h: pillH };
+                }
 
                 // No tooltip — the input label "Stack Order" already explains the concept
             }
@@ -1868,12 +2152,7 @@ app.registerExtension({
             // ── Weight/CLIP header tooltip — drawn LAST (v304) ──────────
             if (uls.hoverZone === "weightHdr" && uls._weightHdrRect) {
                 const hr = uls._weightHdrRect;
-                const lines = [
-                    "Weight / CLIP Strength",
-                    "Click: model weight.  Shift+Click: set a per-LoRA",
-                    "CLIP strength (decoupled).  Shift+\u25C0 \u25B6 steps it.",
-                    "Enter the model weight again to re-link.",
-                ];
+                const lines = WEIGHT_HDR_TIP_LINES;   // v937: one text for every view
                 const LH = 13, PAD_T = 6, TW = 250;
                 const TH = PAD_T * 2 + LH * lines.length;
                 // Header sits near the right edge → anchor the tooltip LEFT
@@ -1894,6 +2173,13 @@ app.registerExtension({
             }
 
             // ── Pill Tooltip — drawn LAST so rows can't paint over it ────
+            if (uls.hoverZone === "applyPill" && uls._applyPillRect) {
+                const pr = uls._applyPillRect;
+                const info = APPLY_INFO[applyNorm(uls.apply)];
+                const TW = 300;
+                drawCanvasTooltip(ctx, Math.min(pr.x, W - TW - PAD), pr.y + pr.h + 4, TW,
+                                  "Apply: " + info.label + " (click to cycle)", info.hint, info.color);
+            }
             if (uls.hoverZone === "flatMode" && uls._flatModePillRect) {
                 const pr = uls._flatModePillRect;
                 const flat = uls.flatMode || false;
@@ -1981,6 +2267,17 @@ app.registerExtension({
             }
 
             // Flat-Mode Pill Hover
+            const apR = uls._applyPillRect;
+            if (apR && lx >= apR.x && lx <= apR.x + apR.w
+                    && ly >= apR.y && ly <= apR.y + apR.h) {
+                if (uls.hoverZone !== "applyPill") {
+                    uls.hoverZone = "applyPill"; dirty = true;
+                }
+                if (rowIdx !== uls.hoverRow) { uls.hoverRow = rowIdx; dirty = true; }
+                if (dirty) app.graph?.setDirtyCanvas(true, false);
+                return;
+            }
+
             const fmR = uls._flatModePillRect;
             if (fmR && lx >= fmR.x && lx <= fmR.x + fmR.w
                     && ly >= fmR.y && ly <= fmR.y + fmR.h) {
@@ -2101,6 +2398,16 @@ app.registerExtension({
             const W    = this.size[0];
             const footY  = this.size[1] - FOOTER_H + 5;
 
+            // v915: Apply pill click -- cycles Auto -> Bypass -> Baked (node-wide)
+            const apR = uls._applyPillRect;
+            if (apR && lx >= apR.x && lx <= apR.x + apR.w
+                    && ly >= apR.y && ly <= apR.y + apR.h) {
+                uls.apply = applyNext(uls.apply);
+                this._ulsSync();
+                app.graph?.setDirtyCanvas(true, false);
+                return true;
+            }
+
             // ── Flat-Mode Pill Click ────────────────────────────────────
             const fmR = uls._flatModePillRect;
             if (fmR && lx >= fmR.x && lx <= fmR.x + fmR.w
@@ -2186,24 +2493,7 @@ app.registerExtension({
 
             // ── ↵ Insert-Button: Trigger in CLIP einfügen ──────────────
             if (lx >= insertX && lx <= insertX + insertW) {
-                const toastPos = { x: e.clientX - 10, y: e.clientY - 36 };
-
-                if (row.name === "None") {
-                    showInsertToast("No LoRA selected", false, toastPos);
-                    return true;
-                }
-                const doInsert = (meta) => {
-                    const triggers = deriveTriggers(row.name, meta);
-                    if (triggers.length <= 1) {
-                        const text = `(${triggers[0]}:1.00)`;
-                        showInsertToast(text, insertTriggerAtCursor(text), toastPos);
-                    } else {
-                        openTriggerSelectPopup(triggers, "1.00", e);
-                    }
-                };
-                const cached = metaCache.get(row.name);
-                if (cached !== undefined) doInsert(cached);
-                else fetchMeta(row.name).then(doInsert);
+                insertRowTrigger(row, e);           // v937: shared with the Nodes 2.0 view
                 return true;
             }
 
@@ -2272,141 +2562,7 @@ app.registerExtension({
                 if (!uls.flatMode && row.group !== "—") {
                     const obcx = grpPillX + 7, obcy = rowY + 8;
                     if (Math.sqrt((lx - obcx)**2 + (ly - obcy)**2) <= 8) {
-                        // Dedicated integer input — no decimals, range 1-8
-                        document.getElementById("uls-weight-input")?.remove();
-                        const canvasScale = app.canvas?.ds?.scale ?? 1;
-                        const orderClickPos = { x: e.clientX, y: e.clientY }; // for the conflict dialog
-                        const el = document.createElement("div");
-                        el.id = "uls-weight-input";
-                        el.style.cssText = [
-                            `position:fixed`,
-                            `left:${e.clientX - 50}px`,
-                            `top:${e.clientY - 44}px`,
-                            "z-index:999999",
-                            "background:#14141e",
-                            "border:1px solid #3a3a5a",
-                            "border-radius:8px",
-                            "padding:10px 12px",
-                            "box-shadow:0 4px 20px rgba(0,0,0,0.8)",
-                            "font:12px 'Segoe UI',Arial,sans-serif",
-                        ].join(";");
-                        const lbl = document.createElement("div");
-                        lbl.style.cssText = "color:#888;font-size:10px;margin-bottom:6px;";
-                        lbl.textContent = "Stack Order  (1–8,  0 = clear)";
-                        el.appendChild(lbl);
-                        const inp = document.createElement("input");
-                        inp.type = "text";
-                        inp.inputMode = "numeric";
-                        const curVal = ((uls.groupOrder || {})[row.group] ?? "");
-                        inp.value = curVal !== "" ? String(curVal) : "";
-                        inp.style.cssText = [
-                            "width:60px",
-                            "background:#1a1030",
-                            "border:1px solid #f0c050",
-                            "border-radius:4px",
-                            "color:#f0c050",
-                            "padding:4px 8px",
-                            "font:bold 14px monospace",
-                            "outline:none",
-                            "text-align:center",
-                        ].join(";");
-                        el.appendChild(inp);
-                        document.body.appendChild(el);
-                        requestAnimationFrame(() => {
-                            el.style.transform = `scale(${canvasScale})`;
-                            el.style.transformOrigin = "top left";
-                            const r = el.getBoundingClientRect();
-                            if (r.right  > window.innerWidth  - 8) el.style.left = `${window.innerWidth  - r.width  - 8}px`;
-                            if (r.bottom > window.innerHeight - 8) el.style.top  = `${window.innerHeight - r.height - 8}px`;
-                            inp.focus(); inp.select();
-                        });
-                        const applyOrder = () => {
-                            el.remove();
-                            if (!uls.groupOrder) uls.groupOrder = {};
-                            const raw = parseInt(inp.value, 10);
-                            if (isNaN(raw) || raw <= 0) {
-                                delete uls.groupOrder[row.group];
-                                this._ulsSync(); app.graph?.setDirtyCanvas(true, false);
-                                return;
-                            }
-                            const n = Math.max(1, Math.min(8, raw));
-
-                            // Which group (if any) currently holds this number?
-                            const conflict = Object.entries(uls.groupOrder)
-                                .find(([g, num]) => g !== row.group && num === n);
-
-                            if (conflict) {
-                                const otherGroup = conflict[0];
-                                // Is the conflicting group still present among the
-                                // live rows? A group goes "orphaned" when no active
-                                // LoRA row carries that category anymore, yet its
-                                // groupOrder entry lingers (invisible, no badge to
-                                // see or clear). Such a ghost has no say — reclaim
-                                // its number silently. Only a CURRENTLY VISIBLE
-                                // group triggers a confirm, because that's a real
-                                // user-facing collision they can act on.
-                                const liveGroups = new Set(
-                                    (uls.rows || [])
-                                        .map(r => r && r.group)
-                                        .filter(g => g && g !== "—"));
-                                const otherIsOrphan = !liveGroups.has(otherGroup);
-
-                                if (otherIsOrphan) {
-                                    // Reclaim from the ghost — drop its stale entry.
-                                    delete uls.groupOrder[otherGroup];
-                                    uls.groupOrder[row.group] = n;
-                                    this._ulsSync(); app.graph?.setDirtyCanvas(true, false);
-                                    return;
-                                }
-
-                                // Visible collision → ask before stealing the slot.
-                                const otherLabel = otherGroup.toUpperCase();
-                                const thisLabel = row.group.toUpperCase();
-                                // anchor the dialog near the click
-                                const sp = orderClickPos;
-                                showConfirmDialog({
-                                    title: "Stack order already in use",
-                                    message:
-                                        `Stack order ${n} is already assigned to group ` +
-                                        `"${otherLabel}".\n\nReassign ${n} to "${thisLabel}"? ` +
-                                        `"${otherLabel}" will be left without an order number.`,
-                                    confirmLabel: `Reassign to ${thisLabel}`,
-                                    cancelLabel: "Keep current",
-                                    screenPos: sp,
-                                    onConfirm: () => {
-                                        delete uls.groupOrder[otherGroup];
-                                        uls.groupOrder[row.group] = n;
-                                        this._ulsSync(); app.graph?.setDirtyCanvas(true, false);
-                                    },
-                                    onCancel: () => {
-                                        // Flash the existing holder so the user sees who owns it.
-                                        uls._orderConflictGroup = otherGroup;
-                                        app.graph?.setDirtyCanvas(true, false);
-                                        setTimeout(() => {
-                                            uls._orderConflictGroup = null;
-                                            app.graph?.setDirtyCanvas(true, false);
-                                        }, 1200);
-                                    },
-                                });
-                                return;
-                            }
-                            uls.groupOrder[row.group] = n;
-                            this._ulsSync(); app.graph?.setDirtyCanvas(true, false);
-                        };
-                        inp.addEventListener("keydown", (ev) => {
-                            if (ev.key === "Enter")  { ev.preventDefault(); applyOrder(); }
-                            if (ev.key === "Escape") { el.remove(); }
-                            ev.stopPropagation();
-                        });
-                        setTimeout(() => {
-                            const closeH = (ev) => {
-                                if (!el.contains(ev.target)) {
-                                    applyOrder();
-                                    document.removeEventListener("pointerdown", closeH, true);
-                                }
-                            };
-                            document.addEventListener("pointerdown", closeH, true);
-                        }, 200);
+                        openStackOrderInput(this, row, e);   // v937: shared with the Nodes 2.0 view
                         return true;
                     }
                 }
@@ -3020,7 +3176,7 @@ function showWeightInput(e, currentVal, onConfirm, label, accent) {
     }, 200);
 }
 
-function openLoraSelect(row, loraList, e, node) {
+function openLoraSelect(row, loraList, e, node, onPicked) {
     // Bestehende Selects schließen
     document.getElementById("uls-lora-select")?.remove();
 
@@ -3132,11 +3288,11 @@ function openLoraSelect(row, loraList, e, node) {
                             row.group = groups[name];
                         }
                         app.graph?.setDirtyCanvas(true, false);
-                        node._ulsSync();
+                        node._ulsSync(); onPicked?.();   // v938: a DOM view redraws
                     })
                     .catch(() => {
                         app.graph?.setDirtyCanvas(true, false);
-                        node._ulsSync();
+                        node._ulsSync(); onPicked?.();   // v938: a DOM view redraws
                     });
                 wrap.remove();
             });
@@ -3312,6 +3468,59 @@ function fitEngineSize(node, contentH) {
     return [w, h];
 }
 
+// ─── v938: pieces shared by the painted Engine and its Nodes 2.0 view ─────────
+// Moved VERBATIM from the Engine's draw/onMouseDown (S4, like the Stack's in
+// v937): the view in uls_engine_dom.js CALLS these instead of rebuilding them.
+
+/** The S | C | D merge-mode buttons of the Engine header. */
+const ENGINE_MODES = [
+    { key: "SEQ",    letter: "S", color: "#7a7a8a" },
+    { key: "CONCAT", letter: "C", color: "#f0c050" },
+    { key: "DARE",   letter: "D", color: "#40c0ff" },
+];
+/** Label + hint of each mode (the painted hover tooltip; the view's titles). */
+const ENGINE_MODE_TIPS = {
+    "SEQ":    { label: "Sequential (SEQ)",   hint: "stacks LoRAs one by one — classic, full effect of each" },
+    "CONCAT": { label: "Combined (CONCAT)",  hint: "bundles all LoRAs into one — less stacking" },
+    "DARE":   { label: "Smooth Mix (DARE)",  hint: "bundles and spreads — best when many LoRAs target the same area" },
+};
+/** The line under the buttons that names the active mode -- derived, so the
+ *  labels exist once (they were written twice in the painted Engine). */
+const ENGINE_MODE_LABELS = Object.fromEntries(
+    Object.entries(ENGINE_MODE_TIPS).map(([k, v]) => [k, v.label]));
+
+/** \u25c0 / \u25b6 on an Engine row: 0.05 steps within +-10; `clip` (Shift)
+ *  steps the per-row CLIP strength instead, starting from the weight. */
+function stepEngineWeight(row, dir, clip) {
+    if (clip) {
+        const base = (typeof row.wClip === "number") ? row.wClip : (row.weight || 0);
+        row.wClip = dir < 0
+            ? Math.round(Math.max(-10, base - 0.05) * 100) / 100
+            : Math.round(Math.min(10, base + 0.05) * 100) / 100;
+    } else {
+        row.weight = dir < 0
+            ? Math.round(Math.max(-10, (row.weight || 0) - 0.05) * 100) / 100
+            : Math.round(Math.min(10, (row.weight || 0) + 0.05) * 100) / 100;
+    }
+}
+
+/** The weight box of an Engine row: the shared number input; with `clip`
+ *  (Shift) the CLIP strength -- entering the weight again re-links it. */
+function editEngineWeight(row, e, clip, onDone) {
+    if (clip) {
+        const cur = (typeof row.wClip === "number") ? row.wClip : (row.weight || 0);
+        showWeightInput(e, cur, (v) => {
+            if (v === (row.weight || 0)) delete row.wClip; else row.wClip = v;
+            onDone?.();
+        }, "CLIP Strength", "#6aa0d0");
+    } else {
+        showWeightInput(e, row.weight || 0, (v) => {
+            row.weight = v;
+            onDone?.();
+        }, "Weight");
+    }
+}
+
 function newEngineRow() {
     return { enabled: true, name: "None", weight: 1.0,
              // Compat shims so shared helpers (openLoraSelect / openGroupPreviewOverlay)
@@ -3365,6 +3574,7 @@ app.registerExtension({
                 })),
                 mode: this._uls.mode || "SEQ",
                 dareVariant: this._uls.dareVariant || "channel",
+                apply: applyNorm(this._uls.apply),   // v913
             });
         };
 
@@ -3385,6 +3595,7 @@ app.registerExtension({
                     const d = JSON.parse(o._engine);
                     this._uls.rows = (d.rows || []).map(r => ({ ...newEngineRow(), ...r }));
                     this._uls.mode = (d.mode || "SEQ").toUpperCase();
+                    this._uls.apply = applyNorm(d.apply);   // v913
                     if (d.dareVariant === "channel" || d.dareVariant === "element") {
                         this._uls.dareVariant = d.dareVariant;
                     }
@@ -3423,6 +3634,7 @@ app.registerExtension({
                 })),
                 mode: this._uls.mode || "SEQ",
                 dare_variant: this._uls.dareVariant || "channel",
+                apply: applyNorm(this._uls.apply),   // v913
             });
             this._engineHideConfigWidget?.();
         };
@@ -3468,11 +3680,7 @@ app.registerExtension({
             // Sits below the output-pin zone (~52px from top of foreground area)
             const modeY = 52;
             const MODE_BTN_W = 38, MODE_BTN_H = 22, MODE_GAP = 4;
-            const modesArr = [
-                { key: "SEQ",    letter: "S", color: "#7a7a8a" },
-                { key: "CONCAT", letter: "C", color: "#f0c050" },
-                { key: "DARE",   letter: "D", color: "#40c0ff" },
-            ];
+            const modesArr = ENGINE_MODES;          // v938: shared with the Nodes 2.0 view
             let mbx = PAD;
             uls._modeBtnZones = [];
             for (const m of modesArr) {
@@ -3520,8 +3728,35 @@ app.registerExtension({
                 uls._dareVariantRect = { x: pillX, y: pillY, w: pillW, h: pillH };
             }
 
+            // v913: Apply pill -- cycles Auto / Bypass / Baked.
+            // v917: it sat at the RIGHT edge of the header row (W - PAD - pillW),
+            // which on the Engine is the output-pin column: it covered the
+            // debug_info dot (field, 05.09.). Now it sits LEFT, right after the
+            // S|C|D buttons (and after the DARE-variant pill when that shows) --
+            // the same side the Stack node keeps its Apply pill on.
+            {
+                const ap    = applyNorm(uls.apply);
+                const info  = APPLY_INFO[ap];
+                const isHov = uls.hoverZone === "apply";
+                const pillW = 62, pillH = MODE_BTN_H;
+                const afterX = uls._dareVariantRect
+                    ? uls._dareVariantRect.x + uls._dareVariantRect.w : mbx;
+                const pillX = afterX + 8, pillY = modeY;
+                ctx.fillStyle = isHov ? info.color + "33" : info.color + "18";
+                roundRect(ctx, pillX, pillY, pillW, pillH, 4); ctx.fill();
+                ctx.strokeStyle = isHov ? info.color : info.color + "88";
+                ctx.lineWidth = 1;
+                roundRect(ctx, pillX, pillY, pillW, pillH, 4); ctx.stroke();
+                ctx.fillStyle = info.color;
+                ctx.font = "bold 10px 'Segoe UI',Arial";
+                ctx.textAlign = "center"; ctx.textBaseline = "middle";
+                ctx.fillText(info.label.toUpperCase(), pillX + pillW / 2, pillY + pillH / 2 + 0.5);
+                ctx.textBaseline = "alphabetic"; ctx.textAlign = "left";
+                uls._applyRect = { x: pillX, y: pillY, w: pillW, h: pillH };
+            }
+
             // Active mode label (small line below buttons)
-            const modeLabels = { "SEQ": "Sequential (SEQ)", "CONCAT": "Combined (CONCAT)", "DARE": "Smooth Mix (DARE)" };
+            const modeLabels = ENGINE_MODE_LABELS;  // v938: shared with the Nodes 2.0 view
             const activeModeKey = uls.mode || "SEQ";
             const modeColors   = { "SEQ": "#7a7a8a", "CONCAT": "#f0c050", "DARE": "#40c0ff" };
             ctx.fillStyle = modeColors[activeModeKey] || "#888";
@@ -3727,12 +3962,7 @@ app.registerExtension({
             // ── Weight/CLIP header tooltip — drawn LAST (v310, Stack v304 mirror) ──
             if (uls.hoverZone === "weightHdr" && uls._weightHdrRect) {
                 const hr = uls._weightHdrRect;
-                const lines = [
-                    "Weight / CLIP Strength",
-                    "Click: model weight.  Shift+Click: set a per-LoRA",
-                    "CLIP strength (decoupled).  Shift+\u25C0 \u25B6 steps it.",
-                    "Enter the model weight again to re-link.",
-                ];
+                const lines = WEIGHT_HDR_TIP_LINES;   // v937: one text for every view
                 const LH = 13, PAD_T = 6, TW = 250;
                 const TH = PAD_T * 2 + LH * lines.length;
                 // Header sits near the right edge → anchor the tooltip LEFT
@@ -3756,11 +3986,7 @@ app.registerExtension({
             const hovMode = (uls.hoverZone || "").startsWith("mode:")
                 ? (uls.hoverZone.split(":")[1]) : null;
             if (hovMode && uls._modeBtnZones) {
-                const TOOLTIP_HINTS = {
-                    "SEQ":    { label: "Sequential (SEQ)",   hint: "stacks LoRAs one by one — classic, full effect of each" },
-                    "CONCAT": { label: "Combined (CONCAT)",  hint: "bundles all LoRAs into one — less stacking" },
-                    "DARE":   { label: "Smooth Mix (DARE)",  hint: "bundles and spreads — best when many LoRAs target the same area" },
-                };
+                const TOOLTIP_HINTS = ENGINE_MODE_TIPS;   // v938: shared with the Nodes 2.0 view
                 const TOOLTIP_COLORS = { "SEQ": "#7a7a8a", "CONCAT": "#f0c050", "DARE": "#40c0ff" };
                 const zone = uls._modeBtnZones.find(z => z.key === hovMode);
                 const info = TOOLTIP_HINTS[hovMode];
@@ -3773,6 +3999,13 @@ app.registerExtension({
             }
 
             // DARE-Variant pill hover tooltip
+            if (uls.hoverZone === "apply" && uls._applyRect) {
+                const aR = uls._applyRect;
+                const info = APPLY_INFO[applyNorm(uls.apply)];
+                const TW = 300;
+                drawCanvasTooltip(ctx, Math.min(aR.x, W - TW - PAD), aR.y + aR.h + 4, TW,
+                                  "Apply: " + info.label + " (click to cycle)", info.hint, info.color);
+            }
             if (uls.hoverZone === "dareVariant" && uls._dareVariantRect) {
                 const dvR = uls._dareVariantRect;
                 const variant = uls.dareVariant || "channel";
@@ -3807,6 +4040,17 @@ app.registerExtension({
                     && ly >= whR.y && ly <= whR.y + whR.h) {
                 if (uls.hoverZone !== "weightHdr") {
                     uls.hoverZone = "weightHdr";
+                    uls.hoverRow  = -1;
+                    app.graph?.setDirtyCanvas(true, false);
+                }
+                return false;
+            }
+
+            // v913: Apply pill (header, right edge)
+            const aR = uls._applyRect;
+            if (aR && lx >= aR.x && lx <= aR.x + aR.w && ly >= aR.y && ly <= aR.y + aR.h) {
+                if (uls.hoverZone !== "apply") {
+                    uls.hoverZone = "apply";
                     uls.hoverRow  = -1;
                     app.graph?.setDirtyCanvas(true, false);
                 }
@@ -3919,6 +4163,15 @@ app.registerExtension({
             const uls = this._uls; if (!uls) return false;
             const W = this.size[0];
 
+            // v913: Apply pill (header) -- cycles Auto -> Bypass -> Baked
+            const aR = uls._applyRect;
+            if (aR && lx >= aR.x && lx <= aR.x + aR.w && ly >= aR.y && ly <= aR.y + aR.h) {
+                uls.apply = applyNext(uls.apply);
+                this._ulsSync();
+                app.graph?.setDirtyCanvas(true, false);
+                return true;
+            }
+
             // DARE-Variant pill (header)
             const dvR = uls._dareVariantRect;
             if (dvR && lx >= dvR.x && lx <= dvR.x + dvR.w
@@ -4014,40 +4267,21 @@ app.registerExtension({
 
             // Weight ◀ (v302: Shift = CLIP strength)
             if (lx >= wArrowLX && lx <= wArrowLX + ARROW_W) {
-                if (e.shiftKey) {
-                    const base = (typeof row.wClip === "number") ? row.wClip : (row.weight || 0);
-                    row.wClip = Math.round(Math.max(-10, base - 0.05) * 100) / 100;
-                } else {
-                    row.weight = Math.round(Math.max(-10, (row.weight || 0) - 0.05) * 100) / 100;
-                }
+                stepEngineWeight(row, -1, e.shiftKey);   // v938: shared with the Nodes 2.0 view
                 app.graph?.setDirtyCanvas(true, false); this._ulsSync();
                 return true;
             }
             // Weight ▶ (v302: Shift = CLIP strength)
             if (lx >= wArrowRX && lx <= wArrowRX + ARROW_W) {
-                if (e.shiftKey) {
-                    const base = (typeof row.wClip === "number") ? row.wClip : (row.weight || 0);
-                    row.wClip = Math.round(Math.min(10, base + 0.05) * 100) / 100;
-                } else {
-                    row.weight = Math.round(Math.min(10, (row.weight || 0) + 0.05) * 100) / 100;
-                }
+                stepEngineWeight(row, +1, e.shiftKey);
                 app.graph?.setDirtyCanvas(true, false); this._ulsSync();
                 return true;
             }
             // Weight click → numeric input (v302: Shift-Klick = CLIP)
             if (lx >= weightX + ARROW_W && lx <= weightX + WEIGHT_W - ARROW_W) {
-                if (e.shiftKey) {
-                    const cur = (typeof row.wClip === "number") ? row.wClip : (row.weight || 0);
-                    showWeightInput(e, cur, (v) => {
-                        if (v === (row.weight || 0)) delete row.wClip; else row.wClip = v;
-                        app.graph?.setDirtyCanvas(true, false); this._ulsSync();
-                    }, "CLIP Strength", "#6aa0d0");
-                } else {
-                    showWeightInput(e, row.weight || 0, (v) => {
-                        row.weight = v;
-                        app.graph?.setDirtyCanvas(true, false); this._ulsSync();
-                    }, "Weight");
-                }
+                editEngineWeight(row, e, e.shiftKey, () => {
+                    app.graph?.setDirtyCanvas(true, false); this._ulsSync();
+                });
                 return true;
             }
 
@@ -4106,3 +4340,24 @@ app.registerExtension({
         };
     }
 });
+
+
+// ─── v922: exports for the Nodes 2.0 DOM panel (uls_stack_dom.js) ──────────
+// The DOM rewrite must reuse THESE helpers, never reimplement them: a second
+// LoRA picker or a second weight dialog would be a second truth, and the two
+// would drift the first time one is fixed. State stays where it always was --
+// node._uls, persisted through node._ulsSync() into the hidden uls_config
+// widget that Python reads. The DOM panel is a second VIEW, not second data.
+export { openLoraSelect, showWeightInput, newRow, loadLoraList,
+         // v949: the group palette, one source for the painted row and the DOM row
+         GROUP_COLORS,
+         applyNorm, applyNext, showGroupModePopup, openPreviewOverlay,
+         // v937: the parity pieces, shared instead of rebuilt
+         insertRowTrigger, openStackOrderInput, checkConflicts,
+         WEIGHT_HDR_TIP_LINES,
+         // v938: the Engine's pieces, shared with its Nodes 2.0 view
+         newEngineRow, APPLY_INFO, openGroupPreviewOverlay,
+         ENGINE_MODES, ENGINE_MODE_LABELS, ENGINE_MODE_TIPS,
+         stepEngineWeight, editEngineWeight };
+export function getLoraList() { return _loraList; }
+export function isLoraListLoaded() { return _loraListLoaded; }

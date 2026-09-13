@@ -241,19 +241,25 @@ def describe_model(model):
         return dm, name, ("%s has no `blocks` list -- this node patches Wan's "
                           "per-block cross-attention and has nothing to attach "
                           "to here" % name)
-    if not hasattr(dm, "text_embedding"):
-        return dm, name, ("%s has no `text_embedding` -- the negative prompt "
-                          "cannot be embedded the way Wan embeds it" % name)
     blocks = list(dm.blocks)
     if not blocks or not hasattr(blocks[0], "cross_attn"):
         return dm, name, ("%s has no cross-attention in its blocks. On models "
                           "that concatenate text into ONE self-attention "
-                          "sequence (MiniMax H3 is the one Frank runs), NAG "
-                          "would have to double the FULL self-attention over "
-                          "the whole packed sequence instead of a few hundred "
-                          "text tokens -- costing what CFG 2 costs. The method "
-                          "would still be correct; the saving that makes it "
-                          "worth using would be gone" % name)
+                          "sequence (MiniMax H3, for one), NAG would have to "
+                          "double the FULL self-attention over the whole packed "
+                          "sequence instead of a few hundred text tokens -- "
+                          "costing what CFG 2 costs. The method would still be "
+                          "correct; the saving that makes it worth using would "
+                          "be gone. On such a model the negative prompt reaches "
+                          "the image only through the sampler's cfg > 1" % name)
+    if not hasattr(dm, "text_embedding"):
+        # v919: this check used to run FIRST, so a single-stream model like
+        # MiniMax H3 was refused with "has no text_embedding" -- true, but it
+        # reads like a missing detail. The cross-attention refusal above is
+        # the real reason and now speaks first; this one covers the odd Wan
+        # fork that kept its blocks but dropped the embedding.
+        return dm, name, ("%s has no `text_embedding` -- the negative prompt "
+                          "cannot be embedded the way Wan embeds it" % name)
     return dm, name, None
 
 

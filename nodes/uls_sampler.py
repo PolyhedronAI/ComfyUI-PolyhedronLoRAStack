@@ -240,7 +240,11 @@ class _AnimatedVideoPreviewer:
     MODE_CRISP = "Video · latent2rgb (crisp)"
     MODE_TAE_STD = "Video · TAE (taew2_1)"
     MODE_TAE_LIGHT = "Video · TAE (lighttaew2_1)"
-    ALL_MODES = (MODE_STANDARD, MODE_STD_LATENT, MODE_SMOOTH, MODE_CRISP, MODE_TAE_STD, MODE_TAE_LIGHT)
+    MODE_TAE_H3 = "Video · TAE (taeh3)"        # v918: MiniMax H3, vendored decoder
+    TAE_MODES = (MODE_TAE_STD, MODE_TAE_LIGHT, MODE_TAE_H3)
+    TAE_NAME_OF = {MODE_TAE_STD: "taew2_1", MODE_TAE_LIGHT: "lighttaew2_1", MODE_TAE_H3: "taeh3"}
+    ALL_MODES = (MODE_STANDARD, MODE_STD_LATENT, MODE_SMOOTH, MODE_CRISP,
+                 MODE_TAE_STD, MODE_TAE_LIGHT, MODE_TAE_H3)
 
     def __init__(self, latent_format, preview_side=512, max_frames=64,
                  preview_mode="latent2rgb (smooth)", device=None):
@@ -260,18 +264,20 @@ class _AnimatedVideoPreviewer:
         self.mode = preview_mode
         self.use_core = preview_mode == self.MODE_STANDARD   # delegate to Core's get_previewer
         self.use_core_l2rgb = preview_mode == self.MODE_STD_LATENT   # Core latent2rgb, 1 frame
-        self.use_tae = preview_mode in (self.MODE_TAE_STD, self.MODE_TAE_LIGHT)
+        self.use_tae = preview_mode in self.TAE_MODES
         self.filter = self._filter_for(preview_mode)
         # TAE / Core decode per frame -> heavier than the linear projection, so
         # subsample video harder there; plain latent2rgb keeps the generous budget.
         self.max_frames = 16 if (self.use_tae or self.use_core) else max_frames
+        if preview_mode == self.MODE_TAE_H3:
+            self.max_frames = TAE_H3_MAX_FRAMES      # v920
         # The explicit TAE modes use LITERAL names matching their combo labels (v418).
         # The v414 "light" + <model-declared-name> composition doubled to
         # 'lightlighttaew2_1' when the model already declared the light decoder, so the
         # light mode silently fell back. Literal names are predictable and match the
         # label; model-derived name selection is the job of Standard (ComfyUI), which
         # goes through Core's get_previewer.
-        self.tae_name = "lighttaew2_1" if preview_mode == self.MODE_TAE_LIGHT else "taew2_1"
+        self.tae_name = self.TAE_NAME_OF.get(preview_mode, "taew2_1")
         self._tae = None          # Core previewer object, lazy-built on first frame
         self._tae_tried = False   # build attempted? -> a miss falls back once, quietly
         self._core = None         # Core get_previewer object (Standard mode), lazy
@@ -305,10 +311,12 @@ class _AnimatedVideoPreviewer:
         self.mode = preview_mode
         self.use_core = preview_mode == self.MODE_STANDARD
         self.use_core_l2rgb = preview_mode == self.MODE_STD_LATENT   # Core latent2rgb, 1 frame
-        self.use_tae = preview_mode in (self.MODE_TAE_STD, self.MODE_TAE_LIGHT)
+        self.use_tae = preview_mode in self.TAE_MODES
         self.filter = self._filter_for(preview_mode)
         self.max_frames = 16 if (self.use_tae or self.use_core) else self._max_frames_base
-        self.tae_name = "lighttaew2_1" if preview_mode == self.MODE_TAE_LIGHT else "taew2_1"
+        if preview_mode == self.MODE_TAE_H3:
+            self.max_frames = TAE_H3_MAX_FRAMES      # v920
+        self.tae_name = self.TAE_NAME_OF.get(preview_mode, "taew2_1")
         self._tae = None          # force a (re)build for the newly-selected decoder
         self._tae_tried = False
         self._core = None
@@ -393,6 +401,12 @@ class _AnimatedVideoPreviewer:
                 print("[PLS v413 PREVIEW] TAE '{}' not found in models/vae_approx -> "
                       "latent2rgb (smooth) fallback".format(self.tae_name))
                 return None
+            # v918: taeh3 goes through the VENDORED madebyollin decoder, not
+            # Core's -- Core 0.33.4 (rev 7a131a3a) has no H3 branch in its
+            # taehv.py and builds the wrong patch size for 24 channels.
+            if self.tae_name == "taeh3":
+                self._tae = _H3TaePreviewer(path, self.device)
+                return self._tae
             # Mirror Core's own video/image split (latent_preview.get_previewer):
             # names in VIDEO_TAES load as a VAE (TAEHV); the rest as image TAESD.
             video_taes = getattr(lp, "VIDEO_TAES", [])
@@ -440,14 +454,19 @@ class _AnimatedVideoPreviewer:
         # and cannot read it. Before this cut they tried, raised, and fell back
         # with a line that blamed the decoder. Now the REASON is named once,
         # before the attempt.
+        if ragged and self.use_tae and self.tae_name == "taeh3":
+            # v918: taeh3 IS the decoder for the video half (24 ch) -- unwrap
+            # it, exactly as Core's callback does (x0.tensors[0]).
+            x0 = _joint_video_half(x0)
+            ragged = False
         if ragged and self.use_tae and not self._said_joint:
             self._said_joint = True
             self.use_tae = False
             self.filter = Image.LANCZOS
             print("[PLS v885 PREVIEW] this is a JOINT (video+audio) latent - "
-                  "the TAE decoders are WAN/image decoders and cannot read its "
-                  "video half. Falling back to latent2rgb (smooth), which can. "
-                  "For MiniMax H3 pick a 'Video \u00b7 latent2rgb' mode.")
+                  "the WAN TAE decoders cannot read its video half. Falling "
+                  "back to latent2rgb (smooth), which can. For MiniMax H3 pick "
+                  "'Video \u00b7 TAE (taeh3)' (v918) or a 'Video \u00b7 latent2rgb' mode.")
         if self.use_core:
             core = self._get_core()
             if core is not None:
@@ -565,6 +584,138 @@ class _AnimatedVideoPreviewer:
 #     VIDEO_TAES. Frank supplied the source 02.08.: lightx2v/Autoencoders
 #     on HF -- pinned below chat-side from the LFS pointer (sandbox egress
 #     blocks HF, the runtime machine does not). Both are downloadable now.
+# ---------------------------------------------------------------------------
+# v918 -- MiniMax H3 preview through the vendored madebyollin TAEHV.
+#
+# Core's TAEHVPreviewerImpl decodes ONE latent frame (x0[:1, :, :1]) through
+# Core's TAEHV; for H3 Core 0.33.4 cannot build that decoder (no 24-channel
+# branch -> patch_size 1 -> the taeh3 weights do not fit). So this class does
+# the same single-frame decode through nodes/vendor/taehv: raw decoder +
+# pixel-shuffle + clamp, no chunk trim -- the exact single_frame path Core
+# master added for H3. Measured in the sandbox 05.09.: 1x24x84x48 -> 4 RGB
+# frames of 1344x768 (t_upscale 4), values in [0, 1]; frame 0 is the preview.
+# ---------------------------------------------------------------------------
+def _joint_video_half(x0):
+    """The video tensor of a joint (nested) latent; a plain tensor passes."""
+    if getattr(x0, "is_nested", False):
+        try:
+            return x0.tensors[0]
+        except Exception:
+            try:
+                return x0.unbind()[0]
+            except Exception:
+                return x0
+    return x0
+
+
+# v920: the preview is a 293x512 tile at the end; decoding sixteen latent
+# frames per step at 1344x768 in fp32 was my size, not the decoder's. On a
+# card that already pages its model weights, the FIRST such decode grew the
+# allocator by gigabytes and evicted weights -- Frank measured ~70 s between
+# step 1 and 2 of the first run, 0 s on the second (06.09.). Four cuts:
+#   fp16 on CUDA · latent capped so the OUTPUT long edge is <= H3_PREVIEW_MAX_EDGE
+#   · fewer frames for joint latents (see TAE_H3_MAX_FRAMES) · a warm-up when
+#   the mode is picked, so the first cuDNN/allocator hit lands while the user
+#   is still wiring, not between step 1 and 2.
+H3_PREVIEW_MAX_EDGE = 1024          # output px; latent = this / 16 (patch 2 x 8)
+TAE_H3_MAX_FRAMES = 8               # v918 used the generic 16
+_H3_TAE_CACHE = {}                  # (path, device) -> built decoder (process-wide)
+
+
+def _h3_preview_latent_size(h, w, max_edge=H3_PREVIEW_MAX_EDGE, out_scale=16):
+    """(h, w) of the latent the preview decodes: unchanged when the output
+    would already fit max_edge, else scaled down (aspect kept, >= 2) so the
+    long OUTPUT edge is <= max_edge. Pure."""
+    cap = max(2, max_edge // out_scale)
+    long_edge = max(h, w)
+    if long_edge <= cap:
+        return int(h), int(w)
+    f = cap / float(long_edge)
+    return max(2, int(round(h * f))), max(2, int(round(w * f)))
+
+
+def _h3_tae_build(path, device=None):
+    """Build (or fetch from the process cache) the vendored taeh3 decoder on
+    `device`, fp16 on CUDA. One build per process and device."""
+    key = (str(path), str(device))
+    hit = _H3_TAE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        from .vendor.taehv import TAEHV, apply_model_with_memblocks
+    except ImportError:
+        from vendor.taehv import TAEHV, apply_model_with_memblocks
+    tae = TAEHV(path, arch_name="taeh3").eval()
+    for prm in tae.parameters():
+        prm.requires_grad_(False)
+    if device is not None:
+        tae = tae.to(device)
+        if str(device).startswith("cuda"):
+            tae = tae.half()
+    _H3_TAE_CACHE[key] = (tae, apply_model_with_memblocks)
+    return _H3_TAE_CACHE[key]
+
+
+class _H3TaePreviewer:
+    """decode_latent_to_preview(x0) -> PIL.Image, the previewer contract."""
+
+    def __init__(self, path, device=None):
+        self.tae, self._apply = _h3_tae_build(path, device)
+        self.device = device
+
+    @torch.no_grad()
+    def decode_latent_to_preview(self, x0):
+        x = _joint_video_half(x0)
+        x = x[:1, :, :1]                       # one batch, ONE latent frame (NCTHW)
+        h, w = int(x.shape[-2]), int(x.shape[-1])
+        th, tw = _h3_preview_latent_size(h, w)
+        if (th, tw) != (h, w):
+            # a preview, decoded smaller: the TAE is fully convolutional, so a
+            # bilinear latent is a legitimate smaller picture, not a lie
+            x = torch.nn.functional.interpolate(x[:, :, 0], size=(th, tw),
+                                                mode="bilinear", align_corners=False)[:, :, None]
+        x = x.movedim(1, 2)                    # -> NTCHW, what the vendor wants
+        if self.device is not None:
+            x = x.to(self.device)
+        x = x.to(next(self.tae.decoder.parameters()).dtype)
+        y = self._apply(self.tae.decoder, x, False, False)
+        y = self.tae.postprocess_output_frames(y)   # pixel-shuffle + clamp(0, 1)
+        f = y[0, 0]                            # first of the t_upscale frames, CHW
+        arr = (f.movedim(0, 2).float().cpu().numpy() * 255.0).round().clip(0, 255).astype("uint8")
+        return Image.fromarray(arr)
+
+
+def tae_warm(tae_name):
+    """v920: build the taeh3 decoder on the GPU and push one 8x8 latent frame
+    through it, so the first cuDNN/allocator cost lands NOW (mode just picked)
+    instead of between step 1 and 2 of the first run. Returns a short status
+    string; never raises (the route reports it, a failure only means the
+    first run pays the old price). Only taeh3 is warmed: the WAN decoders go
+    through Core's previewer and Core owns their lifecycle."""
+    if _strip_mode(tae_name) != "taeh3" and "taeh3" not in str(tae_name):
+        return "nothing to warm for %s" % tae_name
+    path = tae_lookup("taeh3")
+    if not path:
+        return "taeh3.safetensors not in models/vae_approx"
+    try:
+        import comfy.model_management as mm
+        device = mm.get_torch_device()
+    except Exception:
+        device = None
+    t0 = time.time()
+    tae, apply = _h3_tae_build(path, device)
+    with torch.no_grad():
+        x = torch.zeros(1, 1, 24, 8, 8)
+        if device is not None:
+            x = x.to(device)
+        x = x.to(next(tae.decoder.parameters()).dtype)
+        y = apply(tae.decoder, x, False, False)
+        if device is not None and str(device).startswith("cuda"):
+            torch.cuda.synchronize(device)
+    return "taeh3 warm on %s in %.1fs (%s)" % (device, time.time() - t0,
+                                              str(next(tae.decoder.parameters()).dtype))
+
+
 TAE_REGISTRY = {
     "taew2_1": {
         "file": "taew2_1.safetensors",
@@ -574,6 +725,19 @@ TAE_REGISTRY = {
                    "cbb4b1e8b82b28ea7ff89dfad1b1a93f"),
         "bytes": 22642902,
         "source": "github.com/madebyollin/taehv (safetensors build)",
+    },
+    "taeh3": {
+        # v918 -- MiniMax H3 (24 ch, patch 2). Pinned 05.09. IN the build
+        # sandbox: fetched from madebyollin's safetensors/ (raw.github is on
+        # the allowlist), sha256 + size measured, and the vendored decoder
+        # loaded it and decoded one 84x48 latent frame to 1344x768.
+        "file": "taeh3.safetensors",
+        "url": ("https://raw.githubusercontent.com/madebyollin/taehv/"
+                "main/safetensors/taeh3.safetensors"),
+        "sha256": ("4fd022bfcab08772fe0536b17ea1a3bb"
+                   "b5625be11e397868d1c5d891863d4c13"),
+        "bytes": 22709752,
+        "source": "github.com/madebyollin/taehv (safetensors build, MIT)",
     },
     "lighttaew2_1": {
         # Pinned 02.08. from Frank's source. The build sandbox cannot
@@ -1298,6 +1462,111 @@ def _moe_sample_rebase(model_high, model_low, seed, steps, cfg_high, cfg_low,
     return out
 
 
+# ─── v935: PDD Acc models sample their own trained schedule ───────────────
+#
+# A model that carries a PDD head bank (applied by the Stack/Engine, see
+# uls_pdd_apply) is only valid at the block starts its heads were trained for.
+# Frank's rule (10.09.): the step count is the Sampler's `steps`, and the sigma
+# curve is built AUTOMATICALLY -- unless an external SIGMAS node is wired, which
+# then owns the schedule. Everything that would evaluate the trunk off those
+# block starts is refused with its reason instead of rendering noise.
+
+PDD_SAMPLER = "euler"
+PDD_LEGAL_STEPS = (4, 5, 6, 7, 8)   # uls_pdd_math.LEGAL_NFE; the guard compares
+
+
+def pdd_plan(steps, sampler_name, denoise, start_at_step, end_at_step,
+             dual_moe, ext_steps=None):
+    """v935 -- the step count a PDD model is fused for, or ValueError. Pure.
+
+    ext_steps: the length of an external SIGMAS schedule (len - 1), or None.
+    Returns (nfe or None, notes). None means: an external schedule with no
+    trained partition -- the run proceeds on it, and the heads themselves
+    refuse any sigma that is not a trained block start.
+    """
+    notes = []
+    if dual_moe:
+        raise ValueError(
+            "[PLS] Sampler: this model carries a PDD head bank -- it runs one "
+            "trunk on one trained schedule. Switch the pill to Single.")
+    if str(sampler_name) != PDD_SAMPLER:
+        raise ValueError(
+            "[PLS] Sampler: a PDD model needs sampler '%s' (got '%s'). Each "
+            "head predicts the MEAN velocity across its block, which is exactly "
+            "one Euler step; multistep, ancestral and SDE samplers would "
+            "combine or re-noise it, and higher-order ones evaluate between "
+            "the block starts." % (PDD_SAMPLER, sampler_name))
+    if float(denoise) < 1.0 - 1e-6:
+        raise ValueError(
+            "[PLS] Sampler: a PDD model runs its trained schedule from sigma "
+            "1.0 -- denoise %.2f would start it between two block starts. Set "
+            "denoise to 1.0." % float(denoise))
+    if ext_steps is not None:
+        n = int(ext_steps)
+        if n in PDD_LEGAL_STEPS:
+            notes.append("external SIGMAS drive the run (%d steps); the heads "
+                         "are fused for that count and accept only its trained "
+                         "block starts" % n)
+            return n, notes
+        notes.append("external SIGMAS with %d steps -- no trained partition "
+                     "has that count; the heads keep their fusion and refuse "
+                     "any sigma that is not one of its block starts" % n)
+        return None, notes
+    n = int(steps)
+    if n not in PDD_LEGAL_STEPS:
+        raise ValueError(
+            "[PLS] Sampler: a PDD model runs in %s steps, got %d. Only blocks "
+            "of 4 and 8 fine steps were trained and they must cover all 32 -- "
+            "fewer would need longer blocks, more shorter ones, and neither "
+            "exists. More steps is not closer to the teacher here."
+            % ("/".join(str(x) for x in PDD_LEGAL_STEPS), n))
+    if int(start_at_step) > 0 or int(end_at_step) < n:
+        raise ValueError(
+            "[PLS] Sampler: start_at_step/end_at_step would cut the trained "
+            "schedule of a PDD model (steps %d, start %d, end %d). Run it whole."
+            % (n, int(start_at_step), int(end_at_step)))
+    return n, notes
+
+
+def _pdd_mod():
+    try:
+        from . import uls_pdd_apply as _A
+    except ImportError:  # pragma: no cover - direct-run fallback
+        import uls_pdd_apply as _A
+    return _A
+
+
+def _pdd_prepare(model, steps, sampler_name, denoise, start_at_step,
+                 end_at_step, dual_moe, sigmas, cfg):
+    """(model, sigmas) for this run. Untouched when the model has no PDD bank.
+
+    With a bank: the heads are fused for the planned count (uls_pdd_apply.refit,
+    a clone -- the input model is not mutated) and, without external SIGMAS,
+    the schedule is the bank's own block starts.
+    """
+    A = _pdd_mod()
+    if A.state_of(model) is None:
+        return model, sigmas
+    ext = None if sigmas is None else max(0, int(sigmas.shape[-1]) - 1)
+    nfe, notes = pdd_plan(steps, sampler_name, denoise, start_at_step,
+                          end_at_step, dual_moe, ext_steps=ext)
+    if nfe is not None:
+        model = A.refit(model, nfe, log=lambda m: print(f"[PLS] {m}"))
+    st = A.state_of(model)
+    if sigmas is None:
+        sigmas = torch.tensor(st.boundaries, dtype=torch.float32)
+        print(f"[PLS] PDD: {st.nfe} steps, blocks {list(st.sizes)} -- schedule "
+              f"built from the head bank ({PDD_SAMPLER}); the scheduler widget "
+              f"is not used")
+    for n in notes:
+        print(f"[PLS] PDD: {n}")
+    if abs(float(cfg) - 1.0) > 1e-6:
+        print(f"[PLS] \u26a0 PDD: cfg {float(cfg):.2f} -- the acc release is "
+              f"distilled for cfg 1.0; above it every step also pays an uncond "
+              f"pass and leaves the trained regime")
+    return model, sigmas
+
+
 def _polyhedron_sample_sigmas(model, seed, cfg, sampler_name, sigmas, positive, negative,
                               latent, add_noise=True, node_id=None, callback=None,
                               preview_mode="latent2rgb (smooth)"):
@@ -1588,7 +1857,8 @@ class ULSSampler:
                 "preview_mode": (["Still · ComfyUI", "Still · latent2rgb",
                                   "Video · latent2rgb (smooth)", "Video · latent2rgb (crisp)",
                                   _mode_entry("Video · TAE (taew2_1)", "taew2_1"),
-                                  _mode_entry("Video · TAE (lighttaew2_1)", "lighttaew2_1")],
+                                  _mode_entry("Video · TAE (lighttaew2_1)", "lighttaew2_1"),
+                                  _mode_entry("Video · TAE (taeh3)", "taeh3")],
                                  {"default": "Still · ComfyUI",
                                   "tooltip": "In-node live preview decoder — visualisation only, it NEVER "
                                              "changes the output latent. 'Still ·' modes show a SINGLE frame "
@@ -1791,7 +2061,20 @@ class ULSSampler:
         # high", the widget default) resolves to sigma_shift, so an untouched node
         # keeps the v838 behaviour of shifting both experts alike.
         _low_shift = _resolve_low_shift(sigma_shift, sigma_shift_low)
-        if (sigma_shift and sigma_shift > 0) or (_low_shift and _low_shift > 0):
+        # v909: decide ONCE what would actually be patched, and let both the
+        # refusal below and the patches themselves read that ONE decision. The
+        # LOW shift can only bite where a LOW expert is really sampled: High +
+        # Low, with a model on the socket. In Single the widget is greyed
+        # (DUAL_ONLY) but its serialised value TRAVELS -- dial 5.0 in a Wan
+        # graph, switch the same node to a single model, and the old value is
+        # still there, invisible. Reading it in Single made a joint AV latent
+        # refuse a run over a dial that could never have patched anything (the
+        # v894 lesson -- Single builds nothing for stage L -- applied to the
+        # gate instead of the work).
+        _shift_high = bool(sigma_shift and sigma_shift > 0)
+        _shift_low = bool(dual_moe and model_low is not None
+                          and _low_shift and _low_shift > 0)
+        if _shift_high or _shift_low:
             # v495: an ENGAGED external sigma path owns the whole schedule, and the shift
             # only affects schedule GENERATION (timestep(sigma) is shift-independent for
             # flow models) -- patching here would be a runtime no-op that misleads (the
@@ -1814,9 +2097,9 @@ class ULSSampler:
                     "which sets shift_video and shift_audio together."
                 )
             if not _ext_sigmas:
-                if sigma_shift and sigma_shift > 0:
+                if _shift_high:
                     model = _apply_sigma_shift(model, sigma_shift)
-                if model_low is not None and _low_shift and _low_shift > 0:
+                if _shift_low:
                     model_low = _apply_sigma_shift(model_low, _low_shift)
         # v839: mirror the scheduler_low honesty line -- an OWN low shift cannot
         # bite in 'Continuous', where ONE schedule is built from the HIGH expert.
@@ -1829,6 +2112,13 @@ class ULSSampler:
             print("[PLS] Sampler: sigma_shift_low is inert in 'Continuous' (both experts "
                   "share ONE schedule, built from the HIGH expert) -- it bites in "
                   "'Wan MoE parity'.")
+        # v935: a PDD model owns its schedule. Decided here, AFTER the shift
+        # gate (a joint AV latent refuses sigma_shift above) and BEFORE every
+        # path below, so High + Low, the external-sigma paths and Single all
+        # see the same decision. Untouched when the model carries no bank.
+        model, sigmas = _pdd_prepare(model, steps, sampler_name, denoise,
+                                     start_at_step, end_at_step, dual_moe,
+                                     sigmas, cfg)
         if dual_moe:
             # High + Low: the boundary drives the HIGH/LOW split internally, so the
             # manual start/end_at_step + leftover controls are not used here.

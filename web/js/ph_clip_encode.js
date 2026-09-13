@@ -17,6 +17,9 @@
  * height-only setSize (v531 - a run must never shrink the width).
  */
 import { app } from "../../scripts/app.js";
+// v952: under Nodes 2.0 the classic textarea is not mounted; the auto-fit measures
+// the Vue field standing in for it (the bridge copies the height back onto it).
+import { vueFieldFor } from "./uls_vue_parity.js";
 
 console.info("[PLS] ph_clip_encode.js v560 loaded");
 
@@ -374,13 +377,16 @@ function _visibleFields(node) {
 
 // the height this field needs to show ALL its text, measured from scrollHeight. The
 // height='auto' toggle is synchronous and fires no event, so it cannot start a loop.
-function _contentH(w) {
-    const el = w && w.element;
+function _contentH(w, el) {
+    el = el || (w && w.element);
     if (!el) return FIELD_DEF_H;
-    const prev = el.style.height;
+    const prev = el.style.height, prevMin = el.style.minHeight;
     el.style.height = "auto";
+    el.style.minHeight = "0";      // v952: the bridge pins min-height on the Vue field --
+                                    // a measurement under it could never shrink
     const raw = Math.ceil(el.scrollHeight);
     el.style.height = prev;
+    el.style.minHeight = prevMin;
     return Math.max(FIELD_MIN_H, Math.min(FIELD_MAX_H, raw));
 }
 
@@ -418,10 +424,15 @@ function _refit(node) {
             // a collapsed scrollHeight; measuring then overwrites the good height and squeezes
             // the field (the v619 regression that v620's defer alone did not fully close). When
             // the field is not laid out, KEEP _plsH instead of re-measuring it.
-            const laidOut = !!el && (el.offsetParent !== null) && (el.clientWidth > 0);
+            let laidOut = !!el && (el.offsetParent !== null) && (el.clientWidth > 0);
+            let measureEl = el;
+            if (!laidOut) {                    // v952: Nodes 2.0 -- the Vue field stands in
+                const vf = vueFieldFor(node, w);
+                if (vf && vf.clientWidth > 0) { measureEl = vf; laidOut = true; }
+            }
             let h;
             if (laidOut) {
-                h = _contentH(w);              // laid out -- measure and update the stored truth
+                h = _contentH(w, measureEl);   // laid out -- measure and update the stored truth
                 w._plsH = h + pad;
             } else {
                 h = (typeof w._plsH === "number" ? w._plsH : FIELD_DEF_H) - pad;  // keep stored
@@ -895,3 +906,6 @@ app.registerExtension({
         };
     },
 });
+
+// v941: for the Nodes 2.0 view (the painted bar reads the same lines)
+export { _barLines, _counterText };

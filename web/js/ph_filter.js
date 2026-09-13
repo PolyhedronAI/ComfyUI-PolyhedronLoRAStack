@@ -877,3 +877,6 @@ app.registerExtension({
         };
     },
 });
+
+// v941: for the Nodes 2.0 view (the painted Reset chip calls the same)
+export { _pfReset };

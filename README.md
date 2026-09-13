@@ -776,14 +776,20 @@ row.
 
 ## Compatibility
 
-**Renderer:** the Stack and Engine UIs are hand-drawn on the classic LiteGraph
-canvas. ComfyUI's new Vue renderer ("Modern Node Design" / Nodes 2.0) does not
-draw this kind of custom UI — the same limitation applies to other canvas-based
-packs such as rgthree-comfy. If a Stack/Engine node appears empty, disable
-Modern Node Design in Settings; the node shows this hint inline and a one-time
-notice explains it. Your rows and settings are safe either way — only the
-rendering is affected, and all backend nodes (Bridge, Sigma, Token Counter,
-Inspector, Model Switch) work under both renderers.
+**Renderer:** every node in this package works under both of ComfyUI's
+renderers — the classic LiteGraph canvas and the Vue renderer ("Modern Node
+Design" / Nodes 2.0, on by default in new Desktop and Cloud installs since
+frontend 1.41). The Stack, Engine, CLIP Text Encode, Filter, Int and the three
+Load nodes carry a dedicated Nodes 2.0 view that mirrors the painted node
+(group colours, Apply pill, order arrows, trigger words, word band, status
+line); the painted preview surfaces (Sampler live preview, Seed noise field,
+Power Upscale process view) render there too. Nodes 2.0 lays widgets out
+taller than LiteGraph (about 4 px per row, 28 px per pin row), so a workflow
+saved for the classic canvas can overlap slightly under Nodes 2.0 — nothing
+is lost, only the boxes are larger. If you prefer the denser classic look,
+disable Modern Node Design in Settings; nothing in this package depends on
+either renderer, and a workflow saved under one opens unchanged under the
+other.
 
 ## Installation
 

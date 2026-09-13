@@ -70,6 +70,32 @@ from .uls_merge_math import (  # noqa: F401  (re-export)
     _detect_convention, _collect_factor_keys, _has_mid_tensor, _dare_mask_apply,
 )
 
+# v912: merge policy (pure) lives in its own module -- uls_merge_math.py is an
+# anchor file since v598 and stays byte-identical.
+try:
+    from .uls_merge_policy import (_joint_merge_downgrade, JOINT_MERGE_REASON,  # noqa: F401
+                                    _apply_decision, BYPASS_KEY, APPLY_MODES,  # noqa: F401
+                                    _foreign_keys, FOREIGN_SUFFIXES,          # noqa: F401
+                                    payload_family,                           # noqa: F401
+                                    safetensors_header_names,                 # noqa: F401
+                                    safetensors_metadata)                     # noqa: F401
+    from .uls_lora_convert import convert_foreign_lora                        # noqa: F401
+except ImportError:  # pragma: no cover - direct-run fallback, as elsewhere
+    from uls_merge_policy import (_joint_merge_downgrade, JOINT_MERGE_REASON,   # noqa: F401
+                                   _apply_decision, BYPASS_KEY, APPLY_MODES,   # noqa: F401
+                                   _foreign_keys, FOREIGN_SUFFIXES,           # noqa: F401
+                                   payload_family,                            # noqa: F401
+                                   safetensors_header_names,                  # noqa: F401
+                                   safetensors_metadata)                      # noqa: F401
+    from uls_lora_convert import convert_foreign_lora                          # noqa: F401
+
+# v912: the joint-model witness (FLOW_AV / audio_shift / fix_empty_latent) --
+# the same probe the sampler and the upscaler already read, imported the same way.
+try:
+    from .ph_joint_probe import _joint_latent_parts
+except ImportError:  # pragma: no cover - direct-run fallback, as elsewhere
+    from ph_joint_probe import _joint_latent_parts
+
 
 # v265: optional interrupt hook — lets ComfyUI's red X (Cancel) abort a long
 # merge promptly instead of only after it finishes. Resolved ONCE at import; if
@@ -152,6 +178,38 @@ def _td_nbytes(td) -> int:
     except Exception:
         pass
     return total
+
+
+def _convert_lora_like_core(td, path=None):
+    """v914 -- the same conversion Core's LoraLoader runs before load_lora
+    (comfy/lora_convert.py: BFL control, Wan Fun, USO). The SEQ path gets it
+    for free through the native loader; the merge path read the raw dict and
+    would have seen alien key names for exactly those LoRAs. Returns the dict
+    unchanged when the module or the shape is unknown -- never raises."""
+    try:
+        import comfy.lora_convert as _lc
+    except Exception:
+        return td
+    try:
+        out = _lc.convert_lora(td)
+        td = out if isinstance(out, dict) and out else td
+    except Exception as ex:
+        print(f"[PLS] \u26a0 convert_lora raised ({ex}); using the raw dict")
+
+    # v930: schemas core has no table for. Runs AFTER core's own pass, so a
+    # dict core already understood is never touched twice. The metadata carries
+    # the alpha/rank ratio for files that ship no per-module .alpha.
+    try:
+        meta = safetensors_metadata(path) if path else {}
+        td, schema = convert_foreign_lora(
+            td, metadata=meta,
+            log=lambda m: print(f"[PLS] {m}"))
+        if schema:
+            print(f"[PLS] converted a {schema} LoRA into ComfyUI keys")
+    except Exception as ex:
+        print(f"[PLS] \u26a0 foreign-schema conversion raised ({ex}); "
+              f"using the dict as it was")
+    return td
 
 
 def _cached_load_torch_file(path: str):
@@ -442,6 +500,19 @@ def _row_clip_weight(row: dict, fallback: float) -> float:
 
 
 
+def _convention_label(conv):
+    """v917: human word for a (up_suffix, down_suffix) pair from
+    _detect_convention -- the suffixes themselves are the truth."""
+    if not conv:
+        return "unknown"
+    up = conv[0]
+    if "lora_up" in up:
+        return "kohya (.lora_up/.lora_down)"
+    if "lora_B" in up:
+        return "WAN/FLUX (.lora_B/.lora_A)"
+    return "%s/%s" % (conv[0], conv[1])
+
+
 def _short_name(lora_name: str, n: int = 38) -> str:
     """Filename without extension, truncated. Cross-platform safe."""
     return os.path.basename(lora_name).replace(".safetensors", "")[:n]
@@ -537,6 +608,151 @@ def _apply_seq(loader, model, clip, names: list, weights: list,
     return m, c, errors
 
 
+# ─── v913: Bypass — LoRAs as a forward hook, base weights untouched ──────────
+
+def _target_is_quantized(model) -> bool:
+    """True when the diffusion model carries at least one QuantizedTensor
+    weight (int8 / nvfp4 / fp8 layouts). Stops at the first hit; fails OPEN
+    (False) on anything unexpected so a probe can never block a run."""
+    try:
+        from comfy.quant_ops import QuantizedTensor
+    except Exception:
+        return False
+    try:
+        dm = getattr(model.model, "diffusion_model", model.model)
+        for p in dm.parameters():
+            if isinstance(p, QuantizedTensor):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+class _BypassState:
+    """The ONE synthetic LoRA that all bypass groups on a model fold into.
+
+    Core's BypassInjectionManager holds one adapter per module key, and
+    ModelPatcher.set_injections holds one list per key -- a second group
+    applied on its own would silently replace the first. So the state keeps
+    every group's already-folded factors per base layer and rebuilds the
+    complete hook set on each apply. Immutable once attached: `add` returns a
+    new state, so a clone never shares mutable data with its parent.
+
+    Travels with the ModelPatcher as an attachment (survives clone()).
+    """
+
+    def __init__(self, layers=None):
+        # base -> (B [out, rank, ...], A [rank, in, ...], up_suffix, down_suffix)
+        self.layers = dict(layers or {})
+
+    def on_model_patcher_clone(self):
+        return self                     # immutable -> share
+
+    def add(self, merged_td, up_suffix, down_suffix):
+        """Fold a merged tensor dict (as built by the CONCAT path: weight and
+        alpha/rank already folded into B, alpha key = rank) into a NEW state.
+        A base already present is rank-concatenated with the new factors."""
+        import torch
+        layers = dict(self.layers)
+        for k in merged_td:
+            if not k.endswith(up_suffix):
+                continue
+            base = k[:-len(up_suffix)]
+            B = merged_td[k]
+            A = merged_td.get(base + down_suffix)
+            if A is None:
+                continue
+            if base in layers:
+                B0, A0, _, _ = layers[base]
+                if B0.shape[0] != B.shape[0] or A0.shape[1:] != A.shape[1:]:
+                    print(f"[PLS] \u26a0 bypass: shape mismatch on '{base}', new factors skipped")
+                    continue
+                B = torch.cat([B0, B.to(B0.dtype)], dim=1)
+                A = torch.cat([A0, A.to(A0.dtype)], dim=0)
+            layers[base] = (B, A, up_suffix, down_suffix)
+        return _BypassState(layers)
+
+    def tensor_dict(self):
+        """The synthetic LoRA for comfy.lora.load_lora: alpha = rank so the
+        adapter's scale is 1.0 (everything is already folded into B)."""
+        import torch
+        td = {}
+        for base, (B, A, up, down) in self.layers.items():
+            td[base + up] = B
+            td[base + down] = A
+            td[base + ".alpha"] = torch.tensor(float(B.shape[1]), dtype=torch.float32)
+        return td
+
+    def __len__(self):
+        return len(self.layers)
+
+
+def _handoff_bypass(model, clip, merged_td, up_suffix, down_suffix,
+                    model_keymap, clip_keymap, mode_tag, n_active, shorts):
+    """Hand a merged tensor dict to Core's BYPASS path instead of add_patches.
+
+    Diffusion layers -> one LoRAAdapter per layer -> BypassInjectionManager ->
+    set_injections(BYPASS_KEY). Anything load_lora returns that is NOT a
+    weight adapter (diff / bias / set patches -- none from a synthetic dict,
+    kept for completeness) still goes through add_patches. Text-encoder layers
+    take the patch path on the CLIP clone exactly as before: the CLIP is not
+    the quantized target here, and its LoRA half is tiny.
+    """
+    from comfy.weight_adapter import BypassInjectionManager, WeightAdapterBase
+
+    prev = model.get_attachment(BYPASS_KEY)
+    state = prev if isinstance(prev, _BypassState) else _BypassState()
+    n_before = len(state)
+    state = state.add(merged_td, up_suffix, down_suffix)
+
+    full_keymap = {**model_keymap, **clip_keymap}
+    loaded = comfy.lora.load_lora(state.tensor_dict(), full_keymap)
+    if not loaded:
+        return None                     # caller falls back, loudly
+
+    model_target_keys = set(model_keymap.values())
+    clip_target_keys = set(clip_keymap.values())
+    adapters, regular, clip_loaded = {}, {}, {}
+    for k, v in loaded.items():
+        if k in clip_target_keys and k not in model_target_keys:
+            clip_loaded[k] = v
+        elif isinstance(v, WeightAdapterBase):
+            adapters[k] = v
+        else:
+            regular[k] = v
+
+    new_model = model.clone()
+    new_model.set_attachments(BYPASS_KEY, state)
+    if regular:
+        new_model.add_patches(regular, 1.0, 1.0)
+
+    manager = BypassInjectionManager()
+    sd_keys = set(new_model.model.state_dict().keys())
+    missing = 0
+    for k, a in adapters.items():
+        if k in sd_keys:
+            manager.add_adapter(k, a, strength=1.0)
+        else:
+            missing += 1
+    injections = manager.create_injections(new_model.model)
+    new_model.set_injections(BYPASS_KEY, injections)
+
+    new_clip = clip
+    if clip is not None and clip_loaded:
+        # CLIP half: these come from the CURRENT group's dict only, so the
+        # clone gets exactly this group's TE patches (previous groups already
+        # sit on the CLIP clone chain).
+        cur = comfy.lora.load_lora(merged_td, clip_keymap)
+        if cur:
+            new_clip = clip.clone()
+            new_clip.add_patches(cur, 1.0, 1.0)
+
+    print(f"[PLS] \u2713 {mode_tag} BYPASS merged {n_active} LoRAs [{', '.join(shorts)}]  "
+          f"layers={len(state)} (+{len(state) - n_before} new)  hooks={manager.get_hook_count()}"
+          + (f"  unmapped={missing}" if missing else ""))
+    return new_model, new_clip, []
+
+
 # ─── Apply: CONCAT / DARE ──────────────────────────────────────────────────
 
 def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
@@ -544,7 +760,8 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
                           trim: bool = False, resolve: bool = False,
                           trim_amount: float = None,
                           force_resolve_device: str = None,
-                          clip_weights: list = None) -> tuple:
+                          clip_weights: list = None,
+                          handoff: str = "patch") -> tuple:
     """
     Build a synthetic merged LoRA tensor dict by concatenating B/A factors
     along the rank dimension, then hand it to ComfyUI's standard load_lora()
@@ -598,6 +815,7 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
             continue
         try:
             td = _cached_load_torch_file(path)
+            td = _convert_lora_like_core(td, path) if td else td   # v914/v930
             if td:
                 raw.append(td)
                 valid_names.append(name)
@@ -607,16 +825,23 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
             print(f"[PLS] ✗ Load failed: {name}: {ex}")
     _t_load += time.perf_counter() - _t0
 
-    if len(raw) < 2:
-        # 0 or 1 valid → fall back to SEQ
+    if not raw:
+        return model, clip, []
+    if len(raw) < 2 and handoff != "bypass":
+        # 1 valid → fall back to SEQ (v913: under bypass ONE LoRA is a valid
+        # group -- the hook needs the merged dict either way)
         return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
+    # v915: every structural fallback below applies the group BAKED; under
+    # bypass each message says so itself instead of an upfront line that
+    # printed for every clean group too.
+    _fb = " (BAKED, not bypass)" if handoff == "bypass" else ""
 
     # --- Detect convention per LoRA ---
     convs = [_detect_convention(td) for td in raw]
     unrecognised = [valid_names[i] for i, c in enumerate(convs) if c is None]
     if unrecognised:
         print(f"[PLS] ⚠ {mode}: {len(unrecognised)} LoRA(s) use non-standard "
-              f"format (LyCORIS/LoHA/LoKr?), falling back to SEQ:")
+              f"format (LyCORIS/LoHA/LoKr?), falling back to SEQ{_fb}:")
         for n in unrecognised:
             print(f"[PLS]      - {_short_name(n)}")
         return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
@@ -633,8 +858,13 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
     # own convention, so it is the correct, safe path for a mixed group.
     if len({c for c in convs}) > 1:
         print(f"[PLS] ⚠ {mode}: group mixes LoRA naming conventions "
-              f"(kohya vs WAN/FLUX) — falling back to SEQ so each LoRA is "
+              f"(kohya vs WAN/FLUX) — falling back to SEQ{_fb} so each LoRA is "
               f"applied correctly under its own convention.")
+        # v917: name them. With eight LoRAs in the group the line above gave
+        # no way to tell WHICH file brought the other convention (field,
+        # 05.09.). The minority convention is the odd one out.
+        for n, c in zip(valid_names, convs):
+            print(f"[PLS]      - {_short_name(n)}  [{_convention_label(c)}]")
         return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
 
     # --- Conv/LoCon CP-decomposition guard (v253) ---
@@ -644,13 +874,16 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
     # convention detection still matches on lora_up/lora_B, so the group would
     # NOT otherwise fall back. Route the whole group to SEQ (native loader is
     # mid-aware). Result-neutral for linear LoRAs (no mid → guard never fires).
-    mid_loras = [valid_names[i] for i, td in enumerate(raw) if _has_mid_tensor(td)]
-    if mid_loras:
-        print(f"[PLS] ⚠ {mode}: {len(mid_loras)} LoRA(s) carry a conv 'mid' "
-              f"tensor (LoCon/CP) the concat path can't represent — falling "
-              f"back to SEQ so each is applied correctly:")
-        for n in mid_loras:
-            print(f"[PLS]      - {_short_name(n)}")
+    # v914: widened from the mid-only test to every key family the merged
+    # dict cannot carry (DoRA scale, diff/bias, norm, LyCORIS) -- Core's native
+    # loader applies them all, the merge would have dropped them silently.
+    foreign = [(valid_names[i], _foreign_keys(td)) for i, td in enumerate(raw)]
+    foreign = [(n, f) for n, f in foreign if f]
+    if foreign or any(_has_mid_tensor(td) for td in raw):
+        print(f"[PLS] \u26a0 {mode}: {len(foreign)} LoRA(s) carry keys the merged dict "
+              f"cannot represent -- falling back to SEQ so Core's loader applies them{_fb}:")
+        for n, f in foreign:
+            print(f"[PLS]      - {_short_name(n)}: {', '.join(f)}")
         return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
 
     # --- Per-LoRA: enumerate (base, up_key, down_key, alpha_key) ---
@@ -663,7 +896,7 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
             base_to_sources.setdefault(base, []).append((li, base, uk, dk, ak))
 
     if not base_to_sources:
-        print(f"[PLS] ⚠ {mode}: no factor keys found, falling back to SEQ")
+        print(f"[PLS] ⚠ {mode}: no factor keys found, falling back to SEQ{_fb}")
         return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
 
     # --- Build synthetic merged tensor dict ---
@@ -835,13 +1068,14 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
                                                  mode, dare_variant, trim, resolve,
                                                  trim_amount=trim_amount,
                                                  force_resolve_device="cpu",
-                                                 clip_weights=clip_weights)
+                                                 clip_weights=clip_weights,
+                                                 handoff=handoff)
                 print(f"[PLS] ⚠ RESOLVE: layer '{base}' could not be sign-elected "
-                      f"({ex}) - falling back to SEQ for the whole group.")
+                      f"({ex}) - falling back to SEQ{_fb} for the whole group.")
                 return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
             except Exception as ex:
                 print(f"[PLS] ⚠ RESOLVE: layer '{base}' could not be sign-elected "
-                      f"({ex}) - falling back to SEQ for the whole group.")
+                      f"({ex}) - falling back to SEQ{_fb} for the whole group.")
                 return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
             if res is None:
                 continue   # full cancellation at this layer → no patch
@@ -863,7 +1097,7 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
                                                           dtype=torch.float32)
 
     if not merged_td:
-        print(f"[PLS] ⚠ {mode}: merged dict empty, falling back to SEQ")
+        print(f"[PLS] ⚠ {mode}: merged dict empty, falling back to SEQ{_fb}")
         return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
 
     if skipped_shape_mismatch:
@@ -889,9 +1123,19 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
 
         full_keymap = {**model_keymap, **clip_keymap}
 
+        if handoff == "bypass":
+            shorts = [_short_name(n, 18) for n in valid_names]
+            mode_tag = mode + (" +TRIM" if trim else "") + (" +RESOLVE" if resolve else "")
+            res = _handoff_bypass(model, clip, merged_td, out_up_suffix, out_down_suffix,
+                                  model_keymap, clip_keymap, mode_tag, n_active, shorts)
+            if res is None:
+                print(f"[PLS] \u26a0 {mode} BYPASS: ComfyUI mapped 0 adapters, falling back to SEQ{_fb}")
+                return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
+            return res
+
         loaded = comfy.lora.load_lora(merged_td, full_keymap)
         if not loaded:
-            print(f"[PLS] ⚠ {mode}: ComfyUI mapped 0 patches, falling back to SEQ")
+            print(f"[PLS] ⚠ {mode}: ComfyUI mapped 0 patches, falling back to SEQ{_fb}")
             return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
 
         new_model = model.clone()
@@ -936,20 +1180,231 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
     except INTERRUPT_EXC:
         raise                          # v265: let a Cancel (red X) abort; don't swallow into SEQ
     except Exception as ex:
-        print(f"[PLS] ✗ {mode} apply failed ({ex}), falling back to SEQ")
+        print(f"[PLS] ✗ {mode} apply failed ({ex}), falling back to SEQ{_fb}")
         import traceback; traceback.print_exc()
         return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
 
 
+# ─── v935: PDD Acc files -- both halves or neither ─────────────────────────
+#
+# A MiniMax-H3 PDD Acc file is a trunk LoRA PLUS a head bank (v929). v929
+# refused it because nothing here could apply the bank. Since v935 the whole
+# file is applied: the trunk as an ordinary baked patch -- converted from the
+# Diffusers layout (v930) and, on a curve-form checkpoint, rebased onto the
+# model's adaln curve (v931) -- and the bank onto final_layer (uls_pdd_apply).
+#
+# The promise v929 made is kept and made stronger: a PDD file is NEVER half
+# applied. Every trunk module is checked against the model BEFORE anything is
+# patched -- it must exist, and its factors must fit the weight -- and the bank
+# must attach. Any gap refuses the WHOLE file with the reason, and the model
+# comes back untouched. The SEQ shortcut is not an option here: it hands Core's
+# loader a file NAME, and conversion and rebase need the dict.
+
+_PDD_FACTOR_SUFFIXES = (".lora_A.weight", ".lora_B.weight", ".alpha", ".diff_b")
+
+
+def _pdd_mods():
+    try:
+        from . import uls_pdd_apply as _A
+        from . import uls_adaln_rebase as _R
+    except ImportError:  # pragma: no cover - direct-run fallback, as elsewhere
+        import uls_pdd_apply as _A
+        import uls_adaln_rebase as _R
+    return _A, _R
+
+
+def _pdd_audit(trunk, keymap, shapes):
+    """(module_count, problems) -- does EVERY trunk module land, and fit?
+
+    Pure over its inputs: the converted trunk dict, Core's key map and the
+    model's weight shapes. A tensor in no known factor form, a module the model
+    does not have, a missing factor, factors that do not fit the weight, a bias
+    delta that does not fit the bias: each is a problem, and one is enough to
+    refuse the file.
+    """
+    bases = {}
+    strays = []
+    for k, v in trunk.items():
+        for suf in _PDD_FACTOR_SUFFIXES:
+            if k.endswith(suf):
+                bases.setdefault(k[:-len(suf)], {})[suf] = v
+                break
+        else:
+            strays.append(k)
+    problems = []
+    if strays:
+        problems.append("%d tensor(s) in no known factor form, e.g. %s"
+                        % (len(strays), sorted(strays)[0]))
+    for base in sorted(bases):
+        parts = bases[base]
+        a = parts.get(".lora_A.weight")
+        b = parts.get(".lora_B.weight")
+        if a is None or b is None:
+            problems.append("%s: a factor is missing" % base)
+            continue
+        wkey = keymap.get(base)
+        if wkey is None:
+            problems.append("%s: no such module on this model" % base)
+            continue
+        wshape = shapes.get(wkey)
+        if (wshape is None or len(wshape) != 2
+                or int(b.shape[0]) != int(wshape[0])
+                or int(a.shape[1]) != int(wshape[1])
+                or int(a.shape[0]) != int(b.shape[1])):
+            problems.append("%s: factors %s x %s do not fit the weight %s"
+                            % (base, tuple(b.shape), tuple(a.shape), wshape))
+            continue
+        if ".diff_b" in parts:
+            bkey = wkey[:-len(".weight")] + ".bias"
+            if tuple(parts[".diff_b"].shape) != tuple(shapes.get(bkey) or ()):
+                problems.append("%s: bias delta %s does not fit %s"
+                                % (base, tuple(parts[".diff_b"].shape),
+                                   shapes.get(bkey)))
+    return len(bases), problems
+
+
+def _pdd_name_trunk(name):
+    """The trunk a file NAME claims ('fl2va' / 'ref2va'), or None. Used for a
+    warning only -- identity is decided by the model's curve table, never by a
+    filename."""
+    low = os.path.basename(name).lower().replace("-", "").replace("_", "")
+    for tag in ("ref2va", "fl2va"):
+        if tag in low:
+            return tag
+    return None
+
+
+def _apply_pdd(model, clip, name, weight, apply="auto"):
+    """v935 -- one PDD Acc file, whole: trunk baked, head bank attached.
+
+    Returns (model, clip, errors). On any gap the file is refused whole, the
+    reason is printed and returned, and the INPUT model comes back untouched.
+    """
+    short = _short_name(name)
+
+    def _refuse(why):
+        print(f"[PLS] \u2717 PDD refused: {short}")
+        print(f"[PLS]      {why}")
+        print("[PLS]      nothing of this file was applied -- a PDD file is "
+              "applied whole or not at all.")
+        return model, clip, [f"\u2717 Refused (PDD): {short} -- {why}"]
+
+    A, R = _pdd_mods()
+    prev = A.state_of(model)
+    if prev is not None:
+        return _refuse("this model already carries a PDD head bank (%s); a "
+                       "model can carry one" % (prev.source or "acc"))
+    try:
+        A.final_layer_of(model)
+    except RuntimeError:
+        return _refuse("the target is not a MiniMax-H3 model (no final_layer "
+                       "with video_out/audio_out)")
+    path = folder_paths.get_full_path("loras", name)
+    if not path:
+        return _refuse("file not found")
+    try:
+        td = _cached_load_torch_file(path)
+    except Exception as ex:
+        return _refuse(f"the file could not be read ({ex})")
+    bank = A.split_head_bank(td)
+    if bank is None:
+        return _refuse("the head bank is incomplete")
+    trunk = {k: v for k, v in td.items() if k not in A.BANK_KEYS}
+    trunk = _convert_lora_like_core(trunk, path)
+
+    trunk_id = None
+    basis_note = "dense model, adaln applies as trained"
+    table = R.model_curve_table(model)
+    if table is not None:
+        hit = R.basis_for_table(table)
+        if hit is None:
+            return _refuse(
+                "this checkpoint is curve-form, but its adaln_t_table (sha256 "
+                "%s...) matches no basis in assets/adaln_basis -- the trunk's "
+                "dense adaln half cannot be expressed on it"
+                % R.table_sha256(table)[:16])
+        bpath, bmeta = hit
+        c, V = R.load_basis(bpath)
+        trunk, n_re = R.rebase_lora_adaln(
+            trunk, c, V, log=lambda m: print(f"[PLS] {m}"))
+        trunk_id = bmeta.get("trunk")
+        basis_note = (f"adaln rebased onto the curve ({n_re} module(s), "
+                      f"basis {os.path.basename(bpath)})")
+
+    keymap = comfy.lora.model_lora_keys_unet(model.model, {})
+    shapes = {k: tuple(v.shape) for k, v in model.model.state_dict().items()}
+    n_mod, problems = _pdd_audit(trunk, keymap, shapes)
+    if n_mod == 0:
+        problems.append("no trunk module found")
+    if problems:
+        more = len(problems) - 3
+        return _refuse("; ".join(problems[:3])
+                       + (f" (+{more} more)" if more > 0 else ""))
+
+    loaded = comfy.lora.load_lora(trunk, keymap, log_missing=False)
+    new_model = model.clone()
+    landed = new_model.add_patches(loaded, float(weight), 1.0)
+    if len(landed) != len(loaded):
+        return _refuse(f"only {len(landed)} of {len(loaded)} trunk patches "
+                       f"landed on the model")
+    try:
+        state = A.build_state(bank, nfe=8, source=short, trunk=trunk_id)
+        new_model = A.attach(new_model, state,
+                             log=lambda m: print(f"[PLS] {m}"))
+    except Exception as ex:
+        return _refuse(f"the head bank could not be attached ({ex})")
+
+    print(f"[PLS] \u2713 PDD applied: {short} -- trunk {n_mod} module(s) "
+          f"baked, {basis_note}; head bank on final_layer. Steps come from "
+          f"the Polyhedron Sampler (4-8).")
+    said = _pdd_name_trunk(name)
+    if trunk_id and said and said != trunk_id:
+        print(f"[PLS] \u26a0 PDD: the file name says {said}, the model's curve "
+              f"table says {trunk_id} -- the heads are trained per trunk.")
+    if abs(float(weight) - 1.0) > 1e-6:
+        print(f"[PLS] \u26a0 PDD: strength {float(weight):.2f} scales the trunk "
+              f"only; the head bank is trained against the full trunk (1.00).")
+    if (apply or "auto").lower() == "bypass":
+        print("[PLS]      PDD trunk is baked even with the Apply pill on BYPASS "
+              "-- its rebased bias rides on the patch path only.")
+    return new_model, clip, []
+
+
+# Families from uls_merge_policy.PAYLOAD_SIGNATURES that have a whole-file
+# path. A family without an entry here is refused, as v929 did for all.
+_PAYLOAD_HANDLERS = {
+    "MiniMax-H3 PDD Acc": _apply_pdd,
+}
+
+
 # ─── Unified Apply Helper ──────────────────────────────────────────────────
+
+def _with_errs(res, extra):
+    """v929: carry refusal errors out through whichever apply path ran.
+
+    apply_lora_set has two productive exits (SEQ shortcut and merged dict) and
+    both return their own error list. A file refused up front must appear in
+    the caller's list either way -- the Stack and Engine debug panes mark a row
+    "skipped" by matching its short name against these strings.
+    """
+    if not extra:
+        return res
+    m, c, errs = res
+    return m, c, list(extra) + list(errs)
+
 
 def apply_lora_set(loader, model, clip, names: list, weights: list,
                    mode: str = "SEQ", dare_variant: str = "channel",
                    trim: bool = False, resolve: bool = False,
                    trim_amount: float = None,
-                   clip_weights: list = None) -> tuple:
+                   clip_weights: list = None,
+                   apply: str = "auto") -> tuple:
     """
     THE unified apply helper. Used by both Stack (per group) and Engine.
+
+    - apply (v913): "auto" | "patch" | "bypass" -- baked into the weights or as
+      Core's forward hook. Auto = bypass on a quantized target. See
+      uls_merge_policy._apply_decision.
 
     - mode: "SEQ" | "CONCAT" | "DARE"  (case-insensitive, unknown→SEQ)
     - dare_variant: "channel" | "element"  (only used when mode=DARE)
@@ -983,13 +1438,79 @@ def apply_lora_set(loader, model, clip, names: list, weights: list,
     f_weights = [t[1] for t in triples]
     f_clip    = [t[2] for t in triples]
 
-    if len(f_names) == 1 or mode == "SEQ":
-        return _apply_seq(loader, model, clip, f_names, f_weights, f_clip)
+    # v929: refuse files that are not plain LoRAs. This sits BEFORE the apply
+    # decision and before the SEQ shortcut on purpose -- it is the one gate every
+    # path passes (SEQ, CONCAT, DARE, bypass; Stack and Engine both land here),
+    # and the loaders below diverge: the merged-dict path reads the file through
+    # our cache, SEQ hands the NAME to Core's loader. A guard at the merge would
+    # miss half the ways in. Only the header is read (no tensor), and only a
+    # complete signature convicts; anything unreadable passes through, because a
+    # diagnostic that cannot answer must not block a run.
+    _payload_errs = []
+    _keep = []
+    _handled = []
+    for _i, _n in enumerate(f_names):
+        _hit = None
+        _path = folder_paths.get_full_path("loras", _n)
+        if _path:
+            _hit = payload_family(safetensors_header_names(_path))
+        if _hit and _hit[0] in _PAYLOAD_HANDLERS:
+            # v935: a family with a whole-file path is applied HERE, before the
+            # apply decision and the SEQ shortcut -- the same one gate every
+            # path passes. It never reaches a plain LoRA loader.
+            _handled.append((_hit[0], _n, f_weights[_i]))
+        elif _hit:
+            _label, _home, _why = _hit
+            _short = _short_name(_n)
+            print(f"[PLS] \u2717 Refused (not a LoRA): {_short}")
+            print(f"[PLS]      this is a {_label} file -- {_why}.")
+            print(f"[PLS]      it belongs in {_home}/ and is applied by its own node; "
+                  f"a LoRA loader would apply only its trunk half and stay silent "
+                  f"about the rest.")
+            _payload_errs.append(f"\u2717 Refused (not a LoRA): {_short} [{_label}]")
+        else:
+            _keep.append(_i)
+    for _label, _n, _w in _handled:
+        model, clip, _e = _PAYLOAD_HANDLERS[_label](model, clip, _n, _w, apply)
+        _payload_errs.extend(_e)
+    if _payload_errs or _handled:
+        if not _keep:
+            return model, clip, _payload_errs
+        f_names   = [f_names[i] for i in _keep]
+        f_weights = [f_weights[i] for i in _keep]
+        f_clip    = [f_clip[i] for i in _keep]
 
-    return _apply_concat_or_dare(loader, model, clip, f_names, f_weights,
-                                  mode=mode, dare_variant=dare_variant,
-                                  trim=trim, resolve=resolve, trim_amount=trim_amount,
-                                  clip_weights=f_clip)
+    # v913: baked or bypass? Decided BEFORE the SEQ shortcut, because under
+    # bypass SEQ and single-LoRA rows go through the merged-dict path too.
+    _quant = False
+    if (apply or "auto").lower() in ("auto",):
+        _quant = _target_is_quantized(model)
+    use_bypass, mode, _anotes = _apply_decision(apply, _quant, mode)
+    for _n in _anotes:
+        print(f"[PLS] {_n}")
+
+    if not use_bypass and (len(f_names) == 1 or mode == "SEQ"):
+        return _with_errs(_apply_seq(loader, model, clip, f_names, f_weights, f_clip),
+                          _payload_errs)
+
+    # v912: on a joint (distilled) model the random cleanups are not safe --
+    # measured, see _joint_merge_downgrade. The probe runs only when a merge is
+    # actually about to happen (SEQ and single-LoRA rows never pay for it).
+    try:
+        _is_joint = _joint_latent_parts(model) >= 2
+    except Exception:
+        _is_joint = False
+    mode, resolve, _notes = _joint_merge_downgrade(mode, resolve, trim, _is_joint)
+    for _n in _notes:
+        print(f"[PLS] \u26a0 {_n}")
+
+    return _with_errs(
+        _apply_concat_or_dare(loader, model, clip, f_names, f_weights,
+                              mode=mode, dare_variant=dare_variant,
+                              trim=trim, resolve=resolve, trim_amount=trim_amount,
+                              clip_weights=f_clip,
+                              handoff="bypass" if use_bypass else "patch"),
+        _payload_errs)
 
 
 # ─── Trigger Words ─────────────────────────────────────────────────────────
@@ -1326,6 +1847,7 @@ class UltimateLoraStack:
 
         # Per-group apply modes from frontend: {"scene": "DARE", "detail": "CONCAT", ...}
         group_modes = cfg.get("group_modes", {}) if isinstance(cfg.get("group_modes"), dict) else {}
+        apply_how = str(cfg.get("apply") or "auto")   # v913: "auto" | "patch" | "bypass"
 
         # Per-group DARE variants (v098): {"detail": "channel", "scene": "element", ...}
         # Legacy global dare_variant key is used as fallback for old workflows.
@@ -1408,7 +1930,8 @@ class UltimateLoraStack:
                 self._loader, model_out, clip_out,
                 names, grp_weights, mode=mode, dare_variant=dare_variant,
                 trim=trim, resolve=resolve, trim_amount=trim_amount,
-                clip_weights=grp_clip
+                clip_weights=grp_clip,
+                apply=apply_how,          # v913: node-level, same for every group
             )
             all_errors.extend(errs)
 
@@ -1587,6 +2110,7 @@ class ULSAccelerator:
             mode=mode, dare_variant=dare_variant,
             trim=trim, resolve=resolve,
             clip_weights=active_clip,
+            apply=str(cfg.get("apply") or "auto"),   # v913
         )
 
         err_set = set(errs)
@@ -1628,8 +2152,16 @@ class ULSInspector:
 
     @classmethod
     def INPUT_TYPES(cls):
+        # v910: BOTH inputs are optional. They used to be `required`, and with
+        # a muted or bypassed source ComfyUI answered with `required_input_
+        # missing` -- which paints the node with NODE_ERROR_COLOUR (#E00) and
+        # fires the red `failedToQueue` toast. That is the CORE's error
+        # channel, and it was firing for a passive read-only node whose whole
+        # job is to report what it can see. A missing feed is not an error
+        # here; it is one of the things this node exists to tell you about.
         return {
-            "required": {
+            "required": {},
+            "optional": {
                 "uls_config_out": ("STRING", {
                     "default": '{"rows":[]}',
                     "multiline": False,
@@ -1649,7 +2181,24 @@ class ULSInspector:
     CATEGORY      = "Polyhedron/Utils"
     OUTPUT_NODE   = False
 
-    def inspect(self, uls_config_out: str, prompt: str) -> tuple:
+    def inspect(self, uls_config_out=None, prompt=None) -> dict:
+        # v910: an unfed socket arrives as None (optional inputs, muted or
+        # bypassed source). Normalise ONCE, here, and remember WHAT is
+        # missing -- the report says it in words, the ui payload hands the
+        # frontend the same fact as a flag so the toast never parses prose
+        # (the uls_token_toast rule).
+        _no_config = uls_config_out is None
+        _no_prompt = prompt is None
+        uls_config_out = "" if uls_config_out is None else uls_config_out
+        prompt = "" if prompt is None else prompt
+
+        def _ui(state, loras=0, missing=0):
+            return {"pls_inspector": [{
+                "state":   str(state),      # "no_config" | "no_prompt" | "ok"
+                "loras":   int(loras),
+                "missing": int(missing),
+            }]}
+
         # Parse config
         try:
             cfg = json.loads(uls_config_out)
@@ -1659,8 +2208,14 @@ class ULSInspector:
         lora_info = cfg.get("lora_info", [])
 
         if not lora_info:
-            report = "⬡ Polyhedron LoRA Inspector\n  (no lora_info — connect uls_config_out from Stack v119+)"
-            return (report,)
+            if _no_config:
+                report = ("\u2b21 Polyhedron LoRA Inspector\n"
+                          "  (nothing on uls_config_out \u2014 the Stack is not "
+                          "connected, or its node is muted/bypassed)")
+            else:
+                report = "\u2b21 Polyhedron LoRA Inspector\n  (no lora_info \u2014 connect uls_config_out from Stack v119+)"
+            print(f"\n[PLS Inspector]\n{report}\n")
+            return {"ui": _ui("no_config"), "result": (report,)}
 
         # Build prompt token map: word → explicit weight or "plain"
         # Matches (word:1.2) syntax and plain words
@@ -1775,9 +2330,17 @@ class ULSInspector:
                 lines.append(f"    • {n}")
 
         lines.append("─────────────────────────────────")
+        # v910: an unfed prompt makes every trigger read as "NOT IN PROMPT".
+        # Say so, instead of letting the table imply eleven real misses.
+        if _no_prompt:
+            lines.append("  Note: nothing on the prompt input — every trigger")
+            lines.append("        above reads as missing for that reason alone.")
+            lines.append("─────────────────────────────────")
         report = "\n".join(lines)
         print(f"\n[PLS Inspector]\n{report}\n")
-        return (report,)
+        return {"ui": _ui("no_prompt" if _no_prompt else "ok",
+                          loras=len(lora_info), missing=len(missing_triggers)),
+                "result": (report,)}
 
 
 # ─── Token Counter ─────────────────────────────────────────────────────────
@@ -2008,6 +2571,40 @@ def _encoder_label(clip):
     except Exception:
         return None
     return facts[0].get("name") if facts else None
+
+
+def _near_limit_hints(warn_at, model_limit, warn_threshold, can_truncate,
+                      encoder=""):
+    """v911: what "approaching the limit" MEANS depends on whether there is a
+    limit to approach.
+
+    v908 fixed the over-budget claim and left this one standing: at 90 % of the
+    mark the report promised degrading quality and named kijai issue #1781 --
+    motion slowing, grid patterns -- for EVERY encoder. That effect belongs to
+    a fixed 512-wide buffer in kijai's WanVideoWrapper. On an encoder with no
+    cap (qwen3vl carries max_length=99999999) nothing is cut and that buffer is
+    not on the path, so the sentence was true for the wrong reason at best.
+
+    Pure and lifted by the guard, so the two wordings are DRIVEN, not read.
+    can_truncate keeps its v908 safe default: an unknown encoder is not a safe
+    encoder, so with no clip wired the original warning still appears.
+    """
+    pct = int(round(warn_threshold * 100))
+    if can_truncate:
+        return [
+            "\u26a0 Approaching limit \u2014 at or above the %d%% warn threshold" % pct,
+            "  (%d/%d tokens). Quality tends to degrade as the" % (warn_at, model_limit),
+            "  budget fills (motion slows, 'grid' patterns appear in output",
+            "  \u2014 kijai issue #1781). Consider trimming before you hit the cap.",
+        ]
+    named = " (%s)" % encoder if encoder else ""
+    return [
+        "\u26a0 At or above your own %d%% mark (%d/%d tokens)."
+        % (pct, warn_at, model_limit),
+        "  Nothing is cut here%s: this mark is yours, not the encoder's." % named,
+        "  The grid/motion warning you may know from WAN belongs to a fixed",
+        "  512-wide buffer that is not on this path. Trim if you want to.",
+    ]
 
 
 def _is_h3_encoder(clip) -> bool:
@@ -2485,11 +3082,9 @@ class ULSTokenCounter:
             hints.append("    and so does MiniMax H3, but both still spend tokens on the")
             hints.append("    digits and parentheses (measured: 8 words → 35 tokens).")
         elif (pos_count >= warn_at) or (neg_count >= warn_at):
-            pct = int(round(warn_threshold * 100))
-            hints.append(f"⚠ Approaching limit — at or above the {pct}% warn threshold")
-            hints.append(f"  ({warn_at}/{model_limit} tokens). Quality tends to degrade as the")
-            hints.append("  budget fills (motion slows, 'grid' patterns appear in output")
-            hints.append("  — kijai issue #1781). Consider trimming before you hit the cap.")
+            hints.extend(_near_limit_hints(warn_at, model_limit, warn_threshold,
+                                           _any_encoder_truncates(clip),
+                                           _encoder_label(clip) or ""))
         if method == "heuristic":
             hints.append("ℹ For exact counts: wire the `clip` input — no download, no")
             hints.append("  `transformers`, and correct for whichever encoder you run.")

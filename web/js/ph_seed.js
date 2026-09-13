@@ -20,6 +20,28 @@ import { api } from "../../scripts/api.js";
 import { attachHydration } from "./ph_widget_hydrate.js";
 import { impressionCanvas } from "./ph_noise_field.js";
 import { refit } from "./ph_widget_vis.js";
+// v951: under Nodes 2.0 the preview is a legacy canvas widget the frontend
+// paints ONCE and again only through widget.triggerDraw (resize, palette,
+// callback). setDirtyCanvas never reaches it -- so the fetched field arrived
+// and stayed invisible ("building field..." forever), and the row kept the
+// pre-draw height (84 of 154 px). The node's onDrawForeground is not called
+// there either, so "last used" moves into the widget under Nodes 2.0.
+import { vueMode } from "./uls_vue_views.js";
+const USED_LINE_H = 14;
+function _vueRepaint(widget) {
+    if (typeof widget.triggerDraw === "function") {
+        try { widget.triggerDraw(); } catch (e) { /* never break the preview */ }
+    }
+}
+// v953: one repaint per animation frame while scrubbing -- the scrub fires per
+// pixel, the frontend's canvas paints only through triggerDraw (see v951), so
+// without this the drag changed the seed invisibly under Nodes 2.0.
+function _vueRepaintSoon(widget) {
+    if (typeof widget.triggerDraw !== "function" || widget._ulsRafPending) return;
+    widget._ulsRafPending = true;
+    const raf = (typeof requestAnimationFrame === "function") ? requestAnimationFrame : (f) => setTimeout(f, 16);
+    raf(() => { widget._ulsRafPending = false; _vueRepaint(widget); });
+}
 
 console.info("[PLS] ph_seed.js v538 loaded");
 
@@ -30,6 +52,11 @@ function widgetByName(node, name) {
     return node.widgets ? node.widgets.find((w) => w.name === name) : null;
 }
 
+// v956: only "Reuse last" pins the control to fixed -- that is the one act that
+// says "this exact seed again". Scrubbing, clicking and Roll leave the control
+// alone (Frank, 12.09.: a drag is the randomize gesture, it must not flip the
+// node to fixed); under randomize the scrubbed seed is what you SEE, the queue
+// still rolls, exactly as the control says.
 function pinFixed(node) {
     const c = widgetByName(node, "control_after_generate");
     if (c) c.value = "fixed";
@@ -47,6 +74,8 @@ function setUsed(node, used) {
     node.properties = node.properties || {};
     node.properties.pls_last_used = used;
     node.setDirtyCanvas(true, true);
+    const pw = (node.widgets || []).find((w) => w && w.name === "noise_preview");
+    if (pw) _vueRepaint(pw);                 // v951
 }
 
 
@@ -163,6 +192,7 @@ function _requestField(node, widget, st) {
             widget._imgKey = key;
             widget._failed = false;
             node.setDirtyCanvas(true, false);
+            _vueRepaint(widget);              // v951
         };
         img.onerror = () => {
             if (widget._key !== key) return;
@@ -171,6 +201,7 @@ function _requestField(node, widget, st) {
                                       // screen labelled as one forever -- if
                                       // the route is down, say so instead.
             node.setDirtyCanvas(true, false);
+            _vueRepaint(widget);              // v951
         };
         img.src = api.apiURL ? api.apiURL(url) : url;
     }, 90);
@@ -202,7 +233,8 @@ function _addNoisePreview(node) {
         computeSize(width) {
             const bh = (widget._boxH != null) ? widget._boxH
                                             : (PREV_DEF_H - TOP_PAD - PREV_BOTTOM);
-            return [width, bh + TOP_PAD + PREV_BOTTOM];
+            // v951: under Nodes 2.0 the "last used" line lives in this widget
+            return [width, bh + TOP_PAD + PREV_BOTTOM + (vueMode() ? USED_LINE_H : 0)];
         },
         draw(ctx, n, widgetWidth, posY) {
             n._plsPrevTop = posY;
@@ -221,7 +253,11 @@ function _addNoisePreview(node) {
                                    (dragging || widget._impHot === true);
             const box = _fitBox(widgetWidth, widget._h, st.w / st.h);
             const boxW = box.w, boxH = box.h;
+            const grew = widget._boxH !== boxH;
             widget._boxH = boxH;
+            // v951: a new box height must reach the Vue row -- it re-reads
+            // computeSize only on triggerDraw; deferred, never from inside draw
+            if (grew && vueMode()) setTimeout(() => _vueRepaint(widget), 0);
             const x = PREV_MARGIN;
             const y = posY + TOP_PAD;
             ctx.save();
@@ -284,6 +320,13 @@ function _addNoisePreview(node) {
                     ctx.fillText("drag = scrub seed", tx, ty); ty += 13;
                     ctx.fillText("click = re-roll", tx, ty);
                 }
+                // v951: "last used" under Nodes 2.0 (classic paints it in onDrawForeground)
+                if (vueMode() && n._plsUsed != null) {
+                    ctx.font = "11px Arial";
+                    ctx.fillStyle = "#9a9a9a";
+                    ctx.textAlign = "left";
+                    ctx.fillText("last used: " + n._plsUsed, x, y + boxH + PREV_BOTTOM + 10);
+                }
             } catch (e) { /* never break the canvas */ }
             ctx.restore();
         },
@@ -306,9 +349,9 @@ function _addNoisePreview(node) {
                 if (Math.abs(dx) >= 1) {
                     let v = Number(sdW.value || 0) + Math.round(dx);
                     if (v < 0) v = 0;
-                    sdW.value = v;
-                    pinFixed(n);
+                    sdW.value = v;              // v956: no pin on a scrub
                     n.setDirtyCanvas(true, true);
+                    _vueRepaintSoon(widget);   // v953
                 }
                 return true;
             }
@@ -316,10 +359,10 @@ function _addNoisePreview(node) {
                 const wasDrag = widget._dragging;
                 widget._dragging = false;
                 if (wasDrag && widget._moved < 3) {        // a click, not a drag
-                    sdW.value = roll53();
-                    pinFixed(n);
+                    sdW.value = roll53();       // v956: no pin on a click re-roll
                     n.setDirtyCanvas(true, true);
                 }
+                _vueRepaintSoon(widget);       // v953: settle the box after a drag or a click
                 return true;
             }
             return false;
@@ -377,8 +420,7 @@ app.registerExtension({
             this.addWidget("button", "\ud83c\udfb2 Roll", null, () => {
                 const w = widgetByName(this, "seed");
                 if (!w) return;
-                w.value = roll53();
-                pinFixed(this);
+                w.value = roll53();             // v956: Roll does not pin either
                 this.setDirtyCanvas(true, true);
             });
             this.addWidget("button", "\u21ba Reuse last", null, () => {
