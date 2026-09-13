@@ -231,7 +231,13 @@ app.registerExtension({
                 const hasBar = N > 1;
                 this._phHasBar = hasBar;                 // onResize reserves room for the bar
                 this._phApplyLoop = null;                // each driver registers its loop hook
+                this._phApplySound = null;               // v957: and its sound hook
                 if (this._phLoop === undefined) this._phLoop = false;  // persists across runs
+                // v957 (issue #2, HuntingSuccubus): the preview starts muted because a
+                // browser refuses autoplay WITH sound -- but until now there was no way
+                // to turn the sound ON at all (no speaker button, no controls), so a
+                // muxed clip looked silent. The state persists on the node like loop.
+                if (this._phSound === undefined) this._phSound = false;
 
                 // ── layout: media row on top, shared bar below ──
                 const wrap = document.createElement("div");
@@ -320,10 +326,33 @@ app.registerExtension({
                         styleLoop();
                         if (this._phApplyLoop) this._phApplyLoop();
                     });
+                    // v957: sound toggle, right of the loop button. Only for video --
+                    // an image strip has nothing to play.
+                    let soundBtn = null;
+                    if (isVideo) {
+                        soundBtn = document.createElement("button");
+                        const styleSound = () => {
+                            soundBtn.textContent = this._phSound ? "\u266b" : "\u00d7\u266b";
+                            soundBtn.style.cssText = BTN + "width:28px;" + (this._phSound
+                                ? "background:#2b6a8f; color:#eaf6ff; border-color:#7fb3d1;" : "");
+                            soundBtn.title = this._phSound
+                                ? "Sound: ON (click = mute)"
+                                : "Sound: OFF (click = unmute; the clip only has sound if "
+                                + "audio was wired and the preset carries an audio track)";
+                        };
+                        styleSound();
+                        soundBtn.addEventListener("click", (e) => {
+                            e.stopPropagation();
+                            this._phSound = !this._phSound;
+                            styleSound();
+                            if (this._phApplySound) this._phApplySound();
+                        });
+                    }
                     bar.appendChild(btn);
                     bar.appendChild(slider);
                     bar.appendChild(readout);
                     bar.appendChild(loopBtn);
+                    if (soundBtn) bar.appendChild(soundBtn);
                     wrap.appendChild(bar);
                 }
 
@@ -332,6 +361,13 @@ app.registerExtension({
                 if (isVideo) {
                     el = document.createElement("video");
                     el.muted = true;                        // browser autoplay requirement
+                    // v957: the sound button drives this; muted start is kept so the
+                    // clip always begins playing (a browser blocks unmuted autoplay).
+                    this._phApplySound = () => {
+                        el.muted = !this._phSound;
+                        if (this._phSound) { el.volume = 1; const p = el.play(); if (p && p.catch) p.catch(() => {}); }
+                    };
+                    if (this._phSound) el.addEventListener("loadeddata", () => this._phApplySound(), { once: true });
                     el.loop = !!this._phLoop;               // v534: loop only when toggled on
                     el.autoplay = true;                     // plays through once immediately
                     el.playsInline = true;

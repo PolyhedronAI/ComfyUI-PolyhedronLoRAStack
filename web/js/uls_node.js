@@ -126,6 +126,11 @@ let _loraList = [];        // alle LoRAs inkl. Unterordner
 let _loraListLoading = false;
 let _loraListLoaded  = false;
 
+// v957 (issue #3, bytimer): the list is fetched once at page load and kept in
+// _loraList; "R" / the Refresh button reloads the CORE node definitions and
+// tells extensions through the `refreshComboInNodes` hook -- which we did not
+// listen to, so a LoRA downloaded while ComfyUI runs only showed up after a
+// restart. refreshLoraList() drops the caches and fetches again.
 async function loadLoraList() {
     if (_loraListLoading) return;
     _loraListLoading = true;
@@ -141,6 +146,15 @@ async function loadLoraList() {
         console.warn("[ULS] Could not load LoRA list:", e);
     }
     _loraListLoading = false;
+}
+
+/** v957: forget what we know about the LoRA folder and read it again. */
+export async function refreshLoraList() {
+    _loraListLoaded = false;
+    metaCache.clear();
+    previewCache.clear();
+    await loadLoraList();
+    app.graph?.setDirtyCanvas(true, true);
 }
 
 // Sofort laden wenn Extension initialisiert wird
@@ -1311,6 +1325,13 @@ function showMultiplierInfo(e) {
 
 app.registerExtension({
     name: "Polyhedron.stack",
+
+    // v957 (issue #3): the frontend calls this on "R" / Refresh, after it has
+    // reloaded the node definitions. Same moment rgthree re-reads its list.
+    async refreshComboInNodes() {
+        await refreshLoraList();
+        console.log(`[ULS] refresh: LoRA list re-read (${_loraList.length})`);
+    },
 
     async setup() {
         console.log("[ULS] Extension setup() ✓");

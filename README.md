@@ -833,7 +833,7 @@ The same single-line pattern works for FLUX, SDXL and SD 1.5.
 
 ## Example workflows
 
-Four ready-to-load starter workflows ship in
+Five ready-to-load starter workflows ship in
 [`example_workflows/`](example_workflows/) and appear in ComfyUI's template
 browser (**Workflow → Browse Templates**) under this pack's name once it is
 installed:
@@ -844,6 +844,7 @@ installed:
 | `polyhedron_lora_stack_ksampler_lightning` | native KSampler (Advanced), dual HIGH/LOW | Wan2.2-Lightning v1.1, 8-step preset (4/4 split, CFG 1, shift 5) |
 | `polyhedron_lora_stack_wanvideo_base` | WanVideoWrapper (kijai), dual HIGH/LOW | off |
 | `polyhedron_lora_stack_wanvideo_accelerator` | WanVideoWrapper (kijai), dual HIGH/LOW | on |
+| `polyhedron_minimax_h3_text_to_video` | Polyhedron Sampler, MiniMax H3 (video **and** audio) | H3 turbo LoRAs, shipped disabled |
 
 Compact WAN 2.2 dual-noise graphs built around the Stack: a grouped canvas
 (models → HIGH/LOW LoRA lanes → prompts → sampling → output, passive
@@ -856,6 +857,17 @@ after loading). The native variants load fp8 checkpoints through the core
 UNETLoader — GGUF users swap in their GGUF loader. The `wanvideo` variants
 point at GGUF Q8 files; the kijai #1827 single-frame workaround is
 documented in-canvas (Frame Inflate ships bypassed for the GGUF default).
+
+`polyhedron_minimax_h3_text_to_video` is the odd one out, and deliberately so:
+it is built **only** from this pack -- no other node pack at all. Load Model →
+Load CLIP → two VAEs (H3 writes picture *and* sound), LoRA Engine → Attention →
+NAG → Sampler → VAE decode → Save, with the Empty Latent in H3 AV mode and the
+Seed node feeding both the seed and the noise. The negative prompt does not go
+to the sampler: H3 runs at CFG 1, so it feeds NAG instead -- the in-canvas notes
+say why. The three H3 accelerator LoRAs sit in the Engine as **disabled**
+example rows; enable the one that matches your checkpoint and drop the sampler
+to 8 or 4 steps. For image-to-video swap the fl2v checkpoint for ref2v and put a
+Polyhedron MiniMax Reference between the prompt and the sampler.
 
 ## Preview images and trigger words
 

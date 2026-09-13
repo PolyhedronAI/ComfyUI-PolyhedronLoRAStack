@@ -1,0 +1,52 @@
+# NODE_IDS baseline v371 - the strings every saved workflow stores.
+#
+# A node_id is written into each workflow JSON as {"type": "..."}. Move it
+# and every workflow that used the node turns into a red 'missing node' box.
+# Display names, categories and the pack's own banner are FREE to change -
+# these are not.
+#
+#     RENAME EVERYTHING YOU SEE. NEVER RENAME WHAT THE FILE STORES.
+#
+# To retire an id safely: register the new one, keep the old one pointing at
+# the same class with DEPRECATED = True (ComfyUI hides it from the search,
+# old workflows keep running), regenerate this file, say it in the changelog.
+#
+# First baseline of the public build, written in v371 - until now the side
+# build had the WIDGET_ORDER gate but not the identity gate.
+ULSAccelerator
+ULSAnySwitch
+ULSAnySwitchInv
+ULSAttention
+ULSAudioStretch
+ULSCLIPTextEncode
+ULSEmptyLatent
+ULSFastUpscale
+ULSFilter
+ULSImagePickFrame
+ULSInspector
+ULSInt
+ULSInterpolate
+ULSLoadCLIP
+ULSLoadModel
+ULSLoadUpscaleModel
+ULSLoadVAE
+ULSMediaInfo
+ULSMediaLoader
+ULSMiniMaxReference
+ULSModelSwitch
+ULSNag
+ULSNote
+ULSPowerUpscale
+ULSResolveInspector
+ULSSampler
+ULSSave
+ULSSeed
+ULSTokenCounter
+ULSUniversalSigmaCurve
+ULSVAE
+ULSWanBridge
+ULSWanBridgeReverse
+ULSWanFrameInflate
+ULSWanSigmaSchedule
+ULSWanSplitNoiseSchedule
+UltimateLoraStack
