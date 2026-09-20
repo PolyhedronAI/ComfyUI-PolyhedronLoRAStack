@@ -137,10 +137,55 @@ def main():
           is None,
           "G6 the handle opens no window of its own")
 
-    # ── G7: the route's wire order is unchanged ────────────────────────────
-    check(re.search(r'entries\.sort\(key=lambda d: d\["mtime"\], reverse=True\)', routes)
-          is not None,
-          "G7 /uls/media/list still answers newest-first -- other consumers untouched")
+    # ── G7: the route's wire order -- newest first, and REPRODUCIBLE ───────
+    # v378: this used to pin `sort(key=mtime, reverse=True)`. That sort is
+    # stable, so files sharing an mtime kept os.scandir's order and the FILE
+    # SYSTEM decided the listing. Field, 20.09.2026: six files unpacked from
+    # one archive all carried the same minute and came out in Explorer's
+    # directory order -- correct, but not reproducible. The tie-break makes
+    # the answer a function of the data. Driven below, not just read.
+    check(re.search(r'entries\.sort\(key=lambda d: \(-d\["mtime"\], '
+                    r'natural_sort_key\(d\["name"\]\)\)\)', routes) is not None,
+          "G7 the listing sorts by (-mtime, natural name)")
+    check("natural_sort_key" in routes.split("def _scan_media_fast")[0],
+          "G7 natural_sort_key is imported, not redefined locally")
+
+    # ── G8: DRIVEN -- equal timestamps must not leave it to the disk ───────
+    import tempfile, os as _os
+    text = routes
+    parts = []
+    for sig in ("def _media_kind(", "def _within(", "def _scan_media_fast("):
+        i = text.find(sig)
+        check(i >= 0, "G8 helper %r found" % sig)
+        parts.append(text[i:text.index("\n\n\n", i)])
+    sys.path.insert(0, os.path.join(ROOT, "nodes"))
+    from ph_media_util import (IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS,
+                               natural_sort_key)
+    ns = {"os": _os, "time": __import__("time"),
+          "_MEDIA_IMAGE_EXTS": IMAGE_EXTS, "_MEDIA_VIDEO_EXTS": VIDEO_EXTS,
+          "_MEDIA_AUDIO_EXTS": AUDIO_EXTS, "natural_sort_key": natural_sort_key}
+    exec("\n\n".join(parts), ns)
+
+    d = tempfile.mkdtemp(prefix="pls_tie_")
+    # Written in an order that is neither alphabetical nor natural, so a
+    # scandir-order result cannot accidentally look correct.
+    written = ["zulu.png", "img10.png", "alpha.png", "img2.png", "img1.png"]
+    for n in written:
+        open(_os.path.join(d, n), "wb").write(b"\0")
+        _os.utime(_os.path.join(d, n), (1_700_000_000, 1_700_000_000))   # ALL equal
+    got = [e["name"] for e in ns["_scan_media_fast"](d)]
+    want = ["alpha.png", "img1.png", "img2.png", "img10.png", "zulu.png"]
+    check(got == want,
+          "G8 equal mtimes -> natural name order, got %r" % (got,))
+
+    # and a normal folder still answers newest-first
+    for i, n in enumerate(["old.png", "mid.png", "new.png"]):
+        p = _os.path.join(d, n)
+        open(p, "wb").write(b"\0")
+        _os.utime(p, (1_800_000_000 + i * 1000, 1_800_000_000 + i * 1000))
+    got2 = [e["name"] for e in ns["_scan_media_fast"](d)][:3]
+    check(got2 == ["new.png", "mid.png", "old.png"],
+          "G8 distinct mtimes -> still newest-first, got %r" % (got2,))
 
     return 1 if failures else 0
 

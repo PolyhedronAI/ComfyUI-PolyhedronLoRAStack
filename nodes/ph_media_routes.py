@@ -114,7 +114,8 @@ def _cleanup_names(out_dir: str, names) -> None:
 # lives in ph_media_util and both sides read it.
 from .ph_media_util import (IMAGE_EXTS as _MEDIA_IMAGE_EXTS,
                             VIDEO_EXTS as _MEDIA_VIDEO_EXTS,
-                            AUDIO_EXTS as _MEDIA_AUDIO_EXTS)
+                            AUDIO_EXTS as _MEDIA_AUDIO_EXTS,
+                            natural_sort_key)   # v378: the listing's tie-break
 # v457 (Stufe A): audio is a third listed/served media kind. Listing tags these
 # kind="audio" (w/h=None); the file route serves them for browser <audio>
 # playback (hover-preview + Selection). The tuple itself comes from the law
@@ -351,7 +352,16 @@ def _scan_media_fast(rp):
                             "ctime": getattr(st, "st_ctime", st.st_mtime),
                             "kind": kind,
                             "w": None, "h": None, "fps": None})
-    entries.sort(key=lambda d: d["mtime"], reverse=True)
+    # v378 -- TIE-BREAK. This was `sort(key=mtime, reverse=True)` alone.
+    # Python's sort is stable, so files sharing an mtime kept whatever order
+    # os.scandir handed over -- the FILE SYSTEM decided, and the same folder
+    # could list differently on another disk or after a rebuild. Found in the
+    # field: six files unpacked from one archive all carried the same minute
+    # and came out in the platform's directory order. Sorting by
+    # (-mtime, natural name) makes the answer a function of the DATA alone;
+    # ordinary folders are unaffected, the second key is only ever reached on
+    # an exact tie.
+    entries.sort(key=lambda d: (-d["mtime"], natural_sort_key(d["name"])))
     return entries
 
 

@@ -3717,6 +3717,12 @@ class MediaLoaderUI {
         const byName = {};
         for (const f of files) byName[f.name] = f;
         const names = this._orderNames(files.map((f) => f.name), ord.mode, byName);
+        // v378: _orderNames already breaks ties by natural name, so the result
+        // is a function of the DATA, never of the file system (the listing got
+        // the same treatment -- see _scan_media_fast). Reversing flips the tie
+        // groups too, so in a reversed preset equal timestamps read
+        // natural-DESCENDING. Still fully determined by the data, which is the
+        // property that matters here; the direction inside a tie is cosmetic.
         if (ord.rev) names.reverse();
         return names.map((n) => byName[n]).filter(Boolean);
     }
