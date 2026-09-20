@@ -93,6 +93,36 @@ const TILE_MIN = 84;
 const TILE_MAX = 140;
 const TILE_GAP = 8;
 
+// ── Grid order presets (v377) ───────────────────────────────────────────────
+// Public issue #4: the tile grid was hard-wired to newest-first with no way to
+// change it, and users reasonably read the BROWSER's order as the order the
+// batch would run in. Two separate things were wrong: the grid had no choice,
+// and there was no sign of which order was in force.
+//
+// There is still only ONE ordering law -- _orderNames, the mirror of Python's
+// order_names. A preset is nothing but (that law's mode) + (reverse yes/no),
+// so the grid can never drift into an order the backend cannot reproduce.
+//
+// `newest` is first and is the DEFAULT, because it is exactly what the grid
+// did before v377: an existing workflow opens looking the way it always did.
+const GRID_ORDERS = [
+    { key: "newest",  label: "Newest first", mode: "mtime (oldest first)", rev: true,
+      hint: "Most recently changed file first — what the grid has always done." },
+    { key: "number",  label: "Number",       mode: "name (natural)",       rev: false,
+      hint: "By the numbers in the name: img2 before img10." },
+    { key: "az",      label: "A–Z",     mode: "name (literal)",       rev: false,
+      hint: "Pure character order — digits count as text, so img10 lands before img2." },
+    { key: "oldest",  label: "Oldest first", mode: "mtime (oldest first)", rev: false,
+      hint: "By the file's last change, oldest first." },
+    { key: "created", label: "Date created", mode: "created",              rev: true,
+      hint: "By when the file was made, newest first." },
+];
+
+function _gridOrder(key) {
+    return GRID_ORDERS.find((o) => o.key === key) || GRID_ORDERS[0];
+}
+
+
 // Selection preview: a small clip may upscale up to this factor (kept modest so
 // the upscale stays reasonably crisp); large clips stay capped at the preview box,
 // and the box itself grows with the node but is capped via .ph-media-preview max-width.
@@ -221,6 +251,10 @@ function injectCSS() {
 .ph-media-btn { background:#2a2a2a; border:1px solid #444; color:#ddd; border-radius:5px;
     padding:3px 8px; cursor:pointer; white-space:nowrap; }
 .ph-media-btn:hover { background:#383838; }
+/* v377: the grid-order handle sits at the far right of the pager row that is
+   already there — it never adds a row. */
+.ph-media-btn.ph-media-order { margin-left:auto; font-size:11px; opacity:.85; }
+.ph-media-btn.ph-media-order:hover { opacity:1; }
 .ph-media-btn.ph-batch-toggle.on, .ph-media-btn.ph-audio-toggle.on { background:#2f5d2f; border-color:#4f8f4f; color:#dfffdf; }
 .ph-media-btn.ph-batch-toggle.on:hover, .ph-media-btn.ph-audio-toggle.on:hover { background:#356a35; }
 /* Reserve the width of the wider ("… OFF") label on both toggles so the button
@@ -3150,7 +3184,15 @@ class MediaLoaderUI {
         const arr = names.slice();
         if (mode === "name (literal)") return arr.sort();   // lexicographic — matches Python sorted()
         if (mode === "mtime (oldest first)" || mode === "created") {
-            return arr.sort((a, b) => ((byName[a]?.mtime || 0) - (byName[b]?.mtime || 0)) || this._naturalCmp(a, b));
+            // v377: "created" now really reads the CREATION time. It used to
+            // take mtime for both modes because the listing carried no ctime,
+            // so this mirror disagreed with the backend's order_names (which
+            // has always stat'd st_ctime) -- the Batch preview showed one
+            // order and the run used another. The listing now ships ctime.
+            const key = (n) => (mode === "created"
+                ? (byName[n]?.ctime ?? byName[n]?.mtime ?? 0)
+                : (byName[n]?.mtime || 0));
+            return arr.sort((a, b) => (key(a) - key(b)) || this._naturalCmp(a, b));
         }
         return arr.sort((a, b) => this._naturalCmp(a, b));  // name (natural) — default
     }
@@ -3606,8 +3648,10 @@ class MediaLoaderUI {
         const sel = this.state && this.state.file;
         if (sel) want.add(sel);                       // the selection needs w/h AND fps (fixed trim)
         if (!this.view.solo) {                        // the grid is drawn -> the page on screen
+            // v377: the page on screen is a page of the ORDERED list.
+            const ordered = this._orderedFiles();
             const start = this._page * GRID_PAGE;
-            for (const f of this._files.slice(start, start + GRID_PAGE)) want.add(f.name);
+            for (const f of ordered.slice(start, start + GRID_PAGE)) want.add(f.name);
         }
         const names = [...want].filter((n) => {
             const f = byName.get(n);
@@ -3660,9 +3704,43 @@ class MediaLoaderUI {
         return map;
     }
 
+    // v377: apply the grid's own order preset to the listing. The wire order
+    // from /uls/media/list stays newest-first (its documented contract); this
+    // re-orders a COPY for display only, through the same _orderNames law the
+    // batch uses, so what the grid shows is always an order the backend can
+    // reproduce. _files itself is never re-ordered -- checks, filters and the
+    // batch config all address files by NAME, never by index.
+    _orderedFiles() {
+        const files = this._files || [];
+        const ord = this.gridOrder;
+        if (ord.key === "newest") return files;      // == the wire order, untouched
+        const byName = {};
+        for (const f of files) byName[f.name] = f;
+        const names = this._orderNames(files.map((f) => f.name), ord.mode, byName);
+        if (ord.rev) names.reverse();
+        return names.map((n) => byName[n]).filter(Boolean);
+    }
+
+    _makeOrderButton() {
+        const ord = this.gridOrder;
+        const b = document.createElement("button");
+        b.className = "ph-media-btn ph-media-order";
+        b.textContent = "⇅ " + ord.label;
+        b.title = "Grid order: " + ord.label + " — " + ord.hint
+            + "\nClick to cycle. This orders the BROWSER only; the order a batch"
+            + " RUNS in is set in ▦▶ Batch… and is independent.";
+        b.onclick = () => {
+            const i = GRID_ORDERS.findIndex((o) => o.key === this.gridOrder.key);
+            this.gridOrder = GRID_ORDERS[(i + 1) % GRID_ORDERS.length].key;
+            this._page = 0;                           // a new order means a new page 1
+            this.renderGrid();
+        };
+        return b;
+    }
+
     renderGrid() {
         const PAGE = GRID_PAGE;
-        const files = this._files || [];
+        const files = this._orderedFiles();
         const total = files.length;
         // v683 (L1) — in Solo the grid is display:none, but it was still BUILT:
         // every tile constructed, every thumbnail requested from the server.
@@ -3700,11 +3778,13 @@ class MediaLoaderUI {
             const next = document.createElement("button"); next.className = "ph-media-btn";
             next.textContent = "Next ▶"; next.disabled = this._page >= pages - 1;
             next.onclick = () => { if (this._page < pages - 1) { this._page++; this.renderGrid(); } };
-            this.pagerEl.append(prev, info, next);
+            this.pagerEl.append(prev, info, next, this._makeOrderButton());
         } else {
             const info = document.createElement("div"); info.className = "ph-media-pageinfo";
             info.textContent = `${total} file${total === 1 ? "" : "s"}`;
-            this.pagerEl.appendChild(info);
+            // v377: the order handle sits in the pager bar that is already
+            // there -- one row, no second window, present on a one-page folder.
+            this.pagerEl.append(info, this._makeOrderButton());
         }
         // v683: renderGrid is the funnel EVERY path goes through (refresh,
         // focus probe, page turn, filter, solo swap-back), so the deferred
@@ -3869,6 +3949,20 @@ class MediaLoaderUI {
     // ph_media_view -- ph_media_state is REPLACED on trim commit).
     get mini() { return !!(this.node.properties && this.node.properties.ph_media_mini); }
     set mini(v) { this.node.properties = this.node.properties || {}; this.node.properties.ph_media_mini = !!v; }
+
+    // v377: the grid's order rides in its own properties key as well -- NOT in
+    // widgets_values. Output slots and widgets are positional in saved
+    // workflows (the v376 lesson); a browser preference has no business in
+    // that list. Unset means "newest", so every workflow saved before v377
+    // opens in the exact order it always had.
+    get gridOrder() {
+        const k = this.node.properties && this.node.properties.ph_media_order;
+        return _gridOrder(k);
+    }
+    set gridOrder(key) {
+        this.node.properties = this.node.properties || {};
+        this.node.properties.ph_media_order = _gridOrder(key).key;
+    }
 
     _applyMini() {
         const on = this.mini;

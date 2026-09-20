@@ -7,6 +7,59 @@
 
 import numpy as np
 
+# ── The extension law (v377) ────────────────────────────────────────────────
+# ONE list per media kind, for the loader AND the routes.
+#
+# Before v377 these tuples lived TWICE -- once in ph_media_loader, once in
+# uls_routes -- with a comment promising they were "kept in lock-step". A
+# comment is not a mechanism: the moment a format is added, it has to be
+# remembered in two files, and whichever half is forgotten fails silently
+# (the grid lists a file the loader refuses, or the loader accepts one the
+# grid never shows). Public issue #4 is exactly that shape. The law lives
+# here; both sides import it, and test_v377_media_formats forbids a second
+# literal extension tuple anywhere else in the tree.
+#
+# .avif joins in v377. Listing a format and DECODING it are two different
+# questions -- see avif_decoder_ready() below; the grid may show a file the
+# installed Pillow cannot open, and the loader has to say so in words.
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".avif", ".bmp", ".gif",
+              ".tif", ".tiff")
+# Videos proper. The loader additionally treats ".gif" as a video source (a
+# gif can go down either path: first frame as a still, or all frames as a
+# clip), the routes deliberately do NOT -- a gif tile shows as an image.
+VIDEO_EXTS = (".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v")
+AUDIO_EXTS = (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".opus",
+              ".aiff", ".aif", ".wma")
+# Stills eligible for the image-batch path. No .mp4 &c; .gif decodes to its
+# first frame here, exactly as a still gif does in _load_image.
+BATCH_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".avif", ".bmp",
+                    ".tif", ".tiff", ".gif")
+
+
+def avif_decoder_ready() -> bool:
+    """Can the INSTALLED Pillow actually decode AVIF? Measured, never assumed.
+
+    Pillow gained native AVIF support in 11.3; older builds need the separate
+    `pillow-avif-plugin` package. Both end up registering the same plugin, so
+    the honest test is to ask Pillow's own feature registry and fall back to
+    the extension registry when the registry predates the feature flag."""
+    try:
+        from PIL import features
+        if features.check("avif"):
+            return True
+    except Exception:
+        pass
+    try:
+        from PIL import Image
+        return ".avif" in Image.registered_extensions()
+    except Exception:
+        return False
+
+
+AVIF_HINT = ("AVIF support needs Pillow 11.3 or newer (or the "
+             "'pillow-avif-plugin' package on older Pillow). Install one of "
+             "those and restart ComfyUI, or convert the file to PNG/WebP.")
+
 # ffmpeg/PyAV pixel-format name prefixes that carry an alpha channel. Prefix
 # matching covers every bit-depth/endianness variant in one shot, e.g.
 # "yuva420p" (VP9 alpha), "yuva444p10le" (ProRes 4444), "rgba"/"bgra64le", etc.

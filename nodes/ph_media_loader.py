@@ -103,7 +103,12 @@ except Exception:
 from .ph_media_util import (pix_fmt_has_alpha, rgb_and_mask_from_rgba,
                             rgb_and_mask_from_still,
                             select_frames, frames_target_and_offenders,
-                            order_names, select_slice)
+                            order_names, select_slice,
+                            IMAGE_EXTS as _LAW_IMAGE_EXTS,
+                            VIDEO_EXTS as _LAW_VIDEO_EXTS,
+                            AUDIO_EXTS as _LAW_AUDIO_EXTS,
+                            BATCH_IMAGE_EXTS as _LAW_BATCH_IMAGE_EXTS,
+                            avif_decoder_ready, AVIF_HINT)
 
 # ── Video timing constants (fps rates + still-video framing) ────────────────
 # D4 (v483): the clip-rate fps constants and the paired still-video frame cap,
@@ -137,8 +142,10 @@ _STILL_VIDEO_MAX_FRAMES = 600
 # ────────────────────────────────────────────────────────────────────────────
 
 
-_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff")
-_VIDEO_EXTS = (".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v", ".gif")  # gif: either path
+# v377: the extension law moved to ph_media_util so the routes read the SAME
+# tuples (see the note there). These names stay as local aliases.
+_IMAGE_EXTS = _LAW_IMAGE_EXTS
+_VIDEO_EXTS = _LAW_VIDEO_EXTS + (".gif",)   # gif: either path (routes say image)
 
 # v457 (Stufe A): audio is a third browsable media kind. This set drives KIND
 # DETECTION + grid display only — every entry shows as a tile and is selectable;
@@ -146,12 +153,11 @@ _VIDEO_EXTS = (".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v", ".gif")  # gif: 
 # matter (mp3/wav/ogg/flac/m4a/aac/opus play; .aiff/.wma typically show but stay
 # silent — a documented limitation, not a bug). Audio has no graph output in
 # Stufe A; load() routes it to a graceful placeholder (see _audio_placeholder).
-_AUDIO_EXTS = (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".opus",
-               ".aiff", ".aif", ".wma")
+_AUDIO_EXTS = _LAW_AUDIO_EXTS
 
 # Image extensions eligible for the image-batch path. .gif decodes to its first
 # frame via Pillow here (the same way _load_image treats a still gif).
-_BATCH_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif")
+_BATCH_IMAGE_EXTS = _LAW_BATCH_IMAGE_EXTS
 
 
 def _is_batch_image(name: str) -> bool:
@@ -336,6 +342,14 @@ def _decode_image_rgba(path: str):
     if not _HAS_PIL:
         raise RuntimeError("[PLS] MediaLoader: Pillow is required to load images "
                            "(pip install pillow).")
+    # v377: listing a format and DECODING it are two questions. The grid lists
+    # .avif because the extension law says it is an image; whether THIS Pillow
+    # can open it depends on the install. Say so in words -- the bare Pillow
+    # failure names neither the format nor the cure. This is the ONE funnel
+    # both the single and the batch image path go through.
+    if os.path.splitext(path)[1].lower() == ".avif" and not avif_decoder_ready():
+        raise RuntimeError("[PLS] MediaLoader: cannot decode '%s'. %s"
+                           % (os.path.basename(path), AVIF_HINT))
     img = Image.open(path)
     img = ImageOps.exif_transpose(img)  # honour camera orientation
     rgba = np.array(img.convert("RGBA")).astype(np.float32) / 255.0       # [H,W,4]

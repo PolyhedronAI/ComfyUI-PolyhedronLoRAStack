@@ -109,13 +109,16 @@ def _cleanup_names(out_dir: str, names) -> None:
 # realpath-checked to resolve inside its stated folder (_within), and uploads
 # keep the streaming byte cap.
 # ──────────────────────────────────────────────────────────────────────────
-_MEDIA_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff")
-_MEDIA_VIDEO_EXTS = (".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v")
-# v457 (Stufe A): audio is a third listed/served media kind. Kept in lock-step with
-# ph_media_loader._AUDIO_EXTS. Listing tags these kind="audio" (w/h=None); the file
-# route serves them for browser <audio> playback (hover-preview + Selection).
-_MEDIA_AUDIO_EXTS = (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".opus",
-                     ".aiff", ".aif", ".wma")
+# v377: these were literal tuples duplicating ph_media_loader's, kept in
+# lock-step by comment only -- the drift issue #4 walked into. The law now
+# lives in ph_media_util and both sides read it.
+from .ph_media_util import (IMAGE_EXTS as _MEDIA_IMAGE_EXTS,
+                            VIDEO_EXTS as _MEDIA_VIDEO_EXTS,
+                            AUDIO_EXTS as _MEDIA_AUDIO_EXTS)
+# v457 (Stufe A): audio is a third listed/served media kind. Listing tags these
+# kind="audio" (w/h=None); the file route serves them for browser <audio>
+# playback (hover-preview + Selection). The tuple itself comes from the law
+# above -- v377 ended the hand-kept lock-step.
 # mimetypes.guess_type misses .flac/.m4a/.opus on some Windows installs; this
 # fallback keeps the Content-Type honest so the browser picks the right decoder.
 _AUDIO_MIME = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
@@ -339,7 +342,14 @@ def _scan_media_fast(rp):
             except OSError:
                 continue
             entries.append({"name": e.name, "size": st.st_size,
-                            "mtime": st.st_mtime, "kind": kind,
+                            "mtime": st.st_mtime,
+                            # v377: ctime rides along from the SAME stat call
+                            # (free). Without it the frontend had no creation
+                            # time, so its mirror of order_names fell back to
+                            # mtime for "created" -- the grid and the Batch
+                            # preview showed an order the backend would NOT run.
+                            "ctime": getattr(st, "st_ctime", st.st_mtime),
+                            "kind": kind,
                             "w": None, "h": None, "fps": None})
     entries.sort(key=lambda d: d["mtime"], reverse=True)
     return entries
