@@ -8,7 +8,7 @@ def _has(module):
     return importlib.util.find_spec(module) is not None
 
 # Pillow / requests are NOT hard runtime requirements of the nodes — both are
-# helper-script-only (uls_preview_gen.py / install.py). LoRA-preview decoding
+# helper-script-only (uls_preview_gen.py). LoRA-preview decoding
 # goes through ComfyUI's core LoadImage, not Pillow; the runtime Civitai fetch
 # uses aiohttp, which ComfyUI already ships. Tracked only so a missing one is
 # explained, never treated as a hard requirement.
@@ -446,7 +446,7 @@ _node_count = len(NODE_CLASS_MAPPINGS)
 _bridge_str = "✅" if _BRIDGE_OK else "⚠ unavailable"
 print(f"""
 ⚡ ============================================================
-   Polyhedron Suite  v376
+   Polyhedron Suite  v379
    {_node_count} Nodes  |  Bridge: {_bridge_str}
 ⚡ ============================================================
 """)

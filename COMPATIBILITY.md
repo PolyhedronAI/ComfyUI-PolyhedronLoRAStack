@@ -13,7 +13,7 @@ bei ComfyUI-/kijai-Updates passiert, und wo der eine offene Frontpunkt liegt.
   aiohttp, das ComfyUI ohnehin mitbringt). Beide sind ein **optionales Extra**
   (`pip install .[cli]`) nur für das eigenständige CLI `uls_preview_gen.py`,
   das vollständig vom Node-Laden entkoppelt ist. Der ComfyUI-Manager installiert
-  sie weiterhin über `requirements.txt`/`install.py`.
+  sie weiterhin über `requirements.txt`.
 
 ## Frontend-Renderer (der entscheidende Punkt)
 - Die **Stack-** und **Engine**-UI wird vollständig auf dem **LiteGraph-Canvas**
