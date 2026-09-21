@@ -1,0 +1,14 @@
+# Files kept in the GitHub repository but left OUT of the Comfy Registry
+# package. `comfy node publish` zips the git-tracked files and drops every
+# path matched here (gitwildmatch, same syntax as .gitignore).
+#
+# The registry scans each published version with YARA rules. The test suite
+# runs node.js harnesses and lifts functions out of source with exec() --
+# legitimate in a test, but it is ~100 files of subprocess/exec that a
+# ComfyUI user never needs and a scanner cannot tell apart from the real
+# thing. tools/ holds developer-only browser probes (Playwright).
+#
+# Both stay in the repository for anyone who wants to verify the pack.
+
+tests/
+tools/
