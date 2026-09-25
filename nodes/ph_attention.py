@@ -129,6 +129,35 @@ SAGE_MODES = {
 }
 
 SAGE3_MODE = "sage3 blackwell (fp4)"
+
+# v1015: what the SageAttention 3 kernel can serve, read at the source
+# (thu-ml/SageAttention, sageattention3_blackwell -- identical in the mengqin
+# fork the node was measured on):
+#   * api.cu run_mha_fwd_dispatch_dtype has exactly TWO kernels, head dim 64
+#     and 128; the Python wrapper hands dim >= 256 to sdpa itself, anything
+#     else reaches a TORCH_CHECK.
+#   * api.py has NO sequence-length check at all. Core's attention3_sage
+#     nevertheless sends every call with N <= 1024 to pytorch -- the short
+#     cross-attention calls of an image model. Our router used to call the
+#     kernel at every length and trusted it to RAISE; the wheel the node was
+#     validated on did, a public wheel on image geometry may answer with
+#     NaN instead (issue #5: black images from KSamplers). Same floor here.
+#   * sageattn3_blackwell(q, k, v, attn_mask=None, ...) ACCEPTS attn_mask
+#     and never reads it. _accepts() believed the signature and handed masks
+#     to a kernel that drops them -- a wrong image, not a slow one. A masked
+#     call is not the kernel's to serve.
+#   * preprocess_qkv does `k -= k.mean(dim=-2, keepdim=True)` IN PLACE on the
+#     tensor it is handed. That is softmax-invariant (a per-key constant
+#     shift moves every logit of a query by the same amount; the guard
+#     measures it), so the model's k is not corrupted -- noted, not copied,
+#     because a clone of k on video geometry is a 400 MB allocation.
+# Everything the source cannot promise is checked at run time: the output of
+# the first call on each (seq, dim, dtype) geometry is tested for finite
+# values, and a geometry that comes back non-finite is passed through for the
+# rest of the run, with one line saying so. A wheel we have never seen can
+# then at worst cost speed on one geometry, never a black image.
+SAGE3_SEQ_FLOOR = 1024          # Core: `if dim_head >= 256 or N <= 1024`
+SAGE3_HEAD_DIMS = (64, 128)     # api.cu: the only two kernel instantiations
 XFORMERS_MODE = "xformers"
 
 # v903: Core's OWN int8 attention, shipped inside the comfy_kitchen wheel.
@@ -186,6 +215,19 @@ class PassThrough(Exception):
     sequence that does not match the latent geometry). The override hands it
     to the model's own backend WITHOUT the failure warning -- a normal
     condition must not look like a broken kernel."""
+
+class Sage3NonFinite(RuntimeError):
+    """v1015: the Sage 3 kernel ran and answered with NaN/Inf. Raised ONCE per
+    geometry so the override reports it and falls back for this call; the
+    router remembers the geometry and passes it through afterwards."""
+
+
+def sage3_geometry(q, heads, skip_reshape):
+    """(seq, head_dim) of a core attention call, in either layout."""
+    if skip_reshape:
+        return int(q.shape[2]), int(q.shape[3])
+    return int(q.shape[1]), int(q.shape[2]) // int(heads)
+
 
 # Positional order shared by every core attention backend. Used to read the
 # call apart without forwarding anything we did not ask for (trap B).
@@ -589,15 +631,44 @@ def build_router(mode, sparse=None):
         return _sage_router
 
     if mode == SAGE3_MODE:
+        # Per router (= per patched model, and per probe): the geometries
+        # already checked for finite output, and the ones that failed it.
+        seen = set()
+        dead = {}
+
         def _sage3_router(func, *args, **kwargs):
             sage_fn = _sage3_function()
             if sage_fn is None:
                 raise NotImplementedError("SageAttention 3 is not installed")
             v = _unpack(args, kwargs)
-            return run_sage(sage_fn, {}, v["q"], v["k"], v["v"],
-                            v["heads"], mask=v["mask"],
-                            skip_reshape=v["skip_reshape"],
-                            skip_output_reshape=v["skip_output_reshape"])
+            if v["mask"] is not None:
+                raise PassThrough("masked call: SageAttention 3 accepts "
+                                  "attn_mask and ignores it")
+            n, d = sage3_geometry(v["q"], v["heads"], v["skip_reshape"])
+            if n <= SAGE3_SEQ_FLOOR:
+                raise PassThrough("sequence %d is at or below the Sage 3 "
+                                  "floor of %d that Core uses too"
+                                  % (n, SAGE3_SEQ_FLOOR))
+            if d not in SAGE3_HEAD_DIMS:
+                raise PassThrough("head dim %d: Sage 3 has kernels for %s only"
+                                  % (d, " and ".join(str(x) for x in SAGE3_HEAD_DIMS)))
+            geo = (n, d, str(v["q"].dtype))
+            if geo in dead:
+                raise PassThrough(dead[geo])
+            out = run_sage(sage_fn, {}, v["q"], v["k"], v["v"],
+                           v["heads"], mask=None,
+                           skip_reshape=v["skip_reshape"],
+                           skip_output_reshape=v["skip_output_reshape"])
+            if geo not in seen:
+                # One device sync per geometry, not per call.
+                seen.add(geo)
+                if not bool(torch.isfinite(out).all().item()):
+                    dead[geo] = ("this wheel returned non-finite values on "
+                                 "seq %d / head dim %d / %s -- that geometry "
+                                 "runs on the model's own backend from here"
+                                 % geo)
+                    raise Sage3NonFinite(dead[geo])
+            return out
 
         return _sage3_router
 
@@ -1077,6 +1148,28 @@ def probe(mode, force=False):
                 ok = bool(torch.isfinite(out).all().item())
                 result = (ok, "ran" if ok else "ran but returned non-finite values")
                 del q, k, v, out
+                if ok and mode == SAGE3_MODE:
+                    # v1015: the second kernel (head dim 64, image models).
+                    # A wheel that serves 128 but not 64 is still offered --
+                    # the run-time check passes the 64 calls through -- but
+                    # the note says so before the first image is made.
+                    q = torch.randn(b, h, n, 64, device=dev, dtype=torch.bfloat16)
+                    k = torch.randn(b, h, n, 64, device=dev, dtype=torch.bfloat16)
+                    v = torch.randn(b, h, n, 64, device=dev, dtype=torch.bfloat16)
+                    try:
+                        out = router(_probe_reference, q, k, v, h,
+                                     None, None, True, True)
+                        ok64 = bool(torch.isfinite(out).all().item())
+                        del out
+                    except Exception as exc64:
+                        ok64 = False
+                        note64 = "%s" % (str(exc64).split("\n")[0][:60],)
+                    else:
+                        note64 = "non-finite output"
+                    del q, k, v
+                    result = (True, "ran (head dim 128 and 64)" if ok64 else
+                              "ran on head dim 128; head dim 64 %s -- such "
+                              "calls will run on the model's own backend" % note64)
             except Exception as exc:
                 result = (False, "%s: %s" % (type(exc).__name__,
                                              str(exc).split("\n")[0][:80]))
