@@ -40,7 +40,33 @@ from .uls_stack_node import (
     _detect_convention, _collect_factor_keys, _has_mid_tensor,
     _resolve_sign_elect, _trim_channel_indices, _trim_keep_fraction,
     _cached_load_torch_file, _resolve_pick_device, _check_interrupt, INTERRUPT_EXC,
+    _convert_lora_like_core,
+    _group_effective, _cap_text,         # v981 strength + v983 energy cap
+    _concat_blocker, _convention_label,  # v985 the Stack's own SEQ-fallback decision
+    _naming_mix, _canonical_base,        # v986 mixed key naming merges per layer
+    _apply_concat_or_dare,               # v988 the merge itself, for the merge check
 )
+# v1010: the green bar over the measured layers -- its own import, so a
+# harness that stubs uls_stack_node keeps working (silent stand-in then).
+try:
+    from .uls_stack_node import _merge_progress
+except Exception:
+    class _SilentBar:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def tick(self, n=1):
+            pass
+
+    def _merge_progress(*_a, **_k):
+        return _SilentBar()
+from . import uls_merge_check as _MC     # v988
+# v980: what the Stack REALLY runs on the connected model, and the overlap depth.
+from .uls_merge_policy import _joint_merge_downgrade
+from . import uls_overlap_math as _OV
 
 # Re-pack ranks probed in the deep analysis: m × sum_rank (capped by min_dim).
 _CANDIDATE_MULTIPLES = (1, 2, 4)
@@ -87,17 +113,15 @@ def _analyze_group(names, weights, trim_keep, max_layers, dev, torch, label=""):
 
     convs = [_detect_convention(td) for td in raw]
     keep = [i for i, (c, td) in enumerate(zip(convs, raw, strict=True)) if c is not None and not _has_mid_tensor(td)]
-    if len({convs[i] for i in keep}) > 1:
-        from collections import Counter
-        majority = Counter(convs[i] for i in keep).most_common(1)[0][0]
-        keep = [i for i in keep if convs[i] == majority]
+    # v986: mixed key naming is merged per layer (each LoRA in its own naming,
+    # layers met by _canonical_base) -- measured the same way here.
     if len(keep) < 2:
         return {"error": "<2 compatible LoRAs after convention guards (production: SEQ)"}
 
     base_to_sources = {}
     for li in keep:
         for base, uk, dk, ak in _collect_factor_keys(raw[li], convs[li]):
-            base_to_sources.setdefault(base, []).append((li, uk, dk, ak))
+            base_to_sources.setdefault(_canonical_base(base), []).append((li, uk, dk, ak))
     multi = {b: s for b, s in base_to_sources.items() if len(s) >= 2}
     if not multi:
         return {"n_total": len(base_to_sources), "n_multi": 0, "rows": [],
@@ -116,8 +140,13 @@ def _analyze_group(names, weights, trim_keep, max_layers, dev, torch, label=""):
     cur_rel_w = cur_cos_w = amp_w = wsum = 0.0
 
     _t_cum = 0.0
+    # v1010: the green bar over the measured layers (the console has its own
+    # per-layer line since v266, so the instrument stays quiet).
+    _aprog = _merge_progress(len(measure), "analyze", label="Merge Analyzer", quiet=True)
+    _aprog.__enter__()
     for _li, (base, sources) in enumerate(measure, 1):
         _check_interrupt()                     # v265: red X (Cancel) aborts a long deep analysis
+        _aprog.tick()
         _t0 = time.perf_counter()              # v266: per-layer wall time for the progress line
         bs, as_ = [], []
         out_dim = in_dim = None
@@ -193,6 +222,7 @@ def _analyze_group(names, weights, trim_keep, max_layers, dev, torch, label=""):
         if dev == "cuda":
             torch.cuda.empty_cache()
 
+    _aprog.__exit__(None, None, None)
     if not rows:
         return {"n_total": len(base_to_sources), "n_multi": len(multi), "rows": [],
                 "note": "no measurable layers (cancellation / shape mismatch)"}
@@ -209,6 +239,315 @@ def _analyze_group(names, weights, trim_keep, max_layers, dev, torch, label=""):
 
 
 # ─── Node ──────────────────────────────────────────────────────────────────
+
+# ─── v980: depth list, model line, overlap block ───────────────────────────
+
+DEPTH_OVERLAP, DEPTHS, DEPTH_TIP, MODEL_TIP = (    # v980: one home, uls_overlap_math
+    _OV.DEPTH_OVERLAP, _OV.DEPTHS, _OV.DEPTH_TIP, _OV.MODEL_TIP)
+DEPTH_MERGE = _OV.DEPTH_MERGE                      # v988
+JOINT_SHARED_NOTE = (
+    "  Joint model: video AND audio tokens run through the SAME DiT blocks,\n"
+    "  so every block LoRA also acts on the audio stream -- image LoRAs too.")
+
+
+def _model_is_joint(model):
+    """True / False from the Stack's own joint probe, None when no model is
+    connected or the probe cannot answer."""
+    if model is None:
+        return None
+    try:
+        from .ph_joint_probe import _joint_latent_parts
+        return _joint_latent_parts(model) >= 2
+    except Exception:
+        return None
+
+
+def _model_line(is_joint):
+    if is_joint is None:
+        return "not connected -- modes shown as set, not as run"
+    if is_joint:
+        return "joint audio/video (DARE runs as CONCAT, RESOLVE off)"
+    return "plain -- modes run as set"
+
+
+def _merge_path(grp_rows, ws, cs):
+    """v985 -- what the Stack's CONCAT/DARE path will do with this group:
+    load the LoRAs exactly as _apply_concat_or_dare loads them (same skip of
+    zero weights and missing files, cache, Core's conversion) and ask
+    _concat_blocker, the function the Stack itself decides with.
+    Returns (blocker_or_None, n_loadable, [missing names], naming mix)."""
+    names, raw, missing = [], [], []
+    for r, w, wc in zip(grp_rows, ws, cs, strict=True):
+        name = r.get("name", "None")
+        if (abs(w) < 1e-6 and abs(wc) < 1e-6) or not name or name == "None":
+            continue
+        path = folder_paths.get_full_path("loras", name)
+        if not path:
+            missing.append(name)
+            continue
+        try:
+            td = _cached_load_torch_file(path)
+            td = _convert_lora_like_core(td, path) if td else td
+        except INTERRUPT_EXC:
+            raise
+        except Exception:
+            missing.append(name)
+            continue
+        if td:
+            names.append(name)
+            raw.append(td)
+    if len(raw) < 2:
+        return None, len(raw), missing, []
+    return _concat_blocker(names, raw), len(raw), missing, _naming_mix(names, raw)
+
+
+def _merge_path_lines(blk, n_ok, missing, short, mix=()):
+    """(row marks {name: label}, lines) for a merge group: why it runs SEQ,
+    or -- v986 -- that its mixed key naming is merged per layer."""
+    marks, L = {}, []
+    if mix and not blk and n_ok >= 2:
+        from collections import Counter
+        cnt = Counter(lab for _n, lab in mix)
+        major = cnt.most_common(1)[0][0]
+        marks = {n: lab.split(" ")[0] for n, lab in mix if lab != major}
+        L.append("     key naming mixed (" +
+                 ", ".join(f"{c} × {lab.split(' ')[0]}" for lab, c in cnt.most_common()) +
+                 ") -- merged per layer, each LoRA in its own naming")
+    if n_ok < 2:
+        L.append("     ⚠ fewer than 2 loadable LoRAs -- the Stack runs this group as SEQ")
+    elif blk:
+        kind, items = blk
+        if kind == "unrecognised":
+            marks = {n: "not plain" for n, _l in items}
+            L.append(f"     ⚠ {len(items)} LoRA(s) in no known LoRA layout (LyCORIS/LoHA/LoKr?)")
+        else:
+            marks = {n: "keys" for n, _l in items}
+            L.append(f"     ⚠ {len(items)} LoRA(s) carry keys a merge cannot hold:")
+            for n, lab in items:
+                L.append(f"       {short(n, 30)}: {lab}")
+        L.append("       -> the Stack runs this group as SEQ: no merge, no TRIM,")
+        L.append("          no energy cap, no bake. Marked rows are the odd ones out;")
+        L.append("          give them their own group and the rest merges.")
+    for n in missing:
+        L.append(f"     ⚠ not loadable: {short(n, 30)}")
+    return marks, L
+
+
+class _CaptureModel:
+    """v988 -- stands in for the ModelPatcher in the merge check: the real
+    model's key map, and a record of the patches instead of patching.
+    add_patches keeps only keys the model has, exactly as Core's does."""
+
+    def __init__(self, real, keys, patches=None):
+        self.model = real.model
+        self._real = real
+        self._keys = keys
+        self.patches = dict(patches or {})
+
+    def clone(self):
+        return _CaptureModel(self._real, self._keys, {k: list(v) for k, v in self.patches.items()})
+
+    def add_patches(self, patches, strength_patch=1.0, strength_model=1.0):
+        out = []
+        for k, p in patches.items():
+            key = k if isinstance(k, str) else k[0]
+            if key in self._keys:
+                self.patches.setdefault(k, []).append((float(strength_patch), p))
+                out.append(k)
+        return out
+
+
+class _NoSeqLoader:
+    """If the merge falls back to SEQ inside the check, record it instead."""
+
+    def __init__(self):
+        self.calls = []
+
+    def load_lora(self, m, c, name, w, wc):
+        self.calls.append(name)
+        return m, c
+
+
+def _merge_check_block(ordered, cfg, model, is_joint, device, short):
+    """v988 -- per group: SEQ's patches (Core's own loader path) against the
+    Stack's merge, on the connected model, in factor space."""
+    import contextlib
+    import io
+    L = ["", "═══ Merge check: the Stack's merge vs SEQ ═══"]
+    if model is None or not hasattr(model, "model"):
+        L.append("  Connect the model input -- the check needs the model's own key map.")
+        return L
+    try:
+        import torch
+        import comfy.lora
+        import comfy.lora_convert
+    except Exception as ex:
+        L.append(f"  ✗ ComfyUI/PyTorch unavailable -- {ex}")
+        return L
+    try:
+        keys = set(model.model.state_dict().keys())
+        keymap = comfy.lora.model_lora_keys_unet(model.model, {})
+    except Exception as ex:
+        L.append(f"  ✗ could not read the model's key map -- {ex}")
+        return L
+    dev = "cpu" if device == "cpu" else _resolve_pick_device()
+    L.append(f"  Device: {dev} | reference = each LoRA through ComfyUI's own loader "
+             f"(what SEQ runs); merged = the Stack's CONCAT")
+    group_modes = cfg.get("group_modes", {}) if isinstance(cfg.get("group_modes"), dict) else {}
+    group_trim = cfg.get("group_trim", {}) if isinstance(cfg.get("group_trim"), dict) else {}
+    group_resolve = cfg.get("group_resolve", {}) if isinstance(cfg.get("group_resolve"), dict) else {}
+    group_trim_amt = cfg.get("group_trim_amount", {}) if isinstance(cfg.get("group_trim_amount"), dict) else {}
+    t0 = time.perf_counter()
+    for group, grp_rows, grp_weights in ordered:
+        if len(grp_rows) < 2:
+            continue
+        ws, cs, _gm, _cap = _group_effective(cfg, group, grp_rows, grp_weights)
+        names = [r.get("name", "None") for r in grp_rows]
+        L.append(f"  [{group}]  ({len(names)} LoRAs)")
+        # --- reference: Core's path, per LoRA (comfy.sd.load_lora_for_models)
+        ref = {}
+        for name, w in zip(names, ws, strict=True):
+            _check_interrupt()
+            if abs(w) < 1e-6 or not name or name == "None":
+                continue
+            path = folder_paths.get_full_path("loras", name)
+            if not path:
+                L.append(f"     ⚠ not found: {short(name, 30)}")
+                continue
+            try:
+                td = comfy.lora_convert.convert_lora(_cached_load_torch_file(path))
+                loaded = comfy.lora.load_lora(td, keymap, log_missing=False)
+            except INTERRUPT_EXC:
+                raise
+            except Exception as ex:
+                L.append(f"     ⚠ {short(name, 30)}: ComfyUI's loader failed -- {ex}")
+                continue
+            hit = 0
+            for k, p in loaded.items():
+                key = k if isinstance(k, str) else k[0]
+                if key in keys:
+                    ref.setdefault(k, []).append((name, float(w), p))
+                    hit += 1
+            if hit == 0:
+                L.append(f"     ⚠ {short(name, 30)}: ComfyUI's own loader maps 0 weights "
+                         f"-- under SEQ this LoRA does NOTHING")
+
+        def _run(mode, trim, resolve, trim_amount):
+            cap = _CaptureModel(model, keys)
+            ld = _NoSeqLoader()
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                out = _apply_concat_or_dare(ld, cap, None, names, list(ws), mode=mode,
+                                            dare_variant="channel", trim=trim, resolve=resolve,
+                                            trim_amount=trim_amount, clip_weights=list(cs),
+                                            handoff="patch")
+            m = out[0] if isinstance(out, tuple) else out
+            notes = [ln.replace("[PLS]", "").strip() for ln in buf.getvalue().splitlines()
+                     if "⚠" in ln or "✗" in ln or "falling back" in ln]
+            if ld.calls or not isinstance(m, _CaptureModel):
+                return None, notes
+            return m.patches, notes
+
+        merged, notes = _run("CONCAT", False, False, None)
+        if merged is None:
+            L.append("     the merge fell back to SEQ here -- nothing to compare:")
+            L.extend("       " + n for n in notes[:4])
+            continue
+        res = _MC.compare(ref, merged, torch, dev=dev, tick=_check_interrupt)
+        L.extend(_MC.check_lines(group, res, short, what="CONCAT"))
+        # --- the group's own settings, when they change the weights by design
+        mode = (group_modes.get(group) or "SEQ").upper()
+        trim = bool(group_trim.get(group, False)) and mode != "SEQ"
+        resolve = bool(group_resolve.get(group, False)) and mode != "SEQ"
+        if mode == "DARE" or resolve:
+            mode2, resolve2, _n = _joint_merge_downgrade(mode, resolve, trim, bool(is_joint))
+        else:
+            mode2, resolve2 = ("CONCAT" if mode != "SEQ" else "SEQ"), resolve
+        if mode2 != "SEQ" and (trim or resolve2 or mode2 == "DARE"):
+            ta = group_trim_amt.get(group)
+            m2, _n2 = _run(mode2, trim, resolve2,
+                           float(ta) if isinstance(ta, (int, float)) else None)
+            if m2 is not None:
+                r2 = _MC.compare(ref, m2, torch, dev=dev, tick=_check_interrupt)
+                why = [x for x, on in (("TRIM", trim), ("RESOLVE", resolve2),
+                                       ("DARE", mode2 == "DARE")) if on]
+                tag = mode2 + "".join(" +" + x for x in why if x != "DARE")
+                L.append(f"     {tag} (your setting) vs SEQ: deviation "
+                         f"{_MC.group_rel(r2) * 100:.1f}% -- {' + '.join(why)} changes "
+                         f"the weights ON PURPOSE; this is how much")
+    L.append(f"  ({time.perf_counter() - t0:.1f} s)")
+    return L
+
+
+def _overlap_block(ordered, is_joint, device, cfg=None, short=None):
+    """Load every active LoRA the way the merge loads it (cache + Core's
+    conversion + v930 schemas), then measure G in factor space. Never raises
+    for data issues -- a line says what was left out and why."""
+    L = ["", "═══ Overlap & energy ═══"]
+    short = short or _short_name
+    try:
+        import torch
+    except Exception:
+        L.append("  ✗ PyTorch unavailable -- measurement not possible.")
+        return L
+    entries = []
+    left_out = []
+    for group, grp_rows, grp_weights in ordered:
+        # v981/v983: the weights the Stack really applies (strength + cap)
+        ws, cs, _gm, _cap = _group_effective(cfg or {}, group, grp_rows, grp_weights)
+        for r, w, wc in zip(grp_rows, ws, cs, strict=True):
+            name = r.get("name", "None")
+            if not name or name == "None":
+                continue
+            path = folder_paths.get_full_path("loras", name)
+            if not path:
+                left_out.append((name, "file not found"))
+                continue
+            try:
+                td = _cached_load_torch_file(path)
+                td = _convert_lora_like_core(td, path) if td else td
+            except INTERRUPT_EXC:
+                raise
+            except Exception as ex:
+                left_out.append((name, f"load failed: {ex}"))
+                continue
+            conv = _detect_convention(td) if td else None
+            if conv is None:
+                left_out.append((name, "not a plain LoRA (LyCORIS?)"))
+                continue
+            if _has_mid_tensor(td):
+                left_out.append((name, "conv mid tensor"))
+                continue
+            entries.append({"name": name, "group": group, "weight": float(w),
+                            "clip_weight": float(wc),
+                            "td": td, "conv": conv})
+    # v986: no convention filter any more -- measure_overlap reads each LoRA in
+    # its own key naming and meets the layers by _canonical_base, exactly as
+    # the merge now does. (v980-v985 left the minority naming out.)
+    _mixed = len({e["conv"] for e in entries}) > 1
+    if is_joint:
+        L.append(JOINT_SHARED_NOTE)
+    if len(entries) < 1:
+        L.append("  No LoRA could be measured.")
+    else:
+        dev = "cpu" if device == "cpu" else _resolve_pick_device()
+        L.append(f"  Device: {dev} | {len(entries)} LoRA(s) | weights and alpha folded "
+                 f"in as the merge folds them")
+        if _mixed:
+            L.append("  Key naming mixed (kohya + lora_A/lora_B): layers met per weight, "
+                     "as the merge meets them")
+        t0 = time.perf_counter()
+        meas = _OV.measure_overlap(entries, torch, dev=dev, tick=_check_interrupt)
+        summ = _OV.summarize(meas["G"], [e["group"] for e in entries])
+        L.extend(_OV.overlap_lines([e["name"] for e in entries],
+                                   [e["group"] for e in entries],
+                                   [e["weight"] for e in entries],
+                                   meas, summ, short))
+        L.append(f"  ({time.perf_counter() - t0:.1f} s)")
+    for name, why in left_out:
+        L.append(f"  ⚠ left out: {short(name, 34)} -- {why}")
+    return L
+
 
 class ULSResolveInspector:
     """
@@ -228,11 +567,9 @@ class ULSResolveInspector:
                     "multiline": False,
                     "forceInput": True,
                 }),
-                "analysis_depth": (["Overview", "Deep analysis"], {
+                "analysis_depth": (DEPTHS, {
                     "default": "Overview",
-                    "tooltip": "Overview = instant (selection/modes only). "
-                               "Deep analysis = loads the LoRAs + SVD per layer "
-                               "(slower), measures Resolve fidelity.",
+                    "tooltip": DEPTH_TIP,
                 }),
             },
             "optional": {
@@ -246,6 +583,8 @@ class ULSResolveInspector:
                     "tooltip": "auto = GPU if free (like the real Resolve path), "
                                "else CPU. 'cpu' forces CPU.",
                 }),
+                # v980: a SOCKET, appended last -- no widgets_values slot moves.
+                "model": ("MODEL", {"tooltip": MODEL_TIP}),
             },
         }
 
@@ -256,11 +595,13 @@ class ULSResolveInspector:
     OUTPUT_NODE  = False
     DESCRIPTION  = ("Analyzes the Stack's CONCAT/DARE/Resolve merge. "
                     "Shows the live-selected LoRAs; 'Deep analysis' measures the "
-                    "Resolve re-pack fidelity (energy 1×/2×/4×, amplitude). "
-                    "report → Show Text. One per Stack (HIGH/LOW).")
+                    "Resolve re-pack fidelity (energy 1×/2×/4×, amplitude); "
+                    "'Overlap & energy' measures what each LoRA adds and which "
+                    "pull together or apart. Connect 'model' to see what really "
+                    "runs on it. report → Show Text. One per Stack.")
 
     def analyze(self, uls_config_out, analysis_depth="Overview",
-                max_layers=24, device="auto"):
+                max_layers=24, device="auto", model=None):
         try:
             cfg = json.loads(uls_config_out) if uls_config_out and uls_config_out.strip() else {}
         except Exception:
@@ -284,19 +625,29 @@ class ULSResolveInspector:
 
         ordered = _sort_active_rows(rows, flat_mode=flat_mode, custom_order=custom_order or None)
 
+        is_joint = _model_is_joint(model)          # v980: None = not connected
         L = ["═══ Polyhedron Merge Analyzer ═══",
              f"  Groups active : {len(ordered)}",
-             f"  Global mult   : ×{mult_f:.2f}",
+             (f"  Global mult   : ×{mult_f:.2f} saved -- NOT applied (no slider; "
+              f"use the group strength)" if abs(mult_f - 1.0) > 1e-9 else
+              "  Global mult   : none (use the group strength)"),
+             f"  Model         : {_model_line(is_joint)}",
              "─────────────────────────────────"]
 
         if not ordered:
             L.append("  (no active LoRA rows — connect uls_config_out from the Stack)")
             return ("\n".join(L), 100.0, 1.0, False)
 
+        # v985: names a reader can tell apart -- one shortener for the report
+        short = _OV.name_shortener([r.get("name", "") for _g, rows_, _w in ordered
+                                    for r in rows_])
+
         # --- Overview: per group, mode + switches + LoRAs ---
         resolve_groups = []   # (group, names, weights, trim_keep_or_None)
         for group, grp_rows, grp_weights in ordered:
             n = len(grp_rows)
+            # v981/v983: the weights the Stack runs with -- the SAME function
+            grp_weights, grp_clip, gm, cap = _group_effective(cfg, group, grp_rows, grp_weights)
             mode = (group_modes.get(group) or "SEQ").upper()
             if mode not in ("SEQ", "CONCAT", "DARE"):
                 mode = "SEQ"
@@ -305,6 +656,11 @@ class ULSResolveInspector:
                 variant = "channel"
             trim    = bool(group_trim.get(group, False))    and mode != "SEQ"
             resolve = bool(group_resolve.get(group, False)) and mode != "SEQ"
+            # v980: show what RUNS, not what is set. Same policy call as the
+            # Stack (uls_stack_node.apply_lora_set) -- one source of truth.
+            set_mode, set_resolve = mode, resolve
+            if is_joint and n >= 2:
+                mode, resolve, _n = _joint_merge_downgrade(mode, resolve, trim, True)
             trim_keep = None
             if trim:
                 _ta = group_trim_amt.get(group, None)
@@ -313,15 +669,32 @@ class ULSResolveInspector:
             tag = mode
             if mode == "DARE":
                 tag += f" [{variant[:4].upper()}]"
+            if set_mode != mode:
+                tag = f"{set_mode}→{mode} (joint)"
             if trim:
                 tag += " +TRIM"
             if resolve:
                 tag += " +RESOLVE"
+            elif set_resolve:
+                tag += " (RESOLVE off: joint)"
+            # v985: would the run really merge? Ask the Stack's own decision.
+            marks, path_lines, blocked = {}, [], False
+            if mode != "SEQ" and n >= 2:
+                blk, n_ok, missing, mix = _merge_path(grp_rows, grp_weights, grp_clip)
+                blocked = bool(blk) or n_ok < 2
+                marks, path_lines = _merge_path_lines(blk, n_ok, missing, short, mix)
+                if blocked:
+                    tag += " → runs SEQ"
+                    resolve = False
             grp_label = f"[{group}]" if group != "—" else "[—]"
             flag = "   ← Resolve active" if (resolve and n >= 2) else ""
-            L.append(f"  {grp_label} {tag}  ({n} LoRA{'s' if n != 1 else ''}){flag}")
+            gtxt = (f"  group ×{gm:g}" if gm != 1.0 else "") + _cap_text(cap)
+            L.append(f"  {grp_label} {tag}  ({n} LoRA{'s' if n != 1 else ''}){gtxt}{flag}")
             for r, w in zip(grp_rows, grp_weights, strict=True):
-                L.append(f"     • {_short_name(r.get('name',''), 34):<34} ×{w}")
+                nm = r.get('name', '')
+                mk = f"  [{marks[nm]}]" if nm in marks else ""
+                L.append(f"     • {short(nm, 34):<34} ×{w}{mk}")
+            L.extend(path_lines)
 
             if resolve and n >= 2:
                 names = [r.get("name", "None") for r in grp_rows]
@@ -334,6 +707,18 @@ class ULSResolveInspector:
         else:
             L.append("  No Resolve group with ≥2 LoRAs — nothing to measure "
                      "for CONCAT/DARE fidelity here.")
+
+        # --- v988: Merge check ---
+        if analysis_depth == DEPTH_MERGE:
+            L.extend(_merge_check_block(ordered, cfg, model, is_joint, device, short))
+            L.append("─────────────────────────────────")
+            return ("\n".join(L), 100.0, 1.0, bool(resolve_groups))
+
+        # --- v980: Overlap & energy ---
+        if analysis_depth == DEPTH_OVERLAP:
+            L.extend(_overlap_block(ordered, is_joint, device, cfg, short))
+            L.append("─────────────────────────────────")
+            return ("\n".join(L), 100.0, 1.0, bool(resolve_groups))
 
         # --- Overview only: done here ---
         if analysis_depth != "Deep analysis":
@@ -420,7 +805,7 @@ class ULSResolveInspector:
 
     @classmethod
     def IS_CHANGED(cls, uls_config_out="", analysis_depth="Overview",
-                   max_layers=24, device="auto", **kw):
+                   max_layers=24, device="auto", model=None, **kw):
         # Recompute only when selection/mode/depth change — so the expensive
         # deep analysis does not run on every queue, only when something changes.
         h = hashlib.sha1()

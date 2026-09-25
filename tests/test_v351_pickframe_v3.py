@@ -54,12 +54,12 @@ def main():
           "def comfy_entrypoint" not in v3)
 
     # ---- [2] live triple --------------------------------------------------
-    check(2, 'pyproject version = "3.79.0"',
-          'version = "3.79.0"' in _read("pyproject.toml"))
-    check(2, "banner 'Polyhedron Suite  v379' (two spaces)",
-          "Polyhedron Suite  v379" in _read("__init__.py"))
-    check(2, 'uls_compat PLUGIN_VERSION = "v379"',
-          'const PLUGIN_VERSION = "v379";' in _read("web", "js", "uls_compat.js"))
+    check(2, 'pyproject version = "3.80.0"',
+          'version = "3.80.0"' in _read("pyproject.toml"))
+    check(2, "banner 'Polyhedron Suite  v380' (two spaces)",
+          "Polyhedron Suite  v380" in _read("__init__.py"))
+    check(2, 'uls_compat PLUGIN_VERSION = "v380"',
+          'const PLUGIN_VERSION = "v380";' in _read("web", "js", "uls_compat.js"))
 
     # ---- [3] behaviour of the verbatim-ported pick() logic -----------------
     try:

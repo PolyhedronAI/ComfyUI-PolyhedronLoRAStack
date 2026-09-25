@@ -50,8 +50,7 @@ CHECK = r"""(stores) => {
   const me = app.graph._nodes.find(n => n.type === 'ULSMaskEditor');
   const el = me && document.querySelector(`[data-node-id="${me.id}"]`);
   const txt = el ? el.innerText : '';
-  const meRegistered = !!(LiteGraph.registered_node_types && LiteGraph.registered_node_types['ULSMaskEditor']);
-  return {bad, seen, stores: stores.filter(s => txt.includes(s)), meFound: !!el, meRegistered};
+  return {bad, seen, stores: stores.filter(s => txt.includes(s)), meFound: !!el};
 }"""
 
 
@@ -112,9 +111,7 @@ def main():
     res = asyncio.run(run(a.url))
     fail = 0
     for state, r in res.items():
-        # public build (v374): the Mask Editor is an internal-only node -- its
-        # store check applies only where the class is registered at all
-        ok = not r["bad"] and not r["stores"] and (r["meFound"] or not r.get("meRegistered", True))
+        ok = not r["bad"] and not r["stores"] and r["meFound"]
         fail += 0 if ok else 1
         print("  %s %-7s %d pack nodes, %d widgets, %d hidden classic | mismatches %d | "
               "Mask Editor stores visible: %s"

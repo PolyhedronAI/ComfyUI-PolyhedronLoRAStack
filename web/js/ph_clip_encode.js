@@ -346,7 +346,22 @@ function _reorderWidgetsToDisplay(node) {
     // the canon, so any future non-canon widget must ride last, not shift a value).
     const extras = node.widgets.filter((w) => !CANON.includes(w.name));
     node.widgets = rows.concat(extras);
+    // v992: the search row is non-canon (serialize:false) and rides LAST for the
+    // disk like every extra -- on SCREEN it sits right under `segments`.
+    // _canonOrder() puts it back among the extras for the length of serialize().
+    const si = node.widgets.findIndex((w) => w && w.name === "pls_search");   // ph_cte_search.js SEARCH_W
+    const gi = node.widgets.findIndex((w) => w && w.name === "segments");
+    if (si > gi && gi >= 0) node.widgets.splice(gi + 1, 0, node.widgets.splice(si, 1)[0]);
     node._plsDisplayed = true;
+}
+
+// v992: the textarea on screen for a prompt widget -- the classic element when it
+// is laid out, else (Nodes 2.0) the Vue field standing in for it.
+function _visibleTextarea(node, w) {
+    const el = w && w.element;
+    if (el && el.offsetParent !== null && el.clientWidth > 0) return el;
+    const vf = vueFieldFor(node, w);
+    return (vf && vf.clientWidth > 0) ? vf : null;
 }
 
 
@@ -657,6 +672,11 @@ app.registerExtension({
             // wired). They ride last (not in DISPLAY) and never serialize.
             for (const ef of EXT_FIELDS) _makeExtField(self, ef[0], ef[3], ef[4]);
 
+            // v992: what the search row (ph_cte_search.js, its own extension) needs
+            // from this node -- the visible prompt fields and the textarea on screen.
+            self._plsCteApi = { fields: () => _visibleFields(self),
+                                textareaFor: (w) => _visibleTextarea(self, w) };
+
             for (const name of ["segments", "use_negative"]) {
                 const w = _w(self, name);
                 if (!w) continue;
@@ -665,6 +685,7 @@ app.registerExtension({
                     const rv = cb ? cb.apply(this, arguments) : undefined;
                     _applyVisibility(self);
                     _refit(self);          // the visible field set changed -- refit
+                    if (self._plsSearchSchedule) self._plsSearchSchedule();   // v992: marks follow
                     return rv;
                 };
             }
@@ -676,6 +697,12 @@ app.registerExtension({
             }
             const negw = _w(self, "neg_1");
             if (negw && negw.element) negw.element.addEventListener("input", () => _refit(self));
+            // v992: typing in a prompt field re-marks the search hits (debounced)
+            for (const nm of FIELD_NAMES) {
+                const fw = _w(self, nm);
+                if (fw && fw.element) fw.element.addEventListener("input", () => {
+                    if (self._plsSearchSchedule) self._plsSearchSchedule(); });
+            }
 
             // v604: the filters go ABOVE the prompt boxes -- on screen only. The
             // canon on disk does not move, so no saved graph can be hurt by this.

@@ -37,6 +37,35 @@ import numpy as np
 
 from . import ph_save_util as U
 
+# v1010: the shared progress instrument (green bar + console + learned ETA).
+# A harness that loads this file alone gets silent stand-ins -- the node's
+# work never depends on its instruments.
+try:
+    from .ph_progress import NodeProgress as _NodeProgress, blocking as _blocking
+except Exception:
+    try:
+        from ph_progress import NodeProgress as _NodeProgress, blocking as _blocking
+    except Exception:
+        class _blocking:
+            est_total = est = None
+
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def tick(self, n=1):
+                pass
+
+            def rate_left(self):
+                return None, None
+
+        _NodeProgress = _blocking
+
 # The comfy_api VIDEO type + its save enums (optional, version-stable shims --
 # the exact Media Loader / Power Upscale pattern). Absent -> the native backend
 # and any wired VIDEO raise a clear error instead of crashing the pack.
@@ -521,7 +550,9 @@ class ULSSave:
 
         backend = p["backend"]
         if backend == "native":
-            self._write_native(frames, audio_dict, fps, path, save_metadata, prompt, extra_pnginfo)
+            with _blocking("Save", "save:native", size=float(w * h * int(frames.shape[0])) / 1e6,
+                           what="encode %df %dx%d (native)" % (int(frames.shape[0]), w, h)):
+                self._write_native(frames, audio_dict, fps, path, save_metadata, prompt, extra_pnginfo)
         elif backend == "pillow":
             self._write_pillow_anim(frames, mask if alpha else None, p, fps, int(loop_count), path)
         else:
@@ -663,7 +694,11 @@ class ULSSave:
         from PIL import Image
         msk = _to_np(mask)
         pil_frames = []
+        _n, _mp = int(frames.shape[0]), float(frames.shape[1] * frames.shape[2]) / 1e6
+        _conv = _NodeProgress("Save", "save:pillow:frames", total=_n, unit="frame", size=_mp)
+        _conv.__enter__()
         for i in range(int(frames.shape[0])):
+            _conv.tick()
             if mask is not None:
                 rgba = U.rgb_and_mask_to_rgba_uint8(frames[i:i + 1], None if msk is None else msk[i:i + 1])[0]
                 pil_frames.append(Image.fromarray(rgba, "RGBA"))
@@ -673,10 +708,13 @@ class ULSSave:
         duration_ms = max(1, int(round(1000.0 / max(fps, 0.01))))
         save_kwargs = dict(save_all=True, append_images=pil_frames[1:],
                            duration=duration_ms, loop=int(loop_count), disposal=2)
-        if p["ext"] == "webp":
-            pil_frames[0].save(path, "WEBP", lossless=True, **save_kwargs)
-        else:  # gif
-            pil_frames[0].convert("RGBA" if mask is not None else "P").save(path, "GIF", **save_kwargs)
+        _conv.__exit__(None, None, None)
+        with _blocking("Save", "save:pillow:%s" % p["ext"], size=_n * _mp,
+                       what="write %s (%d frames)" % (p["ext"], _n)):
+            if p["ext"] == "webp":
+                pil_frames[0].save(path, "WEBP", lossless=True, **save_kwargs)
+            else:  # gif
+                pil_frames[0].convert("RGBA" if mask is not None else "P").save(path, "GIF", **save_kwargs)
 
     def _write_pyav(self, frames, mask, audio_dict, p, fps, quality, path):
         """The pro-master encoder on ComfyUI's bundled PyAV. 10-bit pix_fmts get a
@@ -700,6 +738,11 @@ class ULSSave:
 
             scale = 65535.0 if ten else 255.0
             dt = np.uint16 if ten else np.uint8
+            _n = int(frames.shape[0])
+            _mp = float(frames.shape[1] * frames.shape[2]) / 1e6
+            _enc = _NodeProgress("Save", "save:%s:%s" % (p["vcodec"], p["pix_fmt"]),
+                                 total=_n, unit="frame", size=_mp)
+            _enc.__enter__()
             for i in range(int(frames.shape[0])):
                 if alpha:
                     if ten:
@@ -714,14 +757,18 @@ class ULSSave:
                 vframe = vframe.reformat(format=p["pix_fmt"])
                 for pkt in vstream.encode(vframe):
                     container.mux(pkt)
-            for pkt in vstream.encode():                # flush video
-                container.mux(pkt)
+                _enc.tick()
+            _enc.__exit__(None, None, None)
+            with _blocking("Save", "save:finalize:%s" % p["vcodec"], size=_n * _mp,
+                           what="flush encoder" + (" + audio mux" if audio_dict is not None and p.get("acodec") else "")):
+                for pkt in vstream.encode():                # flush video
+                    container.mux(pkt)
 
-            if audio_dict is not None and p.get("acodec"):
-                try:
-                    self._mux_audio_pyav(container, audio_dict, p["acodec"])
-                except Exception as e:  # pragma: no cover -- never lose the video
-                    print(f"[PLS] Save: audio mux skipped ({e!r}); video written silent.")
+                if audio_dict is not None and p.get("acodec"):
+                    try:
+                        self._mux_audio_pyav(container, audio_dict, p["acodec"])
+                    except Exception as e:  # pragma: no cover -- never lose the video
+                        print(f"[PLS] Save: audio mux skipped ({e!r}); video written silent.")
         finally:
             # v577: the container closes even when the encode raises. Without
             # this, a rejected pix_fmt / codec option / full disk left the

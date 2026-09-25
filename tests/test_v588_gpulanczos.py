@@ -80,7 +80,9 @@ def main():
         _fail("exactly ONE branch may mark - the one that provably wrote "
               "canon order (inside the _plsDisplayReordered serialize path)")
     mark_at = js.index("o.properties[CANON_MARKER] = 588;")
-    dtc_at = js.index("o.widgets_values = _displayToCanon(o.widgets_values);")
+    # v1005 RE-GROUNDING (declared): the canon mapping now runs on the CORE
+    # (the DOM tail split off), so the call reads _displayToCanon(s.core).
+    dtc_at = js.index("_displayToCanon(s.core)")
     if mark_at < dtc_at:
         _fail("the marker must be set AFTER the canon mapping it certifies")
     if "canon-marked save" not in js or "legacy save (no canon marker)" not in js:

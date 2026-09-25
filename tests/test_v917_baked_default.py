@@ -7,8 +7,9 @@ visibly better and ~10 % faster per step than bypass. Four cuts, one guard:
       "bypass" and "patch" by hand still do what they say
   P2  the decision is never silent: auto/patch say "BAKED", auto on a
       quantized target additionally names the pill's BYPASS hand switch
-  P3  the mixed-convention fallback in uls_stack_node lists every LoRA of
-      the group with its convention label (05.09.: eight LoRAs, no name)
+  P3  a group that mixes key naming names its LoRAs with their convention
+      label (05.09.: eight LoRAs, no name). v986: it no longer falls back to
+      SEQ -- it merges per layer -- and still says so, naming the odd ones
   P4  Engine Apply pill sits LEFT after the S|C|D buttons (after the DARE
       variant pill when shown), never at W - PAD (the output-pin column)
 """
@@ -60,12 +61,16 @@ if mode != "SEQ":
 
 # P3
 src = open(os.path.join(ROOT, "nodes", "uls_stack_node.py"), encoding="utf-8").read()
-m = re.search(r"group mixes LoRA naming conventions(.*?)return _apply_seq", src, re.S)
+# v986: a mixed group is no longer a fallback -- it MERGES per layer. The
+# promise of 05.09. stands: the console names the LoRAs with their naming.
+m = re.search(r"def _naming_mix\(names, raw\):(.*?)\n\n\n", src, re.S)
 if not m:
-    _fail("P3 mixed-convention fallback not found")
-blk = m.group(1)
-if "zip(valid_names, convs)" not in blk or "_convention_label(c)" not in blk:
-    _fail("P3 the fallback must list every LoRA with its convention")
+    _fail("P3 _naming_mix (the mixed-naming report) not found")
+if "zip(names, convs)" not in m.group(1) or "_convention_label(c)" not in m.group(1):
+    _fail("P3 the mix report must carry every LoRA with its convention")
+m2 = re.search(r"_mix = _naming_mix\(valid_names, raw\)(.*?)# --- Conv/LoCon", src, re.S)
+if not m2 or "key naming mixed" not in m2.group(1) or "[{lab}]" not in m2.group(1):
+    _fail("P3 the merge must print the mix and name the odd LoRAs with their label")
 if "def _convention_label(conv)" not in src:
     _fail("P3 _convention_label helper missing")
 ns = {}

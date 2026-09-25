@@ -100,7 +100,7 @@ def _drive_block(raw, names, mode, handoff, mid=False):
         return "SEQ"
 
     ns = {"_foreign_keys": MP._foreign_keys, "_has_mid_tensor": lambda td: mid,
-          "_short_name": lambda n, w=40: n, "_apply_seq": _apply_seq, "print": print,
+          "_short_name": lambda n, w=40: n, "_sn": lambda n, w=40: n, "_apply_seq": _apply_seq, "print": print,
           "raw": raw, "valid_names": names, "valid_weights": [1.0] * len(names),
           "valid_clip_weights": [1.0] * len(names), "mode": mode, "handoff": handoff,
           "_fb": " (BAKED, not bypass)" if handoff == "bypass" else "",   # v915: as the function defines it

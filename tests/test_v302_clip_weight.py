@@ -107,7 +107,12 @@ check("OOM retry carries clip_weights",
       re.search(r'force_resolve_device="cpu",\s*clip_weights=clip_weights', src) is not None)   # v374: handoff= follows since v913
 check("apply_lora_set keeps CLIP-only rows",
       "abs(float(w)) >= 1e-6 or abs(float(wc)) >= 1e-6" in src)
-check("stack site collects grp_clip", "grp_clip = [round(_row_clip_weight(r, w), 4)" in src)
+# v380 (public): since the v981/v983 stack rebuild the group's CLIP weights are
+# collected in _group_scaled (row CLIP weight first, then the group factor) and
+# handed back through _group_effective -- the promise is the same, the seam moved.
+check("stack site collects grp_clip (via _group_scaled)",
+      "cs = [round(_row_clip_weight(r, w) * gm, 4)" in src
+      and "grp_weights, grp_clip, gm, cap = _group_effective(" in src)
 check("stack site passes clip_weights", "clip_weights=grp_clip" in src)
 check("engine site collects active_clip",
       "active_clip.append(round(_row_clip_weight(row, w), 4))" in src)

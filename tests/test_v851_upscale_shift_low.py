@@ -129,12 +129,16 @@ def s1_serialisation_law():
         return _fail("this node became dynamic; the baseline can no longer pin it")
     if WIDGET not in req:
         return _fail("%s is not declared at all" % WIDGET)
-    if req[-1] != WIDGET:
-        return _fail("%s must be the LAST widget (#577: widget values are "
+    # v1004 RE-GROUNDING (declared): "req[-1] == WIDGET" was the v851
+    # situation. The #577 promise is that the widget was APPENDED and its
+    # index never moves: slot 25 of the required widgets (0-based, the seed's
+    # control_after_generate is not declared), whatever comes after it.
+    if req.index(WIDGET) != 25:
+        return _fail("%s must keep slot 25 (#577: widget values are "
                      "serialised BY INDEX; an insert renumbers every saved "
                      "workflow). It sits at %d of %d."
                      % (WIDGET, req.index(WIDGET), len(req) - 1))
-    _ok("declared LAST of %d widgets" % len(req))
+    _ok("declared at slot 25 of %d widgets (later appends sit behind it)" % len(req))
 
     base = [p for p in os.listdir(ROOT)
             if p.startswith("WIDGET_ORDER_baseline_v") and p.endswith(".txt")]
@@ -450,8 +454,12 @@ def s7_frontend():
     canon = _names(js, "ORDER_CANON")
     disp = _names(js, "DISPLAY_ORDER")
     legacy = _names(js, "DISPLAY_LEGACY_V587")
-    if canon[-1] != WIDGET:
-        return _fail("ORDER_CANON must APPEND the new widget, it ends with %r" % canon[-1])
+    # v1004 RE-GROUNDING (declared): "canon[-1] == WIDGET" was the v851
+    # situation. The promise is APPENDED, i.e. every slot before it stands and
+    # it sits at 26 -- later appends (v1004) sit behind it.
+    if WIDGET not in canon or canon.index(WIDGET) != 26:
+        return _fail("ORDER_CANON must carry the widget at slot 26 (appended in v851), got %r"
+                     % (canon.index(WIDGET) if WIDGET in canon else None))
     # v852 RE-GROUNDING (declared): v851 pinned "appended at the END of
     # DISPLAY_ORDER too" -- that was the v851 SITUATION, not the promise. The
     # promise is that the CANON never re-sorts (above) and that the display is a
@@ -461,8 +469,11 @@ def s7_frontend():
         return _fail("%s must sit directly under sigma_shift in DISPLAY_ORDER "
                      "(the law of proximity); it sits at %d, sigma_shift at %d"
                      % (WIDGET, disp.index(WIDGET), disp.index("sigma_shift")))
-    if canon.index(WIDGET) != len(canon) - 1:
-        return _fail("the CANON position may never move, whatever the display does")
+    # v1004 RE-GROUNDING (declared): "index == len-1" was the v851 SITUATION.
+    # The promise is that the CANON position never MOVES: slot 26, for ever,
+    # whatever is appended behind it (v1004 appended h3_refine / h3_audio).
+    if canon.index(WIDGET) != 26:
+        return _fail("the CANON position may never move (slot 26), whatever the display does")
     if sorted(canon) != sorted(disp):
         return _fail("DISPLAY_ORDER is no longer a permutation of ORDER_CANON")
     if WIDGET in legacy:
@@ -488,13 +499,16 @@ def s7_frontend():
         re.search(r"function _padToCanon[\s\S]*?\n\}", js).group(0),
         re.search(r"function _tableToCanon[\s\S]*?\n\}", js).group(0),
         re.search(r"function _legacyDisplayToCanon[\s\S]*?\n\}", js).group(0),
-        # a v850 save in CANON order, 26 long, lacking only the new widget
-        "const old = ORDER_CANON.slice(0, ORDER_CANON.length - 1)"
+        # a v850 save in CANON order, 26 long, lacking the new widget (and
+        # everything appended after it -- v1004 RE-GROUNDING: the slot is 26,
+        # not "the last one")
+        "const SLOT = 26;",
+        "const old = ORDER_CANON.slice(0, SLOT)"
         ".map((n, i) => 'V' + i);",
         "const padded = _padToCanon(old);",
         "if (padded.length !== ORDER_CANON.length) {",
         "  console.error('FAIL: pad did not reach canon length'); process.exit(1); }",
-        "if (padded[ORDER_CANON.length - 1] !== -1.0) {",
+        "if (padded[SLOT] !== -1.0) {",
         "  console.error('FAIL: the new slot did not heal to the sentinel');",
         "  process.exit(1); }",
         "for (let i = 0; i < old.length; i++) if (padded[i] !== old[i]) {",
@@ -506,7 +520,7 @@ def s7_frontend():
         "const back = _legacyDisplayToCanon(histPad);",
         "for (let i = 0; i < ORDER_CANON.length; i++) {",
         "  const n = ORDER_CANON[i];",
-        "  const want = DISPLAY_LEGACY_V587.indexOf(n) < 0 ? -1.0 : 'D:' + n;",
+        "  const want = DISPLAY_LEGACY_V587.indexOf(n) < 0 ? CANON_DEFAULTS[i] : 'D:' + n;",
         "  if (back[i] !== want) {",
         "    console.error('FAIL: legacy map lost ' + n + ' -> ' + back[i]);",
         "    process.exit(1); }",

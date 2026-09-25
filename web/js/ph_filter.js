@@ -35,7 +35,7 @@ const CANON_DEFAULTS = {
     exposure: 0.0, temperature: 0.0, tint: 0.0, contrast: 0.0, gamma: 1.0,
     shadows: 0.0, highlights: 0.0, saturation: 0.0, vibrance: 0.0, hue_shift: 0.0,
     lut_name: "none", lut_strength: 1.0, sharpen_amount: 0.0, sharpen_radius: 1.0,
-    preset: "none",
+    preset: "none", auto_mode: "off", sharpen_threshold: 0.0, detail_amount: 1.0,
 };
 
 const PREVIEW_MIN_H = 140;   // floor for the reserved preview height (px)
@@ -73,6 +73,131 @@ function _paneHeight(iw, ih, nodeW) {
     if (hh < PREVIEW_MIN_H) hh = PREVIEW_MIN_H;
     if (hh > PREVIEW_MAX_H) hh = PREVIEW_MAX_H;
     return hh;
+}
+
+// ---------------------------------------------------------------- picker
+// v998 (F1): the white picker, taken over from the Polyhedron Viewer
+// (pv/grade.py, v036). A click names something that should be neutral;
+// temperature and tint are set so that it IS. No new canon key: the
+// picker only WRITES the two existing widgets, so the serialized values
+// stay the single truth, a preset stores the result, and the hand can
+// move it on. White balance sits in the pipeline BEFORE every non-linear
+// step, and every later step keeps a grey grey (equal curves per channel,
+// hue matrix rows summing to one) -- so the picked spot comes out neutral
+// whatever else is set; only a LUT after it may colour it again.
+const PICK_RADIUS  = 3;      // a 7x7 patch -- one pixel is noise, not colour
+const PICK_DARKEST = 0.04;   // below this a channel says nothing
+const PICK_BLOWN   = 0.995;  // a clipped channel has lost its cast
+const WB_LIMIT     = 2.0;    // the temperature/tint range (python min/max)
+
+function _pickWhite(r, g, b) {
+    // The temperature/tint that make (r, g, b) neutral, or the reason why
+    // not. Pure -- guard-driven, and the guard feeds the answer through
+    // the python ground truth (_grade_np) to prove the spot comes out grey.
+    //   r(1 + T/4) = b(1 - T/4)  ->  T = 4(b - r)/(r + b)
+    //   g(1 - N/4) = k = 2rb/(r + b)  ->  N = 4(1 - k/g)
+    if (!(r >= 0) || !(g >= 0) || !(b >= 0)) {
+        return { reason: "there is no picture there" };
+    }
+    if (Math.min(r, g, b) < PICK_DARKEST) {
+        return { reason: "too dark to tell a colour - pick something light" };
+    }
+    if (Math.max(r, g, b) >= PICK_BLOWN) {
+        return { reason: "blown out - pick something light but not pure white" };
+    }
+    let t = 4 * (b - r) / (r + b);
+    let n = 4 * (1 - (2 * r * b / (r + b)) / g);
+    let clamped = false;
+    if (Math.abs(t) > WB_LIMIT) { t = Math.sign(t) * WB_LIMIT; clamped = true; }
+    if (Math.abs(n) > WB_LIMIT) { n = Math.sign(n) * WB_LIMIT; clamped = true; }
+    // The widgets step in 0.01; exact carries the unrounded answer (the
+    // guard proves the arithmetic on it, the rounding against 8 bit).
+    return { temperature: Math.round(t * 100) / 100,
+             tint: Math.round(n * 100) / 100, clamped: clamped, exact: [t, n] };
+}
+
+function _patchMean(data, width, height, x, y, radius) {
+    // Mean colour (0..1) of the (2r+1)^2 patch around pixel (x, y) of an
+    // RGBA byte array, the image edge respected. Pure -- guard-driven.
+    let sr = 0, sg = 0, sb = 0, n = 0;
+    for (let py = Math.max(0, y - radius); py <= Math.min(height - 1, y + radius); py++) {
+        for (let px = Math.max(0, x - radius); px <= Math.min(width - 1, x + radius); px++) {
+            const i = (py * width + px) * 4;
+            sr += data[i]; sg += data[i + 1]; sb += data[i + 2]; n++;
+        }
+    }
+    if (!n) return null;
+    return [sr / n / 255, sg / n / 255, sb / n / 255];
+}
+
+function _proxyPoint(cx, cy, iw, ih, cw, ch) {
+    // Canvas backing-store point -> proxy pixel, through the same letterbox
+    // _fitRect draws with. null on the border. Pure -- guard-driven.
+    const r = _fitRect(iw, ih, cw, ch);
+    if (r.w <= 0 || r.h <= 0) return null;
+    const x = Math.floor((cx - r.x) * iw / r.w);
+    const y = Math.floor((cy - r.y) * ih / r.h);
+    if (x < 0 || y < 0 || x >= iw || y >= ih) return null;
+    return [x, y];
+}
+
+// ------------------------------------------------------------- automatic
+// v998 (F2): OP-FOR-OP mirror of _auto_grade / _apply_auto_np in
+// nodes/ph_filter.py (the ground truth). The run measures the batch ONCE and
+// sends the six numbers with the preview (item.auto); the preview computes
+// every stop from them, so turning the dial needs no run.
+const AUTO_FACTORS = {
+    off:     { wb: 0.0,  luma: 0.0,  spread: 0.0,  sat: 0.0 },
+    neutral: { wb: 0.6,  luma: 0.5,  spread: 0.5,  sat: 0.0 },
+    high:    { wb: 0.85, luma: 0.75, spread: 0.75, sat: 0.25 },
+    ultra:   { wb: 1.0,  luma: 1.0,  spread: 1.0,  sat: 0.5 },
+};
+const AUTO_TARGET_LUMA = 0.45;
+const AUTO_TARGET_SPREAD = 0.19;
+const AUTO_TARGET_CHROMA = 0.046;
+
+function _autoGrade(stats, mode) {
+    const f = AUTO_FACTORS[mode];
+    if (!f || !stats || f.wb === 0) return null;
+    const [mr, mg, mb, luma, spread, chroma] = stats.map(Number);
+    const lim = (v, lo, hi) => (v < lo ? lo : (v > hi ? hi : v));
+    let wbR = 1, wbB = 1;
+    if (mr > 0.01 && mg > 0.01 && mb > 0.01) {
+        wbR = lim(1 + (mg / mr - 1) * f.wb, 0.5, 2.0);
+        wbB = lim(1 + (mg / mb - 1) * f.wb, 0.5, 2.0);
+    }
+    const brightness = lim((AUTO_TARGET_LUMA - luma) * f.luma, -0.5, 0.5);
+    let contrast = 1;
+    if (spread > 0.01 && spread < AUTO_TARGET_SPREAD) {
+        contrast = lim(1 + (AUTO_TARGET_SPREAD / spread - 1) * f.spread, 1.0, 2.0);
+    }
+    let saturation = 1;
+    if (f.sat && chroma > 0.002 && chroma < AUTO_TARGET_CHROMA) {
+        saturation = lim(1 + (AUTO_TARGET_CHROMA / chroma - 1) * f.sat, 1.0, 2.0);
+    }
+    return { wb_r: wbR, wb_b: wbB, brightness: brightness,
+             contrast: contrast, saturation: saturation };
+}
+
+function _autoRGB(r, g, b, a) {
+    if (!a) return [r, g, b];
+    r *= a.wb_r; b *= a.wb_b;
+    r += a.brightness; g += a.brightness; b += a.brightness;
+    r = (r - 0.5) * a.contrast + 0.5;
+    g = (g - 0.5) * a.contrast + 0.5;
+    b = (b - 0.5) * a.contrast + 0.5;
+    const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    r = l + (r - l) * a.saturation;
+    g = l + (g - l) * a.saturation;
+    b = l + (b - l) * a.saturation;
+    const c = (v) => (v < 0 ? 0 : (v > 1 ? 1 : v));
+    return [c(r), c(g), c(b)];
+}
+
+function _pfAuto(node) {
+    const w = (node.widgets || []).find((x) => x.name === "auto_mode");
+    const mode = w ? String(w.value) : "off";
+    return { mode: mode, grade: _autoGrade(node._pfAutoStats, mode) };
 }
 
 function _gradeRGB(r, g, b, p) {
@@ -209,7 +334,118 @@ function _gaussKernel(radius) {
     return { half: half, w: w };
 }
 
-function _sharpenBuf(buf, width, height, amount, radius) {
+// -------------------------------------------------- detail from original
+// v1001 (F4): OP-FOR-OP mirror of _detail_np in nodes/ph_filter.py (itself
+// the Polyhedron Viewer's pv/detail.py). Buffers are Float32Array
+// [r,g,b, r,g,b, ...] row-major; returns a NEW buffer.
+const DETAIL_CORE = 0.002;
+const DETAIL_CAP = 0.15;
+const DETAIL_EPS = 1e-6;
+
+function _detailBuf(orig, ai, width, height, amount, grid) {
+    if (!(amount > 0)) return ai;
+    const n = width * height;
+    const soft = (buf) => {
+        let cur = buf;
+        const pass = (vertical) => {
+            const out = new Float64Array(n * 3);
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const o = (y * width + x) * 3;
+                    const lo = vertical ? ((y > 0 ? y - 1 : 0) * width + x) * 3
+                        : (y * width + (x > 0 ? x - 1 : 0)) * 3;
+                    const hi = vertical ? ((y < height - 1 ? y + 1 : y) * width + x) * 3
+                        : (y * width + (x < width - 1 ? x + 1 : x)) * 3;
+                    for (let c = 0; c < 3; c++) {
+                        out[o + c] = (cur[lo + c] + 2 * cur[o + c] + cur[hi + c]) * 0.25;
+                    }
+                }
+            }
+            cur = out;
+        };
+        pass(true); pass(true); pass(false); pass(false);
+        return cur;
+    };
+    const so = soft(orig), sa = soft(ai);
+    const ho = new Float64Array(n * 3), ha = new Float64Array(n * 3);
+    const prod = new Float64Array(n), eo = new Float64Array(n), ea = new Float64Array(n);
+    for (let y = 0; y < height; y++) {
+        const gy = (y % 8 === 7 || y % 8 === 0) ? 1 - grid : 1;
+        for (let x = 0; x < width; x++) {
+            const gx = (x % 8 === 7 || x % 8 === 0) ? 1 - grid : 1;
+            const g = grid > 0 ? gy * gx : 1;
+            const p = y * width + x;
+            let sp = 0, so2 = 0, sa2 = 0;
+            for (let c = 0; c < 3; c++) {
+                const i = p * 3 + c;
+                let d = orig[i] - so[i];
+                const m = Math.min(Math.max(Math.abs(d) - DETAIL_CORE, 0), DETAIL_CAP);
+                d = (d > 0 ? m : (d < 0 ? -m : 0)) * g;
+                ho[i] = d;
+                ha[i] = ai[i] - sa[i];
+                sp += d * ha[i]; so2 += d * d; sa2 += ha[i] * ha[i];
+            }
+            prod[p] = sp; eo[p] = so2; ea[p] = sa2;
+        }
+    }
+    const box = (a) => {
+        const out = new Float64Array(n);
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                let t = 0;
+                for (let dy = -2; dy <= 2; dy++) {
+                    const yy = y + dy < 0 ? 0 : (y + dy >= height ? height - 1 : y + dy);
+                    for (let dx = -2; dx <= 2; dx++) {
+                        const xx = x + dx < 0 ? 0 : (x + dx >= width ? width - 1 : x + dx);
+                        t += a[yy * width + xx];
+                    }
+                }
+                out[y * width + x] = t / 25;
+            }
+        }
+        return out;
+    };
+    const num = box(prod), bo = box(eo), ba = box(ea);
+    const out = new Float32Array(n * 3);
+    for (let p = 0; p < n; p++) {
+        const den = Math.sqrt(Math.max(bo[p] * ba[p], 0)) + DETAIL_EPS;
+        let ag = num[p] / den;
+        ag = ag < 0 ? 0 : (ag > 1 ? 1 : ag);
+        for (let c = 0; c < 3; c++) {
+            const i = p * 3 + c;
+            const s = (ho[i] * ha[i] > 0 && Math.abs(ho[i]) > Math.abs(ha[i])) ? ho[i] - ha[i] : 0;
+            const v = ai[i] + amount * ag * s;
+            out[i] = v < 0 ? 0 : (v > 1 ? 1 : v);
+        }
+    }
+    return out;
+}
+
+function _pfDetail(node) {
+    // What the preview can do with the detail source: {amount, grid, state}.
+    // The grid is the run's (measured on the source) when the proxy IS the
+    // full frame; on a shrunk proxy the 8 px seams do not exist, so 0.
+    const w = (node.widgets || []).find((x) => x.name === "detail_amount");
+    const amount = w ? Number(w.value) : 0;
+    const d = node._pfDetailData, s = node._pfSrcData;
+    if (!node._pfDetailItem) return { amount: amount, state: "none" };
+    if (!d || !s) return { amount: amount, state: "loading" };
+    if (d.width !== s.width || d.height !== s.height) return { amount: amount, state: "size" };
+    const full = !(node._pfSrcW > s.width);
+    return { amount: amount, state: "ready", grid: full ? Number(node._pfDetailGrid) || 0 : 0 };
+}
+
+function _previewRadius(radius, proxyW, srcW) {
+    // v1000: the preview sharpens a SHRUNK proxy; the run sharpens the full
+    // frame. The radius is in pixels, so on the proxy it must shrink with
+    // it -- measured on four H3 frames (1344/1882 px -> 768 proxy): preview
+    // against the scaled-down run 2.0-6.1 levels off with the full radius,
+    // 0.55-1.36 with the scaled one. Pure -- guard-driven.
+    if (!(proxyW > 0) || !(srcW > 0) || proxyW >= srcW) return radius;
+    return radius * proxyW / srcW;
+}
+
+function _sharpenBuf(buf, width, height, amount, radius, threshold) {
     // OP-FOR-OP mirror of _sharpen_np in nodes/ph_filter.py: unsharp mask
     // out = x + amount * (x - gaussian_blur(x)), separable blur with
     // replicate (edge-clamp) borders, clamped to 0..1. buf: Float32Array
@@ -248,9 +484,15 @@ function _sharpenBuf(buf, width, height, amount, radius) {
             blur[o] = r; blur[o + 1] = g; blur[o + 2] = b;
         }
     }
+    // v1000 (F3): the threshold (full-scale units, 0 = off) cores the detail
+    // layer -- a difference smaller than it adds nothing, a larger one is
+    // shortened by it. Soft coring, no hard edge where the threshold bites.
+    const t = threshold > 0 ? threshold : 0;
     const out = new Float32Array(n * 3);
     for (let i = 0; i < out.length; i++) {
-        let v = buf[i] + amount * (buf[i] - blur[i]);
+        let d = buf[i] - blur[i];
+        if (t > 0) d = d > t ? d - t : (d < -t ? d + t : 0);
+        let v = buf[i] + amount * d;
         out[i] = v < 0 ? 0 : (v > 1 ? 1 : v);
     }
     return out;
@@ -268,7 +510,9 @@ function viewURL(item) {
 const GRADE_WIDGETS = ["exposure", "temperature", "tint", "contrast", "gamma",
                        "shadows", "highlights", "saturation", "vibrance", "hue_shift"];
 const LIVE_WIDGETS = GRADE_WIDGETS.concat(["lut_name", "lut_strength",
-                                           "sharpen_amount", "sharpen_radius"]);
+                                           "sharpen_amount", "sharpen_radius",
+                                           "auto_mode", "sharpen_threshold",
+                                           "detail_amount"]);
 
 function _pfParams(node) {
     const p = {};
@@ -337,6 +581,8 @@ function _pfRecompute(node) {
     const wSharpR = (node.widgets || []).find((x) => x.name === "sharpen_radius");
     const sharpA = wSharpA ? Number(wSharpA.value) : 0;
     const sharpR = wSharpR ? Number(wSharpR.value) : 1;
+    const wSharpT = (node.widgets || []).find((x) => x.name === "sharpen_threshold");
+    const sharpT = wSharpT ? Number(wSharpT.value) / 255 : 0;   // levels -> full scale
     if (!node._pfGraded) {
         node._pfGraded = document.createElement("canvas");
     }
@@ -347,12 +593,28 @@ function _pfRecompute(node) {
     const a = src.data, o = outData.data;
     const npx = src.width * src.height;
     let fbuf = new Float32Array(npx * 3);
+    // stage -1 (v1001): detail from the original, before everything else
+    let b0 = new Float32Array(npx * 3);
     for (let i = 0, f = 0; i < a.length; i += 4, f += 3) {
-        let rgb = _gradeRGB(a[i] / 255, a[i + 1] / 255, a[i + 2] / 255, p);
+        b0[f] = a[i] / 255; b0[f + 1] = a[i + 1] / 255; b0[f + 2] = a[i + 2] / 255;
+    }
+    const det = _pfDetail(node);
+    if (det.state === "ready" && det.amount > 0) {
+        const dd = node._pfDetailData.data, ob = new Float32Array(npx * 3);
+        for (let i = 0, f = 0; i < dd.length; i += 4, f += 3) {
+            ob[f] = dd[i] / 255; ob[f + 1] = dd[i + 1] / 255; ob[f + 2] = dd[i + 2] / 255;
+        }
+        b0 = _detailBuf(ob, b0, src.width, src.height, det.amount, det.grid);
+    }
+    const auto = _pfAuto(node).grade;
+    for (let i = 0, f = 0; i < a.length; i += 4, f += 3) {
+        const s0 = _autoRGB(b0[f], b0[f + 1], b0[f + 2], auto);
+        let rgb = _gradeRGB(s0[0], s0[1], s0[2], p);
         if (lut) rgb = _lutRGB(rgb[0], rgb[1], rgb[2], lut, lutState.strength);
         fbuf[f] = rgb[0]; fbuf[f + 1] = rgb[1]; fbuf[f + 2] = rgb[2];
     }
-    if (sharpA > 0) fbuf = _sharpenBuf(fbuf, src.width, src.height, sharpA, sharpR);
+    if (sharpA > 0) fbuf = _sharpenBuf(fbuf, src.width, src.height, sharpA,
+                                       _previewRadius(sharpR, src.width, node._pfSrcW), sharpT);
     for (let i = 0, f = 0; i < o.length; i += 4, f += 3) {
         o[i] = Math.round(fbuf[f] * 255);
         o[i + 1] = Math.round(fbuf[f + 1] * 255);
@@ -553,6 +815,29 @@ function _pfDraw(node) {
     _pfBadge(ctx, r.x + 6, r.y + 6, "in");
     _pfBadge(ctx, r.x + r.w - 40, r.y + 6, "out");
 
+    // Picker state: armed -> say what the next click does; afterwards the
+    // answer (values set, clamped, or why nothing was set) for a moment.
+    const pickText = node._pfPicking ? "click something that should be neutral"
+        : node._pfPickNote;
+    if (pickText) _pfBadge(ctx, r.x + 6, r.y + r.h - 21, pickText);
+
+    // The detail source says what it does, or why it does not.
+    const det = _pfDetail(node);
+    const dText = node._pfDetailNote ? node._pfDetailNote
+        : det.state === "loading" ? "loading detail source..."
+        : det.state === "size" ? "detail source preview size differs"
+        : det.state === "ready" ? "detail from source " + Math.round(det.amount * 100) + "%" +
+            (det.grid > 0 ? " \u00b7 block grid " + det.grid.toFixed(2) : "")
+        : null;
+    if (dText) _pfBadge(ctx, r.x + 6, r.y + 42, dText);
+
+    // The automatic says what it does (a node shows, it does not only log).
+    const au = _pfAuto(node);
+    if (au.mode !== "off") {
+        _pfBadge(ctx, r.x + 6, r.y + 24, au.grade ? _autoText(au.mode, au.grade)
+            : "auto " + au.mode + ": run once to measure");
+    }
+
     // Honesty badge: a LUT is selected but the preview could not load it --
     // the right side is then grading WITHOUT the LUT, unlike the run.
     const ls = _pfLutState(node);
@@ -560,6 +845,15 @@ function _pfDraw(node) {
         _pfBadge(ctx, r.x + Math.floor(r.w / 2) - 55, r.y + 6,
                  node._pfLutErr ? "LUT not in preview" : "loading LUT...");
     }
+}
+
+function _autoText(mode, a) {
+    // One line for the badge. Pure -- guard-driven.
+    const f2 = (v) => v.toFixed(2);
+    const sg = (v) => (v >= 0 ? "+" : "") + v.toFixed(2);
+    return "auto " + mode + ": wb " + f2(a.wb_r) + "/" + f2(a.wb_b) +
+        " \u00b7 light " + sg(a.brightness) + " \u00b7 contrast " + f2(a.contrast) +
+        " \u00b7 sat " + f2(a.saturation);
 }
 
 function _pfBadge(ctx, x, y, text) {
@@ -595,6 +889,10 @@ function _pfLoad(node, item) {
         return;
     }
     const img = new Image();
+    // the batch's automatic readings travel with the preview (v998)
+    node._pfAutoStats = Array.isArray(item.auto) ? item.auto : null;
+    node._pfSrcW = Number(item.src_width) || 0;   // the run's width (radius scale)
+    _pfLoadDetail(node, item);
     img.onload = () => {
         node._pfImg = img;
         node._pfNote = null;
@@ -630,6 +928,37 @@ function _pfLoad(node, item) {
         _pfDraw(node);
     };
     img.src = viewURL(item);
+}
+
+function _pfLoadDetail(node, item) {
+    // The detail source's proxy (v1001), loaded beside the main one; a stale
+    // load (an older item) is dropped when it lands.
+    node._pfDetailItem = item && item.detail && item.detail.filename ? item.detail : null;
+    node._pfDetailGrid = item ? Number(item.detail_grid) || 0 : 0;
+    node._pfDetailNote = item && item.detail_note ? String(item.detail_note) : null;
+    node._pfDetailData = null;
+    const want = node._pfDetailItem;
+    if (!want) return;
+    const img = new Image();
+    img.onload = () => {
+        if (node._pfDetailItem !== want) return;
+        try {
+            const c = document.createElement("canvas");
+            c.width = img.naturalWidth; c.height = img.naturalHeight;
+            const cx = c.getContext("2d");
+            cx.drawImage(img, 0, 0);
+            node._pfDetailData = cx.getImageData(0, 0, c.width, c.height);
+        } catch (e) {
+            node._pfDetailData = null;
+        }
+        _pfSchedule(node);
+    };
+    img.onerror = () => {
+        if (node._pfDetailItem !== want) return;
+        node._pfDetailNote = "detail source preview expired -- run once";
+        _pfDraw(node);
+    };
+    img.src = viewURL(want);
 }
 
 function _pfRestore(node) {
@@ -669,8 +998,15 @@ app.registerExtension({
             saveBtn.style.cssText = abBtn.style.cssText;
             // Row 1: the buttons. The info sign sits UNCOLORED inline at
             // the start of the tip sentence below (screen wish, final cut).
+            const pickBtn = document.createElement("button");
+            pickBtn.textContent = "Pick white";
+            pickBtn.title = "Click, then click something in the preview that " +
+                "should be neutral grey or white: temperature and tint are set " +
+                "so that it is. Click again to cancel.";
+            pickBtn.style.cssText = abBtn.style.cssText;
             header.appendChild(abBtn);
             header.appendChild(saveBtn);
+            header.appendChild(pickBtn);
 
             const tips = document.createElement("div");
             tips.style.cssText =
@@ -706,6 +1042,12 @@ app.registerExtension({
             node._pfLut = null;
             node._pfLutName = "none";
             node._pfLutErr = false;
+            node._pfPicking = false;
+            node._pfPickNote = null;
+            node._pfAutoStats = null;
+            node._pfDetailItem = null;
+            node._pfDetailData = null;
+            node._pfDetailNote = null;
 
             // Live preview: every grading + LUT widget schedules a recompute
             // on change. The original callback is preserved (canon widgets
@@ -776,7 +1118,62 @@ app.registerExtension({
                 const x = (ev.clientX - rect.left) * (cv.width / rect.width);
                 return _clampFrac((x - r.x) / r.w);
             };
+            const setPicking = (on) => {
+                node._pfPicking = !!on;
+                pickBtn.style.background = on ? "#ff8c00" : "#333";
+                pickBtn.style.color = on ? "#111" : "#ff8c00";
+                cv.style.cursor = on ? "crosshair" : "ew-resize";
+                _pfDraw(node);
+            };
+            pickBtn.addEventListener("click", (ev) => {
+                node._pfPickNote = null;
+                setPicking(!node._pfPicking && !!node._pfSrcData);
+                if (!node._pfSrcData) {
+                    node._pfPickNote = "run once - the picker needs the preview";
+                    _pfDraw(node);
+                }
+                ev.preventDefault();
+                ev.stopPropagation();
+            });
+            const doPick = (ev) => {
+                // One pick, then the picker disarms (the divider is free
+                // again). The dial of the automatic is not touched (Viewer
+                // v064 lesson: the picker must not wake anything).
+                setPicking(false);
+                const src = node._pfSrcData;
+                const rect = cv.getBoundingClientRect();
+                if (!src || !rect.width || !rect.height) return;
+                const pt = _proxyPoint(
+                    (ev.clientX - rect.left) * (cv.width / rect.width),
+                    (ev.clientY - rect.top) * (cv.height / rect.height),
+                    src.width, src.height, cv.width, cv.height);
+                const rgb = pt ? _patchMean(src.data, src.width, src.height,
+                                            pt[0], pt[1], PICK_RADIUS) : null;
+                // The automatic runs BEFORE the white balance: pick on what
+                // the white balance will actually receive.
+                const s0 = rgb ? _autoRGB(rgb[0], rgb[1], rgb[2], _pfAuto(node).grade) : null;
+                const ans = s0 ? _pickWhite(s0[0], s0[1], s0[2])
+                    : { reason: "there is no picture there" };
+                if (ans.reason) {
+                    node._pfPickNote = ans.reason;
+                } else {
+                    _pfApplyParams(node, { temperature: ans.temperature, tint: ans.tint });
+                    node._pfPickNote = "white set: temperature " + ans.temperature +
+                        ", tint " + ans.tint + (ans.clamped ? " (cast beyond the range - clamped)" : "");
+                }
+                _pfDraw(node);
+                const note = node._pfPickNote;
+                setTimeout(() => {
+                    if (node._pfPickNote === note) { node._pfPickNote = null; _pfDraw(node); }
+                }, 5000);
+            };
             cv.addEventListener("pointerdown", (ev) => {
+                if (node._pfPicking) {
+                    doPick(ev);
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    return;
+                }
                 dragging = true;
                 cv.setPointerCapture(ev.pointerId);
                 node._pfFrac = fracFromEvent(ev);

@@ -66,6 +66,7 @@ import comfy.model_management as mm
 import folder_paths
 
 from .ph_runclock import _fmt_clock
+from .ph_progress import NodeProgress as _NodeProgress, blocking as _blocking   # v1010
 
 # v887: ComfyUI's VIDEO type (optional) -- the exact Media Loader / Power
 # Upscale pattern. Absent -> the video OUTPUT is simply None; the frames
@@ -833,7 +834,9 @@ class ULSInterpolate:
         n_hold = verdicts.count("hold")
         live = [t for t in tasks if verdicts[t[0]] == "interp"]
 
-        model = _load_model(ckpt_name, arch_ver, precision, device)
+        with _blocking("Interpolate", "vfi:load:%s" % ckpt_name, size=1.0,
+                       what="load %s" % ckpt_name):
+            model = _load_model(ckpt_name, arch_ver, precision, device)
         dtype = _DTYPE_MAP[precision]
         scales = _scale_list(arch_ver, scale_factor)
 
@@ -891,6 +894,17 @@ class ULSInterpolate:
             slot = pair * multiplier + int(round(t * multiplier))
             out[slot] = src
 
+        # v1010: the green bar + an ETA. The rate is learned per arch and
+        # precision in seconds per (task x megapixel), so a second run -- at any
+        # canvas -- opens with an estimate; this run's own pace takes over
+        # after the first chunk. The console keeps its own lines (below).
+        prog = _NodeProgress("Interpolate", "vfi:%s:%s" % (arch_ver, precision),
+                             total=len(live), unit="task", size=(w * h) / 1e6, quiet=True)
+        prog.__enter__()
+        if prog.est_total is not None and live:
+            print("[PLS] Interpolate:   estimate ~%s for %d task(s) (rate learned on earlier "
+                  "runs; this run corrects it after the first chunk)"
+                  % (_fmt_clock(prog.est_total), len(live)))
         t_start = _now()
         t_said = t_start
         done = 0
@@ -957,6 +971,7 @@ class ULSInterpolate:
                 ms = 1000.0 * (_now() - t_chunk) / max(1, len(batch))
                 done += len(batch)
                 pos += len(batch)
+                prog.tick(len(batch))
                 del f0, f1, mid          # the dels stay; empty_cache does NOT (v572)
 
                 if not probed:
@@ -994,9 +1009,12 @@ class ULSInterpolate:
 
                 if done < len(live) and (_now() - t_said) > 3.0:
                     t_said = _now()
-                    print("[PLS] Interpolate:   %d/%d tasks (%.0f ms/task, chunk %d)"
-                          % (done, len(live), 1000.0 * (_now() - t_start) / max(1, done), chunk))
+                    _ups, _left = prog.rate_left()
+                    print("[PLS] Interpolate:   %d/%d tasks (%.0f ms/task, chunk %d) -- ~%s left"
+                          % (done, len(live), 1000.0 * (_now() - t_start) / max(1, done), chunk,
+                             _fmt_clock(_left or 0)))
 
+        prog.__exit__(None, None, None)   # clean end: bar full, rate learned
         wall = _now() - t_start
         per = 1000.0 * wall / max(1, len(live))
         info = ("arch=%s %s | %df -> %df @ %.2f fps (x%d) | canvas %dx%d %s | "

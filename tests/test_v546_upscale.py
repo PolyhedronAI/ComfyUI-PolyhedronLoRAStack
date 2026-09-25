@@ -46,8 +46,8 @@ def main():
         _fail("a handoff gate must NOT appear in the stage chain")
 
     # -- frontend: 18 canonical, twins adjacent in DISPLAY, heal for old saves ----------
-    canon = re.findall(r'"([a-z_]+)"', re.search(r"const ORDER_CANON = \[(.*?)\];", js, re.S).group(1))
-    disp = re.findall(r'"([a-z_]+)"', re.search(r"const DISPLAY_ORDER = \[(.*?)\];", js, re.S).group(1))
+    canon = re.findall(r'"([a-z_0-9]+)"', re.search(r"const ORDER_CANON = \[(.*?)\];", js, re.S).group(1))
+    disp = re.findall(r'"([a-z_0-9]+)"', re.search(r"const DISPLAY_ORDER = \[(.*?)\];", js, re.S).group(1))
     # v549 hardening: the brittle length pin became INDEX pins. Index stability
     # is the real invariant - new fields APPEND, so this guard now survives them.
     if len(canon) != len(disp): _fail("DISPLAY_ORDER and ORDER_CANON diverged in length")
@@ -109,6 +109,18 @@ def main():
                     "result_preview", "process_preview",
                     "mute_staging_logs", "resize_method", "per_batch",
                     "vae_tiling", "pixel_stage"]
+    # v1008 AMENDMENT (4th): this guard's name regex was DIGIT-BLIND
+    # ('[a-z_]+'), so it never saw v1004's append (h3_refine / h3_audio) and
+    # stayed green over a list it could not read. v1008 renamed the pair in
+    # its slots (refine_order / audio_stream) -- no digit, so the old regex
+    # suddenly saw them and went red for the right reason. The regex reads
+    # digits now, and the v1004 append is pinned as the TAIL it is (the
+    # display law: new widgets join at the END).
+    if disp[len(DISPLAY_V852):] == ["refine_order", "audio_stream"]:
+        disp = disp[:len(DISPLAY_V852)]
+    else:
+        _fail("the DISPLAY tail after the v852 order must be exactly the v1004 "
+              "append (refine_order, audio_stream), got %s" % disp[len(DISPLAY_V852):])
     if disp != DISPLAY_V852:
         for i, (a, b) in enumerate(zip(disp, DISPLAY_V852)):
             if a != b:
@@ -145,7 +157,7 @@ def main():
     if not legacy_js:
         _fail("DISPLAY_LEGACY_V587 is gone - every pre-v589 stray save "
               "shifts again without it")
-    if re.findall(r'"([a-z_]+)"', legacy_js.group(1)) != DISPLAY_LEGACY:
+    if re.findall(r'"([a-z_0-9]+)"', legacy_js.group(1)) != DISPLAY_LEGACY:
         _fail("DISPLAY_LEGACY_V587 must be the v514..v588 order VERBATIM - "
               "it is the load path for history, not a suggestion")
     if canon[16:18] != ["sampler_low", "scheduler_low"]: _fail("the v546 pair must sit at indices 16/17 (appended, never inserted)")
@@ -156,7 +168,7 @@ def main():
         if disp.index(lo) != disp.index(hi) + 1:
             _fail(f"display: {lo} must sit directly under {hi} (law of proximity)")
     # v547: the INPUT sockets follow the same law
-    ins = re.findall(r'"([a-z_]+)"', re.search(r"const INPUT_DISPLAY_ORDER = \[(.*?)\];", js, re.S).group(1))
+    ins = re.findall(r'"([a-z_0-9]+)"', re.search(r"const INPUT_DISPLAY_ORDER = \[(.*?)\];", js, re.S).group(1))
     if ins[:2] != ["image", "video"]:
         _fail("what you upscale (image/video) must be the FIRST sockets")
     for hi, lo in (("model", "model_low"), ("upscale_model", "upscale_model_low")):

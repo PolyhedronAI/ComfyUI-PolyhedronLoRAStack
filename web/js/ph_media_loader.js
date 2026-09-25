@@ -93,7 +93,7 @@ const TILE_MIN = 84;
 const TILE_MAX = 140;
 const TILE_GAP = 8;
 
-// ── Grid order presets (v377) ───────────────────────────────────────────────
+// ── Grid order presets (v968) ───────────────────────────────────────────────
 // Public issue #4: the tile grid was hard-wired to newest-first with no way to
 // change it, and users reasonably read the BROWSER's order as the order the
 // batch would run in. Two separate things were wrong: the grid had no choice,
@@ -104,7 +104,7 @@ const TILE_GAP = 8;
 // so the grid can never drift into an order the backend cannot reproduce.
 //
 // `newest` is first and is the DEFAULT, because it is exactly what the grid
-// did before v377: an existing workflow opens looking the way it always did.
+// did before v968: an existing workflow opens looking the way it always did.
 const GRID_ORDERS = [
     { key: "newest",  label: "Newest first", mode: "mtime (oldest first)", rev: true,
       hint: "Most recently changed file first — what the grid has always done." },
@@ -121,7 +121,6 @@ const GRID_ORDERS = [
 function _gridOrder(key) {
     return GRID_ORDERS.find((o) => o.key === key) || GRID_ORDERS[0];
 }
-
 
 // Selection preview: a small clip may upscale up to this factor (kept modest so
 // the upscale stays reasonably crisp); large clips stay capped at the preview box,
@@ -251,8 +250,9 @@ function injectCSS() {
 .ph-media-btn { background:#2a2a2a; border:1px solid #444; color:#ddd; border-radius:5px;
     padding:3px 8px; cursor:pointer; white-space:nowrap; }
 .ph-media-btn:hover { background:#383838; }
-/* v377: the grid-order handle sits at the far right of the pager row that is
-   already there — it never adds a row. */
+/* v968: the grid-order handle sits at the far right of the pager row that is
+   already there — it never adds a row, and it keeps its distance from the
+   page buttons so a mis-click cannot re-order the grid. */
 .ph-media-btn.ph-media-order { margin-left:auto; font-size:11px; opacity:.85; }
 .ph-media-btn.ph-media-order:hover { opacity:1; }
 .ph-media-btn.ph-batch-toggle.on, .ph-media-btn.ph-audio-toggle.on { background:#2f5d2f; border-color:#4f8f4f; color:#dfffdf; }
@@ -552,7 +552,7 @@ async function openFolderPicker(startPath, onPin) {
         <button class="ph-fp-x">Cancel</button>
         <button class="ph-fp-pin">Choose</button>
       </div>`;
-    back.appendChild(box); document.body.appendChild(back);
+    back.appendChild(box); back.setAttribute?.("data-ph-overlay", "1"); document.body.appendChild(back);
 
     const curEl = box.querySelector(".ph-fp-cur");
     const listEl = box.querySelector(".ph-fp-list");
@@ -1432,6 +1432,7 @@ class MediaLoaderUI {
               <button class="ph-media-btn ph-batch-apply">Apply</button>
             </div>
           </div>`;
+        overlay.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
         document.body.appendChild(overlay);
         const $ = (s) => overlay.querySelector(s);
         const srcEl = $(".ph-batch-srcpath");
@@ -3184,11 +3185,12 @@ class MediaLoaderUI {
         const arr = names.slice();
         if (mode === "name (literal)") return arr.sort();   // lexicographic — matches Python sorted()
         if (mode === "mtime (oldest first)" || mode === "created") {
-            // v377: "created" now really reads the CREATION time. It used to
+            // v968: "created" now really reads the CREATION time. It used to
             // take mtime for both modes because the listing carried no ctime,
             // so this mirror disagreed with the backend's order_names (which
-            // has always stat'd st_ctime) -- the Batch preview showed one
-            // order and the run used another. The listing now ships ctime.
+            // has always stat'd st_ctime for "created") -- the Batch preview
+            // showed one order and the run used another. /uls/media/list now
+            // ships ctime; the fallback chain keeps old cached listings sane.
             const key = (n) => (mode === "created"
                 ? (byName[n]?.ctime ?? byName[n]?.mtime ?? 0)
                 : (byName[n]?.mtime || 0));
@@ -3648,7 +3650,9 @@ class MediaLoaderUI {
         const sel = this.state && this.state.file;
         if (sel) want.add(sel);                       // the selection needs w/h AND fps (fixed trim)
         if (!this.view.solo) {                        // the grid is drawn -> the page on screen
-            // v377: the page on screen is a page of the ORDERED list.
+            // v968: the page on screen is a page of the ORDERED list. Reading
+            // it off _files would probe the dimensions of tiles that are not
+            // being drawn the moment the order is anything but "newest".
             const ordered = this._orderedFiles();
             const start = this._page * GRID_PAGE;
             for (const f of ordered.slice(start, start + GRID_PAGE)) want.add(f.name);
@@ -3704,7 +3708,7 @@ class MediaLoaderUI {
         return map;
     }
 
-    // v377: apply the grid's own order preset to the listing. The wire order
+    // v968: apply the grid's own order preset to the listing. The wire order
     // from /uls/media/list stays newest-first (its documented contract); this
     // re-orders a COPY for display only, through the same _orderNames law the
     // batch uses, so what the grid shows is always an order the backend can
@@ -3717,7 +3721,7 @@ class MediaLoaderUI {
         const byName = {};
         for (const f of files) byName[f.name] = f;
         const names = this._orderNames(files.map((f) => f.name), ord.mode, byName);
-        // v378: _orderNames already breaks ties by natural name, so the result
+        // v969: _orderNames already breaks ties by natural name, so the result
         // is a function of the DATA, never of the file system (the listing got
         // the same treatment -- see _scan_media_fast). Reversing flips the tie
         // groups too, so in a reversed preset equal timestamps read
@@ -3788,8 +3792,9 @@ class MediaLoaderUI {
         } else {
             const info = document.createElement("div"); info.className = "ph-media-pageinfo";
             info.textContent = `${total} file${total === 1 ? "" : "s"}`;
-            // v377: the order handle sits in the pager bar that is already
-            // there -- one row, no second window, present on a one-page folder.
+            // v968: the order handle sits in the pager bar that is already
+            // there -- one row, no second window, present on a one-page folder
+            // too (that is where "why is this the order?" gets asked most).
             this.pagerEl.append(info, this._makeOrderButton());
         }
         // v683: renderGrid is the funnel EVERY path goes through (refresh,
@@ -3956,10 +3961,10 @@ class MediaLoaderUI {
     get mini() { return !!(this.node.properties && this.node.properties.ph_media_mini); }
     set mini(v) { this.node.properties = this.node.properties || {}; this.node.properties.ph_media_mini = !!v; }
 
-    // v377: the grid's order rides in its own properties key as well -- NOT in
+    // v968: the grid's order rides in its own properties key as well -- NOT in
     // widgets_values. Output slots and widgets are positional in saved
-    // workflows (the v376 lesson); a browser preference has no business in
-    // that list. Unset means "newest", so every workflow saved before v377
+    // workflows (the v965 lesson); a browser preference has no business in
+    // that list. Unset means "newest", so every workflow saved before v968
     // opens in the exact order it always had.
     get gridOrder() {
         const k = this.node.properties && this.node.properties.ph_media_order;
@@ -4100,7 +4105,7 @@ class MediaLoaderUI {
             <button class="ph-media-btn ph-br-x">Close</button>
           </div>
           <div class="ph-br-list"></div>`;
-        back.appendChild(box); document.body.appendChild(back);
+        back.appendChild(box); back.setAttribute?.("data-ph-overlay", "1"); document.body.appendChild(back);
         const listEl = box.querySelector(".ph-br-list");
         const filterEl = box.querySelector(".ph-br-filter");
         const files = this._files || [];
@@ -4187,6 +4192,7 @@ class MediaLoaderUI {
             if (media.videoWidth) dEl.textContent = this._dimText(media.videoWidth, media.videoHeight);
         });
         if (dEl.textContent || (f && f.kind === "video")) pop.appendChild(dEl);
+        pop.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
         document.body.appendChild(pop);
         const r = anchor.getBoundingClientRect();
         pop.style.left = Math.min(r.right + 8, window.innerWidth - 340) + "px";

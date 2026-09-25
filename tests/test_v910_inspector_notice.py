@@ -141,6 +141,12 @@ _need(_from_dict,
 
 # --- B1/B2: drive the real code --------------------------------------------
 ns = {"json": json, "re": re}
+# v987: since v986 the Inspector shortens LoRA names with the shared
+# name_shortener (the Stack module imports it at top as _ov_names). The lifted
+# class needs the REAL function beside it, not a stub.
+sys.path.insert(0, os.path.join(ROOT, "nodes"))
+import uls_overlap_math as _OVM  # noqa: E402
+ns["_ov_names"] = _OVM.name_shortener
 try:
     exec(compile(SEG, "<inspector>", "exec"), ns)
     node_obj = ns["ULSInspector"]()

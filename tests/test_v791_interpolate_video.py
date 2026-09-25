@@ -75,11 +75,15 @@ def _pkg(src=None):
     sys.modules[name] = pkg
     shutil.copy(os.path.join(ROOT, "nodes", "ph_runclock.py"),
                 os.path.join(tmp, "ph_runclock.py"))
+    # v1010 (declared): ph_interpolate imports the shared progress module too
+    shutil.copy(os.path.join(ROOT, "nodes", "ph_progress.py"),
+                os.path.join(tmp, "ph_progress.py"))
     ip_path = os.path.join(tmp, "ph_interpolate.py")
     with io.open(ip_path, "w", encoding="utf-8") as fh:
         fh.write(src)
     for mod_name, path in (
             ("ph_runclock", os.path.join(tmp, "ph_runclock.py")),
+            ("ph_progress", os.path.join(tmp, "ph_progress.py")),
             ("ph_interpolate", ip_path)):
         full = name + "." + mod_name
         spec = importlib.util.spec_from_file_location(full, path)

@@ -49,6 +49,8 @@ import { registerVueView } from "./uls_vue_views.js";
 import {
     openLoraSelect, showWeightInput, newRow, loadLoraList, getLoraList,
     applyNorm, applyNext, showGroupModePopup, openPreviewOverlay,
+    // v981: the ONE writer for the group popup's choices (was: thrown away)
+    groupPopupHandlers,
     // v937: parity with the painted view -- CALLED, never rebuilt
     insertRowTrigger, openStackOrderInput, checkConflicts, WEIGHT_HDR_TIP_LINES,
     // v949: group colours -- the painted row's palette, never a copy
@@ -85,6 +87,7 @@ const CSS = `
   cursor:pointer; color:#1a1a2a; }
 .uls-dom-obadge.set { background:#f0c050; border:1px solid #f0c050; }
 .uls-dom-obadge.conflict { background:#ff4444; border:1px solid #ff4444; color:#fff; }
+.uls-dom-gmult { margin-left:3px; font-size:9px; font-weight:bold; color:#ffb040; }
 .uls-dom-rwarn { color:#ff7744; font-size:11px; cursor:help; }
 .uls-dom-gwarn { color:#88aaee; font-size:10px; padding:1px 0; }
 .uls-dom-gwarn.warn { color:#ff8844; }
@@ -302,16 +305,32 @@ function render(node, root) {
         gl.textContent = row.group && row.group !== "\u2014"
             ? row.group.slice(0, 4).toUpperCase() : "GRP";
         grp.appendChild(gl);
-        grp.title = "Group and its merge mode";
+        // v981: a group strength != 1 is shown on the pill itself.
+        const gmv = uls.groupMult?.[row.group];
+        const capv = !!uls.groupCap?.[row.group];          // v983
+        if (capv || (typeof gmv === "number" && Math.abs(gmv - 1) > 1e-9)) {
+            const gm = document.createElement("span");
+            gm.className = "uls-dom-gmult";
+            gm.textContent = ((typeof gmv === "number" && Math.abs(gmv - 1) > 1e-9)
+                ? "\u00d7" + gmv.toFixed(2) : "") + (capv ? " cap" : "");
+            grp.appendChild(gm);
+        }
+        grp.title = "Group, its merge mode, its strength and energy cap";
         grp.onclick = (e) => {
             // The existing floating group popup -- shared, not rebuilt.
+            // v981: its choices go through the SAME writer as the painted
+            // view. Before, both callbacks were `() => commit(...)` and threw
+            // the choice away, and the DARE variant came from the node-wide
+            // legacy key instead of the group.
+            const h = groupPopupHandlers(node, row.group, () => commit(node, root));
             showGroupModePopup(
                 row.group, uls.groupModes?.[row.group],
-                uls.dare_variant, uls.groupTrim?.[row.group],
+                uls.groupDare?.[row.group], uls.groupTrim?.[row.group],
                 uls.groupResolve?.[row.group],
                 uls.groupTrimAmount?.[row.group], e,
-                () => commit(node, root), () => commit(node, root),
-                uls.apply);
+                h.onChange, h.onToggle,
+                uls.apply, uls.groupMult?.[row.group], undefined,  // no Bake in the public build
+                uls.groupCap?.[row.group]);                          // v983
         };
         el.appendChild(grp);
 

@@ -31,10 +31,6 @@ neither smuggle unknown keys nor paths nor non-numeric junk.
         basename wound (lut_name keeps its path) -> driven breaks; coercion
         wound (junk becomes 0.0 instead of dropped) -> driven breaks.
 """
-
-# v372 (public build): the Filter routes live in their own module,
-# nodes/ph_filter_routes.py -- uls_routes.py stays the Stack's file. Same
-# source text, different path; the checks below are unchanged.
 import os
 import sys
 
@@ -44,6 +40,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PY_SRC = open(os.path.join(ROOT, "nodes", "ph_filter.py"), encoding="utf-8").read()
 JS_SRC = open(os.path.join(ROOT, "web", "js", "ph_filter.js"), encoding="utf-8").read()
+# v372 (public build): the Filter routes live in their own module,
+# nodes/ph_filter_routes.py -- uls_routes.py stays the Stack's file. Same
+# source text, different path; the checks below are unchanged.
 ROUTES_SRC = open(os.path.join(ROOT, "nodes", "ph_filter_routes.py"), encoding="utf-8").read()
 
 
@@ -103,9 +102,12 @@ if "italic" in JS_SRC:
 if "Every numeric field doubles as a slider" not in PY_SRC:
     _fail("the fields-are-sliders sentence must open the node DESCRIPTION "
           "(shows in the native tooltip -- the one surface proven on screen)")
-if PY_SRC.count("Click-drag to scrub live.") != 13:
+# RE-GROUNDED v1000: sharpen_threshold is the 14th FLOAT control (declared
+# canon append) and carries the sentence like the other thirteen.
+# RE-GROUNDED v1001: detail_amount is the 15th.
+if PY_SRC.count("Click-drag to scrub live.") != 15:
     _fail("every FLOAT control must carry the scrub sentence in its own "
-          "field tooltip (expected 13)")
+          "field tooltip (expected 15)")
 for needle, msg in [
     ('"\\u{1F6C8} Click-drag a value: scrubs it live. Click once: type it."',
      "the info sign must sit UNCOLORED inline at the start of the scrub sentence"),

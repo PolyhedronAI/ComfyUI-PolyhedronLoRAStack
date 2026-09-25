@@ -76,6 +76,9 @@ def _fstring_texts(node):
 
 
 fallbacks = [(ln, fb) for ln, lit, fb in _fstring_texts(fn) if "falling back to SEQ" in lit]
+# v986: nine -- the mixed-naming fallback is gone, such a group now merges per
+# layer (test_v986). v987: ten -- the target-clash guard (two spellings of one
+# weight) is a new fallback. Every one carries {_fb}.
 _need(len(fallbacks) == 10 and all(fb for _, fb in fallbacks),
       "A  all %d 'falling back to SEQ' f-strings carry {_fb}" % len(fallbacks))
 _need(fb_assign and all(ln > fb_assign[0] for ln, _ in fallbacks), "A  `_fb` is assigned before its first use")

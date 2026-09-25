@@ -37,7 +37,14 @@ JS_SRC = open(os.path.join(ROOT, "web", "js", "ph_filter.js"), encoding="utf-8")
 
 CANON = ("exposure", "temperature", "tint", "contrast", "gamma", "shadows",
          "highlights", "saturation", "vibrance", "hue_shift", "lut_name",
-         "lut_strength", "sharpen_amount", "sharpen_radius", "preset")
+         "lut_strength", "sharpen_amount", "sharpen_radius", "preset",
+         # v998 (F2): appended -- DECLARED canon change, the append-only law
+         # held (the fifteen above untouched, the new key at the end)
+         "auto_mode",
+         # v1000 (F3): appended -- DECLARED, same law
+         "sharpen_threshold",
+         # v1001 (F4): appended -- DECLARED, same law
+         "detail_amount")
 
 
 def _fail(msg):
@@ -103,7 +110,11 @@ if canon_decl != CANON:
 mreq = re.search(r'"required"\s*:\s*\{(.*?)\n\s*\}\s*,?\s*\n\s*\}', PY_SRC, re.S)
 if not mreq:
     _fail("required INPUT_TYPES block not found")
-keys = [k for k in re.findall(r'\n\s*"(\w+)"\s*:\s*\(', mreq.group(1))]
+# RE-GROUNDED v1001: INPUT_TYPES gained an "optional" section (the
+# detail_source IMAGE input -- not a widget, no widgets_values slot). The
+# pattern above reaches past the required block's end into it, so the
+# required block is cut at the optional section before reading the keys.
+keys = [k for k in re.findall(r'\n\s*"(\w+)"\s*:\s*\(', mreq.group(1).split('"optional"')[0])]
 if keys and keys[0] == "image":
     keys = keys[1:]  # the image input precedes the widget canon
 if tuple(keys) != CANON:

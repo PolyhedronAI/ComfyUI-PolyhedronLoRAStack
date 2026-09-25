@@ -100,6 +100,36 @@ except Exception:
     VideoFromFile = VideoFromComponents = VideoComponents = None
     _HAS_VIDEO_API = False
 
+# v1010: the shared progress instrument (green bar + console + learned ETA).
+# A harness that loads this file alone gets silent stand-ins -- the node's
+# work never depends on its instruments.
+try:
+    from .ph_progress import NodeProgress as _NodeProgress, blocking as _blocking
+except Exception:
+    try:
+        from ph_progress import NodeProgress as _NodeProgress, blocking as _blocking
+    except Exception:
+        class _blocking:
+            est_total = est = None
+
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def tick(self, n=1):
+                pass
+
+            def rate_left(self):
+                return None, None
+
+        _NodeProgress = _blocking
+
+
 from .ph_media_util import (pix_fmt_has_alpha, rgb_and_mask_from_rgba,
                             rgb_and_mask_from_still,
                             select_frames, frames_target_and_offenders,
@@ -142,8 +172,9 @@ _STILL_VIDEO_MAX_FRAMES = 600
 # ────────────────────────────────────────────────────────────────────────────
 
 
-# v377: the extension law moved to ph_media_util so the routes read the SAME
-# tuples (see the note there). These names stay as local aliases.
+# v968: the extension law moved to ph_media_util so the routes read the SAME
+# tuples (see the note there). These names stay as local aliases -- the rest of
+# this module, and the guards, address them exactly as before.
 _IMAGE_EXTS = _LAW_IMAGE_EXTS
 _VIDEO_EXTS = _LAW_VIDEO_EXTS + (".gif",)   # gif: either path (routes say image)
 
@@ -342,11 +373,13 @@ def _decode_image_rgba(path: str):
     if not _HAS_PIL:
         raise RuntimeError("[PLS] MediaLoader: Pillow is required to load images "
                            "(pip install pillow).")
-    # v377: listing a format and DECODING it are two questions. The grid lists
+    # v968: listing a format and DECODING it are two questions. The grid lists
     # .avif because the extension law says it is an image; whether THIS Pillow
-    # can open it depends on the install. Say so in words -- the bare Pillow
-    # failure names neither the format nor the cure. This is the ONE funnel
-    # both the single and the batch image path go through.
+    # can open it depends on the install (native from 11.3, otherwise the
+    # pillow-avif-plugin package). Say so in words here -- the bare Pillow
+    # failure is an UnidentifiedImageError that names neither the format nor
+    # the cure. This is the ONE funnel both the single and the batch image
+    # path go through, so the message cannot be bypassed.
     if os.path.splitext(path)[1].lower() == ".avif" and not avif_decoder_ready():
         raise RuntimeError("[PLS] MediaLoader: cannot decode '%s'. %s"
                            % (os.path.basename(path), AVIF_HINT))
@@ -496,12 +529,28 @@ def _load_video_av(path: str, frame_load_cap: int, frame_skip: int, force_fps: f
         except Exception:
             native_fps = 0.0
         idx = 0
-        for frame in container.decode(vstream):
-            if len(frames) >= want:
-                break
-            if idx >= skip:
-                frames.append(frame.to_ndarray(format="rgba"))          # [H,W,4] uint8
-            idx += 1
+        # v1010: the container's own frame count (or duration x rate) sizes
+        # the bar; a stream that states neither decodes without one.
+        try:
+            _known = int(vstream.frames or 0)
+            if _known <= 0 and vstream.duration and vstream.time_base and native_fps:
+                _known = int(float(vstream.duration * vstream.time_base) * native_fps)
+        except Exception:
+            _known = 0
+        _total = max(0, min(want, _known - skip)) if _known > 0 else 0
+        try:
+            _mp = float(vstream.codec_context.width * vstream.codec_context.height) / 1e6
+        except Exception:
+            _mp = 1.0
+        with _NodeProgress("MediaLoader", "load:video:av", total=_total, unit="frame",
+                           size=max(1e-3, _mp)) as _prog:
+            for frame in container.decode(vstream):
+                if len(frames) >= want:
+                    break
+                if idx >= skip:
+                    frames.append(frame.to_ndarray(format="rgba"))          # [H,W,4] uint8
+                    _prog.tick()
+                idx += 1
     finally:
         container.close()
 
@@ -539,13 +588,22 @@ def _load_video_cv2(path: str, frame_load_cap: int, frame_skip: int, force_fps: 
 
     frames = []
     idx = 0
-    while len(frames) < want:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        if idx >= skip:
-            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        idx += 1
+    try:
+        _known = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        _mp = float(cap.get(cv2.CAP_PROP_FRAME_WIDTH) * cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) / 1e6
+    except Exception:
+        _known, _mp = 0, 1.0
+    _total = max(0, min(want, _known - skip)) if _known > 0 else 0
+    with _NodeProgress("MediaLoader", "load:video:cv2", total=_total, unit="frame",
+                       size=max(1e-3, _mp)) as _prog:
+        while len(frames) < want:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if idx >= skip:
+                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                _prog.tick()
+            idx += 1
     cap.release()
 
     if not frames:

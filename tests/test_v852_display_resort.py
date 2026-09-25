@@ -92,8 +92,11 @@ def _sig(order):
 
 # ---------------------------------------------------------------------------
 def r1_canon_untouched():
-    if not CANON or CANON[-1] != "sigma_shift_low":
-        return _fail("ORDER_CANON must still end with sigma_shift_low -- a "
+    # v1004 RE-GROUNDING (declared): "ends with sigma_shift_low" was the v852
+    # situation; the promise is that the re-sort moved NOTHING in the canon --
+    # sigma_shift_low keeps slot 26, whatever was appended behind it later.
+    if not CANON or "sigma_shift_low" not in CANON or CANON.index("sigma_shift_low") != 26:
+        return _fail("ORDER_CANON must still carry sigma_shift_low at slot 26 -- a "
                      "display re-sort may NEVER move the serialised order (#577)")
     tree = ast.parse(open(PY_PATH, encoding="utf-8").read())
     sys.path.insert(0, HERE)
@@ -106,13 +109,13 @@ def r1_canon_untouched():
                     live = scan._order_of(sub)[0]
     if live is None:
         return _fail("could not read INPUT_TYPES")
-    if live[-1] != "sigma_shift_low":
-        return _fail("INPUT_TYPES no longer ends with sigma_shift_low")
+    if "sigma_shift_low" not in live or live.index("sigma_shift_low") != 25:
+        return _fail("INPUT_TYPES no longer carries sigma_shift_low at slot 25 (v1004: later appends sit behind it)")
     # the canon list carries control_after_generate, which INPUT_TYPES does not
     if [n for n in CANON if n != "control_after_generate"] != live:
         return _fail("ORDER_CANON drifted from INPUT_TYPES:\n  js %r\n  py %r"
                      % (CANON, live))
-    _ok("canon untouched: sigma_shift_low still last in INPUT_TYPES and canon")
+    _ok("canon untouched: sigma_shift_low keeps its slot in INPUT_TYPES and canon")
 
 
 def r2_permutation_and_twins():
@@ -223,6 +226,7 @@ def _run_js(lines):
         re.search(r"function _tableToCanon[\s\S]*?\n\}", JS).group(0),
         re.search(r"function _legacyDisplayToCanon[\s\S]*?\n\}", JS).group(0),
         re.search(r"function _saveOrderOf[\s\S]*?\n\}", JS).group(0),
+        re.search(r"function _saveOrderByTypes[\s\S]*?\n\}", JS).group(0),   # v1005
         re.search(r"function _displayEra[\s\S]*?\n\}", JS).group(0),
         re.search(r"function _canonToDisplay[\s\S]*?\n\}", JS).group(0),
         re.search(r"function _displayToCanon[\s\S]*?\n\}", JS).group(0),
@@ -324,19 +328,35 @@ def r5_every_era_comes_home():
 
 
 def r6_marker_is_immune():
+    # v1005 RE-GROUNDING (declared): "a marked save is canon by construction"
+    # was FALSE in the field for months -- the Vue frontend's DOM tail made
+    # the serialize-side permutation a no-op while the marker was still
+    # written (measured 24.09.2026, browser). The promise now: the TYPES
+    # decide; the marker decides only where the types cannot (junk).
     out = _run_js([
         "const junk = new Array(ORDER_CANON.length).fill('x');",
         "if (_saveOrderOf(junk, true) !== 'canon') {",
-        "  console.error('FAIL: a MARKED save must be canon, unasked');",
+        "  console.error('FAIL: a MARKED save with inconclusive types must be canon');",
+        "  process.exit(1); }",
+        "const disp = DISPLAY_ORDER.map(n => ({dual_moe:false,upscale_by:1,upscale_by_low:1,"
+        "final_upscale_by:1.4,denoise:0.5,denoise_low:0.25,steps:8,steps_low:5,cfg:1,cfg_low:1,"
+        "seed:5,control_after_generate:'randomize',sampler_name:'euler',sampler_low:'same as high',"
+        "scheduler:'simple',scheduler_low:'same as high',tile_size:1024,tile_overlap:64,sigma_shift:0,"
+        "sigma_shift_low:-1,result_preview:true,process_preview:'Off',mute_staging_logs:true,"
+        "resize_method:'lanczos (cpu)',per_batch:8,vae_tiling:'Off',pixel_stage:'model + fit',"
+        "refine_order:'after pixel',audio_stream:'keep'})[n]);",   # v1008: slots 27/28 renamed (declared)
+        "if (_saveOrderOf(disp, true) !== 'display-current') {",
+        "  console.error('FAIL: a MARKED save whose TYPES say display must be read by its types, got ' + _saveOrderOf(disp, true));",
         "  process.exit(1); }",
         "console.log('JS OK');",
     ])
     if out.returncode != 0 or "JS OK" not in out.stdout:
         return _fail("marker: %s %s" % (out.stdout.strip(), out.stderr.strip()))
-    if "if (marked) return \"canon\";" not in JS:
-        return _fail("the marker short circuit is gone -- it is what makes a "
-                     "display re-sort survivable at all")
-    _ok("a marked save short-circuits the fingerprint entirely")
+    if "if (marked) return \"canon\";" in JS:
+        return _fail("the marker short circuit is back -- it is what scrambled the v1003 save under v1004")
+    if 'return marked ? "canon" : "unknown"' not in JS:
+        return _fail("the marker must remain the tie-break for inconclusive types")
+    _ok("types first, the marker only where they are inconclusive (v1005)")
 
 
 def main():

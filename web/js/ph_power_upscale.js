@@ -60,6 +60,7 @@ const ORDER_CANON = [
     "pixel_stage",                        // v564 (appended)
     "final_upscale_by",                   // v582 (appended - every old index keeps its slot)
     "sigma_shift_low",                    // v851 (appended - every old index keeps its slot)
+    "refine_order", "audio_stream",       // v1004 appended (as h3_refine/h3_audio); v1008 renamed, same slots
 ];
 // What the USER sees: every LOW twin directly under its HIGH partner (the Sampler's v494
 // pattern). Same names, permuted; everything below is index-based (widgets_values is
@@ -91,6 +92,7 @@ const DISPLAY_ORDER = [
                           // Rollback anchor: v851.
     "result_preview", "process_preview", "mute_staging_logs", "resize_method",
     "per_batch", "vae_tiling", "pixel_stage",
+    "refine_order", "audio_stream",     // v1004 appended; v1008 renamed (same slots, same values)
 ];
 // ── v585 LAW (measured 2026-07-13, the hard way): the live frontend
 //    serialises widgets_values in the WIDGET (display) order, not in
@@ -213,6 +215,8 @@ const CANON_DEFAULTS = {
     24: "model + fit",   // pixel_stage
     25: 1.0,             // final_upscale_by (v582: 1.0 = the old law, bit for bit)
     26: -1.0,            // sigma_shift_low (v851: -1 = "same as high" = the old law)
+    27: "after pixel",   // refine_order (v1004 as h3_refine; v1008: read by every model)
+    28: "keep",          // audio_stream (v1004 as h3_audio; joint models only)
 };
 // v584: the numeric ranges, MIRRORED from INPUT_TYPES for the same reason
 // CANON_DEFAULTS exists - a live ComfyUI widget is not guaranteed to expose
@@ -235,6 +239,26 @@ const CANON_RANGES = {
     25: [0.25, 8.0],                     // final_upscale_by
     26: [-1.0, 20.0],                    // sigma_shift_low (v851: -1 is the sentinel)
 };                                       // keep in step with the python widget
+// v1005: the DOM widgets (result viewer, process pane) serialise as '' at the
+// END of widgets_values on the Vue frontend. Every permutation and every heal
+// below is written for the WIDGET part alone, so the tail is split off first
+// and put back last. Only trailing '' / null entries are taken, at most as
+// many as there are DOM widgets -- a real dial never serialises as ''.
+const DOM_TAIL = ["pls_pu_result", "pls_pu_process"];
+function _splitDomTail(arr) {
+    if (!Array.isArray(arr)) return { core: arr, tail: [] };
+    const core = arr.slice();
+    const tail = [];
+    while (core.length && tail.length < DOM_TAIL.length
+           && (core[core.length - 1] === "" || core[core.length - 1] === null)) {
+        tail.unshift(core.pop());
+    }
+    return { core, tail };
+}
+function _joinDomTail(core, tail) {
+    return core.concat(tail);
+}
+
 function _padToCanon(arr) {
     if (!Array.isArray(arr) || arr.length >= ORDER_CANON.length) return arr;
     const out = arr.slice();
@@ -387,8 +411,22 @@ function _legacyDisplayToCanon(arr) {
 // "which display era". The last two rows are identical here on purpose: that
 // pair differs only in slots 19..24, which is what _displayEra() then reads.
 function _saveOrderOf(vals, marked) {
-    if (marked) return "canon";
+    // v1005: the marker is a TIE-BREAK, not a verdict. Measured 24.09.2026 in
+    // the sandbox browser (frontend 1.49.6): every save since the two DOM
+    // widgets joined the tail carried the marker AND display-ordered values,
+    // because _displayToCanon's length check (27 widgets + 2 DOM entries != 27)
+    // made the serialize-side permutation a silent no-op -- and the load-side
+    // one too, so the two lies cancelled. v1004 lengthened the canon to 29,
+    // an old 27+2 save slipped through the check as "canon" and came out
+    // scrambled (denoise 0.97 -> 1, steps 8 -> 1.4, seed gone, 19 repairs).
+    // The TYPES decide (v589); the marker speaks only when they cannot.
     if (!Array.isArray(vals) || vals.length < 24) return "canon";  // pre-Vue era: the hook ran
+    const byTypes = _saveOrderByTypes(vals);
+    if (byTypes !== "unknown") return byTypes;
+    return marked ? "canon" : "unknown";
+}
+
+function _saveOrderByTypes(vals) {
     const num = (x) => typeof x === "number";
     const str = (x) => typeof x === "string";
     const bool = (x) => typeof x === "boolean";
@@ -537,6 +575,41 @@ function _applyModeState(node) {
     if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
 }
 
+// ── v1004: the verdict -- show it, and hide what the joint refine never reads ──
+// The backend's ONE line (pls_pu_verdict) lands on the result viewer and in
+// node.properties.pu_verdict (serialised with the workflow, never read by the
+// backend -- the v740 Image-Lock pattern). A joint run also HIDES the dials the
+// whole-clip refine does not read (tile_size / tile_overlap / sigma_shift) with
+// the same v888 mechanics as DUAL_ONLY; an ordinary run brings them back.
+// Widgets keep their slot in node.widgets, so widgets_values is untouched (#577).
+// v1008: EVERY model gets a verdict now (tile path too), so "joint" is no
+// longer read off the text: the backend sends the path (pls_pu_path), kept in
+// node.properties.pu_path. A save from v1004-v1007 carries only the text --
+// its "H3 ..." line still reads as joint (legacy branch below).
+const JOINT_UNREAD = ["tile_size", "tile_overlap", "sigma_shift"];
+
+function _applyVerdict(node, text, fromLoad, path) {
+    const t = String(text || "");
+    node.properties = node.properties || {};
+    if (!fromLoad) {
+        node.properties.pu_verdict = t;
+        node.properties.pu_path = String(path || "");
+    }
+    if (node._pvVerdict) {
+        node._pvVerdict.textContent = t;
+        node._pvVerdict.title = t;
+        node._pvVerdict.style.display = t ? "block" : "none";
+    }
+    const p = String((fromLoad ? node.properties.pu_path : path) || "");
+    const joint = (p === "joint") || (p === "" && t.indexOf("H3") === 0);   // legacy v1004-v1007 save
+    let moved = false;
+    for (const name of JOINT_UNREAD) {
+        if (_setDisabled(_findWidget(node, name), joint)) moved = true;
+    }
+    if (moved) refit(node);
+    if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
+}
+
 // ═══ v549: result viewer ════════════════════════════════════════════════════════
 // The finished frames, INSIDE the node - the ph_save v532-v536 mechanics as a
 // lean second instance (deliberately NOT a refactor of ph_save.js, live-OK at
@@ -658,7 +731,16 @@ function _buildViewer(node) {
     loop.textContent = "⟳"; loop.title = "Loop";
     loop.style.cssText = "cursor:pointer; user-select:none; opacity:.4;";
     bar.append(btn, scrub, count, loop);
-    box.append(img, bar);
+    // v1004: the VERDICT line -- what the run did (v1008: for every model).
+    // Frank's law: a node shows what it does, it does not only say so in the
+    // console. Overlaid on the finished frames (top edge), so the viewer's
+    // geometry does not change; empty -> hidden.
+    const verdict = document.createElement("div");
+    verdict.style.cssText = "position:absolute; left:0; right:0; top:0; display:none;" +
+        " padding:2px 8px; background:rgba(0,0,0,.6); font:11px monospace;" +
+        " color:#ffd27a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;";
+    box.append(img, bar, verdict);
+    node._pvVerdict = verdict;
 
     btn.onclick = () => { node._pvTimer ? _pvStop(node) : _pvPlay(node); };
     loop.onclick = () => {
@@ -848,7 +930,8 @@ function _procFit(node) {
 // (nodes/ph_power_upscale.py::_emit_input_preview). The v565 lesson
 // applies unchanged: a stage this pane does not know must SAY so ("?"),
 // never guess - so a new stage is added HERE, not left to the fallback.
-const STAGE_MARK = { input: "IN", high: "H", low: "L", pixel: "P" };
+const STAGE_MARK = { input: "IN", high: "H", low: "L", single: "S", pixel: "P", final: "F",
+                     joint: "AV", h3: "H3" };   // v1008: joint = video+audio refine (h3 kept for old events)
 // v567: the pane shares the backend's clock. elapsed/eta ride the probe
 // payload, so console, bar and HUD tick on the SAME numbers - Frank's
 // congruence ask. Format mirrors the backend's _fmt_clock exactly.
@@ -999,7 +1082,10 @@ function _procApply(node, d) {
         node._procH = PROC_HEAD_H + (node._procOpen ? PROC_BODY_H : 0);
         node.setSize([node.size[0], node.computeSize()[1]]);   // height only (v531)
     }
-    node._procTile.src = "data:image/jpeg;base64," + d.jpeg;   // onload -> _procFit
+    // v1007: a HEARTBEAT event carries no picture (the encode / decode / a
+    // running step have nothing to show yet) -- the last tile stays, the HUD
+    // and the clock move. Only a frame that arrives replaces the picture.
+    if (d.jpeg) node._procTile.src = "data:image/jpeg;base64," + d.jpeg;   // onload -> _procFit
     // v565: three stages now, not two. The old ternary was `high ? "H" : "L"`,
     // which would have labelled every pixel-stage frame "L" - a confident lie.
     // A stage this pane does not know must SAY so ("?"), never guess.
@@ -1012,9 +1098,25 @@ function _procApply(node, d) {
         : "";
     // v885: the input frame has no tile and no step - counting them would be
     // a confident lie. It states what it IS: the source, its size, its length.
+    // v1007: the refine's phases -- encode / sample step i/n / decode --
+    // with the phase's own elapsed and what is left of its estimate, then the
+    // run clock. The same numbers the console line and the bar carry.
+    // v1008: EVERY stage has them now (the tile refine's heartbeat too); a
+    // whole-clip stage (joint, legacy h3) has no tile to count.
+    const wholeClip = (d.stage === "joint" || d.stage === "h3");
+    const phaseTxt = d.phase
+        ? (wholeClip ? "" : " · Tile " + d.tile + "/" + d.tiles) + " · " + d.phase + (d.phase === "sample" ? " " + d.step + "/" + d.steps : "") +
+          ((d.phase_elapsed !== undefined && d.phase_elapsed !== null)
+              ? " " + _fmtClock(d.phase_elapsed) +
+                ((d.phase_left !== undefined && d.phase_left !== null)
+                    ? " (~" + _fmtClock(d.phase_left) + " left)" : "")
+              : "")
+        : null;
     node._procHud.textContent = ((d.stage === "input")
         ? st + " · source " + d.canvas[0] + "×" + d.canvas[1] +
           " · " + d.steps + (d.steps === 1 ? " frame" : " frames")
+        : (phaseTxt !== null)
+        ? st + phaseTxt
         : (d.stage === "pixel")
         ? st + " · Chunk " + d.tile + "/" + d.tiles +
           " · Frame " + d.step + "/" + d.steps
@@ -1024,6 +1126,8 @@ function _procApply(node, d) {
         const nT = Math.max(1, d.tiles | 0);
         if (d.stage === "input") {
             node._procMapLbl.textContent = "source";   // v885: not a grid yet
+        } else if (wholeClip) {
+            node._procMapLbl.textContent = "1 latent";   // v1007: the whole clip, one latent
         } else {
             const noun = (d.stage === "pixel") ? (nT === 1 ? "Chunk" : "chunks")
                                                : (nT === 1 ? "Tile"  : "tiles");
@@ -1069,7 +1173,10 @@ app.registerExtension({
         api.addEventListener("polyhedron.pu_tile", (e) => {
             try {
                 const d = (e && e.detail) || {};
-                if (!d.node || !d.jpeg) return;
+                // v1007: a heartbeat carries a phase and no picture -- it must
+                // pass. (Measured in the sandbox browser: the old gate dropped
+                // every heartbeat and the HUD stayed dark.)
+                if (!d.node || (!d.jpeg && !d.phase)) return;
                 const node = app.graph.getNodeById(Number(d.node));
                 if (!node || node.type !== NODE_TYPE) return;
                 if (!_procFirstLogged) {
@@ -1144,6 +1251,9 @@ app.registerExtension({
                     // v588: the save states its own order - v589: or gets read
                     // by its types. Guessing is over either way.
                     const marked = !!(info.properties && info.properties[CANON_MARKER]);
+                    const _split = _splitDomTail(info.widgets_values);   // v1005
+                    const _tail = _split.tail;
+                    info.widgets_values = _split.core;
                     info.widgets_values = _healPreV546(info.widgets_values);
                     info.widgets_values = _healPreV549(info.widgets_values);
                     info.widgets_values = _healPreV550(info.widgets_values);
@@ -1186,6 +1296,7 @@ app.registerExtension({
                     if (this._plsDisplayReordered) {
                         info.widgets_values = _canonToDisplay(info.widgets_values);
                     }
+                    info.widgets_values = _joinDomTail(info.widgets_values, _tail);   // v1005
                 }
             } catch (err) { /* never break configure */ }
             const r = _configure ? _configure.apply(this, arguments) : undefined;
@@ -1200,11 +1311,19 @@ app.registerExtension({
             const r = _onSerialize ? _onSerialize.apply(this, arguments) : undefined;
             try {
                 if (this._plsDisplayReordered && o && Array.isArray(o.widgets_values)) {
-                    o.widgets_values = _displayToCanon(o.widgets_values);
-                    // v588: the save now CARRIES the proof. Marked = these values
-                    // are canon-ordered by construction; only this branch may mark.
-                    o.properties = o.properties || {};
-                    o.properties[CANON_MARKER] = 588;
+                    // v1005: the DOM tail is split off so the permutation really
+                    // fires (it used to be a silent no-op on the Vue frontend --
+                    // see _saveOrderOf). The marker is now written by a branch
+                    // that PROVABLY permuted: length equality is asserted, not
+                    // assumed.
+                    const s = _splitDomTail(o.widgets_values);
+                    if (s.core.length === ORDER_CANON.length) {
+                        o.widgets_values = _joinDomTail(_displayToCanon(s.core), s.tail);
+                        // v588: the save now CARRIES the proof. Marked = these values
+                        // are canon-ordered by construction; only this branch may mark.
+                        o.properties = o.properties || {};
+                        o.properties[CANON_MARKER] = 588;
+                    }
                 }
             } catch (err) { /* never break serialize */ }
             return r;
@@ -1232,6 +1351,14 @@ app.registerExtension({
             try {
                 _pvApply(this, message && message.pls_pu_preview);
             } catch (e) { /* a preview must never break a run */ }
+            try {
+                // v1004: the verdict rides in the same payload; it is remembered
+                // in node.properties so a reload shows the last run's truth.
+                const v = message && message.pls_pu_verdict;
+                const pth = message && message.pls_pu_path;   // v1008
+                _applyVerdict(this, Array.isArray(v) ? String(v[0] || "") : "", false,
+                              Array.isArray(pth) ? String(pth[0] || "") : "");
+            } catch (e) { /* a verdict must never break a run */ }
             return r;
         };
 
@@ -1251,6 +1378,10 @@ app.registerExtension({
             // saved in the new order permutes to itself.
             try { _reorderInputsToDisplay(this); } catch (e) { /* never break loading */ }
             _applyModeState(this);
+            try {   // v1004
+                const p = this.properties || {};
+                _applyVerdict(this, String(p.pu_verdict || ""), true);
+            } catch (e) { /* never break loading */ }
             return r;
         };
     },

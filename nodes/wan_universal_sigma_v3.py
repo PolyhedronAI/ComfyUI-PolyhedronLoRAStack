@@ -1,8 +1,8 @@
 """
 Polyhedron Sigma Curve (ULSUniversalSigmaCurve) — V3 schema edition.
 
-V3 (Nodes 2.0) form: a single named sigma schedule -> one SIGMAS output (steps
-also passed through for downstream sync).
+V3 (Nodes 2.0) form: a single named sigma schedule -> one SIGMAS output.
+(v984: the old line promised a steps pass-through output; there never was one.)
 
 Stage 3 of the migration. Custom type SIGMAS (out) via io.Custom("SIGMAS"); the
 schedule dropdown is io.Combo over SIGMA_SCHEDULE_NAMES, imported from the legacy
@@ -41,7 +41,7 @@ class ULSUniversalSigmaCurveV3(io.ComfyNode):
                                default="karras",
                                tooltip="Sigma curve shape — affects how steps are distributed across the noise range"),
                 io.Int.Input("steps", default=20, min=1, max=300,
-                             tooltip="Number of steps. Also passed through as output for downstream sync."),
+                             tooltip="Number of steps -- the curve has steps + 1 values, ending in 0."),
                 io.Float.Input("sigma_max", default=1.0, min=0.0001, max=1000.0, step=0.001,
                                tooltip="Flow-matching (WAN/FLUX/SD3): 1.0 — k-diffusion (SDXL/SD1.5): 14.61"),
                 io.Float.Input("sigma_min", default=0.002, min=0.00001, max=100.0, step=0.0001,

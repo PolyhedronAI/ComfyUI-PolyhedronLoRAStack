@@ -476,6 +476,7 @@ function toastNoModel(node) {
         p.textContent = NO_MODEL_TEXT;
         box.appendChild(h);
         box.appendChild(p);
+        box.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
         document.body.appendChild(box);
         setTimeout(() => { try { box.remove(); } catch (e) { } }, 9000);
     } catch (e) { /* never break the ui */ }

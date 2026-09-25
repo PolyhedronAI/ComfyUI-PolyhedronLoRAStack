@@ -1567,6 +1567,31 @@ def _pdd_prepare(model, steps, sampler_name, denoise, start_at_step,
     return model, sigmas
 
 
+def _sched_lora_check(model, sigmas, sigmas_high, sigmas_low, sampler_name, cfg):
+    """v989 -- a schedule-bound LoRA (HyperFlow ...) is active on this model:
+    refuse a run without external SIGMAS, note a grid that is not its trained
+    one. Same place and manner as the PDD guard. Untouched without a record."""
+    try:
+        from . import uls_sched_loras as _SL
+        from .wan_sigma_schedule import resolve_sigma_request as _rsr
+    except ImportError:  # pragma: no cover - direct-run fallback
+        import uls_sched_loras as _SL
+        from wan_sigma_schedule import resolve_sigma_request as _rsr
+    rec = model.get_attachment(_SL.ATTACH_KEY) if hasattr(model, "get_attachment") else None
+    if not rec:
+        return
+    if sigmas is not None:
+        ext = [float(x) for x in sigmas.flatten().tolist()]
+    elif sigmas_high is not None or sigmas_low is not None:
+        ext = []                      # connected as a High/Low pair: no single grid
+    else:
+        ext = None
+    notes = _SL.plan(rec, ext, sampler_name, cfg,
+                     lambda preset: _rsr("", 1.0, True, preset)[0])
+    for n in notes:
+        print(f"[PLS] \u26a0 {n}")
+
+
 def _polyhedron_sample_sigmas(model, seed, cfg, sampler_name, sigmas, positive, negative,
                               latent, add_noise=True, node_id=None, callback=None,
                               preview_mode="latent2rgb (smooth)"):
@@ -2116,6 +2141,10 @@ class ULSSampler:
         # gate (a joint AV latent refuses sigma_shift above) and BEFORE every
         # path below, so High + Low, the external-sigma paths and Single all
         # see the same decision. Untouched when the model carries no bank.
+        # v989: a schedule-bound LoRA (HyperFlow) needs its trained grid on
+        # 'sigmas' -- checked against what the USER connected, before the PDD
+        # step may fill in a schedule of its own.
+        _sched_lora_check(model, sigmas, sigmas_high, sigmas_low, sampler_name, cfg)
         model, sigmas = _pdd_prepare(model, steps, sampler_name, denoise,
                                      start_at_step, end_at_step, dual_moe,
                                      sigmas, cfg)

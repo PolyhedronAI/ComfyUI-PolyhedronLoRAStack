@@ -386,6 +386,7 @@ function showConfirmDialog({ title, message, confirmLabel = "OK", cancelLabel = 
     box.appendChild(foot);
 
     overlay.appendChild(box);
+    overlay.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
     document.body.appendChild(overlay);
 
     // position
@@ -449,6 +450,7 @@ function showInsertToast(text, ok, nodePos) {
     toast.textContent = ok
         ? `✓ "${text}" inserted`
         : `⚠ Click into a Prompt node first`;
+    toast.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
     document.body.appendChild(toast);
     setTimeout(() => { toast.style.opacity = "0"; }, 1800);
     setTimeout(() => { toast.remove(); }, 2200);
@@ -499,6 +501,7 @@ function openTriggerSelectPopup(triggers, weight, e) {
         wrap.appendChild(item);
     }
 
+    wrap.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
     document.body.appendChild(wrap);
 
     // Viewport-Korrektur
@@ -559,7 +562,73 @@ const APPLY_INFO = {
 function applyNorm(v) { return APPLY_STEPS.includes(v) ? v : "auto"; }
 function applyNext(v) { return APPLY_STEPS[(APPLY_STEPS.indexOf(applyNorm(v)) + 1) % APPLY_STEPS.length]; }
 
-function showGroupModePopup(group, currentMode, currentDareVariant, currentTrim, currentResolve, currentTrimAmount, clickEvent, onChange, onToggle, currentApply) {
+// v981: the ONE place that writes a group popup's choices into node._uls.
+// Before v981 only the classic canvas had this logic inline; the Nodes 2.0
+// panel (uls_stack_dom.js) passed callbacks that threw the choice away, so
+// mode / DARE variant / Trim / Resolve / Trim strength / Apply could not be
+// set there at all. Both renderers now call this; `after()` is the renderer's
+// own sync + redraw.
+export const GROUP_MULT_MIN = 0.0, GROUP_MULT_MAX = 2.0, GROUP_MULT_STEP = 0.05;
+export function groupPopupHandlers(node, group, after) {
+    const onChange = (compositeKey) => {
+        const u = node._uls;
+        if (!u) return;
+        if (!u.groupModes) u.groupModes = {};
+        if (!u.groupDare)  u.groupDare  = {};
+        if (compositeKey.startsWith("DARE:")) {
+            u.groupModes[group] = "DARE";
+            u.groupDare[group]  = compositeKey.slice(5);   // "channel" | "element"
+        } else {
+            if (compositeKey === "SEQ") delete u.groupModes[group];
+            else u.groupModes[group] = compositeKey;
+            delete u.groupDare[group];                      // leaving DARE clears the variant
+        }
+        try {
+            api.fetchApi("/uls/group_modes", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ group, mode: u.groupModes[group] || "SEQ" }),
+            }).catch(() => {});
+        } catch (e) { /* offline: the config still carries the mode */ }
+        after?.();
+    };
+    const onToggle = (which, value) => {
+        const u = node._uls;
+        if (!u) return;
+        if (which === "trim") {
+            if (!u.groupTrim) u.groupTrim = {};
+            if (value) u.groupTrim[group] = true; else delete u.groupTrim[group];
+        } else if (which === "resolve") {
+            if (!u.groupResolve) u.groupResolve = {};
+            if (value) u.groupResolve[group] = true; else delete u.groupResolve[group];
+        } else if (which === "trim_amount") {
+            // v261: null = Auto -> drop the key, backend uses the group-size formula
+            if (!u.groupTrimAmount) u.groupTrimAmount = {};
+            if (typeof value === "number") u.groupTrimAmount[group] = value;
+            else delete u.groupTrimAmount[group];
+        } else if (which === "group_mult") {
+            // v981: 1.0 (or anything unreadable) = no key = bit-identical to v980
+            if (!u.groupMult) u.groupMult = {};
+            const v = Number(value);
+            if (!Number.isFinite(v) || Math.abs(v - 1) < 1e-9) delete u.groupMult[group];
+            else u.groupMult[group] = Math.max(GROUP_MULT_MIN, Math.min(GROUP_MULT_MAX,
+                                                Math.round(v * 100) / 100));
+        } else if (which === "group_cap") {
+            // v983: overlap-neutral energy cap; off = no key (bit-identical)
+            if (!u.groupCap) u.groupCap = {};
+            if (value) u.groupCap[group] = true; else delete u.groupCap[group];
+        } else if (which === "apply") {
+            u.apply = applyNorm(value);                     // v913: node-wide
+        }
+        after?.();
+    };
+    // Public build: the group Bake of v982 (its POST route) is not part of
+    // this release -- the route does not exist here. The popup only renders
+    // its Bake section when a callback is handed in, so none is.
+    return { onChange, onToggle };
+}
+
+function showGroupModePopup(group, currentMode, currentDareVariant, currentTrim, currentResolve, currentTrimAmount, clickEvent, onChange, onToggle, currentApply, currentGroupMult, onBake, currentGroupCap) {
     document.getElementById("uls-mode-popup")?.remove();
     let   applyOn = applyNorm(currentApply);
 
@@ -834,8 +903,165 @@ function showGroupModePopup(group, currentMode, currentDareVariant, currentTrim,
     function paintCleanup() {
         sub.textContent = "Cleanup" + (isSeq() ? "  — needs Combined or Smooth Mix" : "");
         for (const p of togglePainters) p();
+        clampView();   // v983: the Trim stepper may have appeared
     }
     paintCleanup();
+
+    // ── v981: Group strength (works in EVERY mode, SEQ included) ─────────
+    // One factor on every LoRA of the group -- model and CLIP weight -- so the
+    // ratio inside the group stays as set. Leaves via onToggle("group_mult").
+    let gMult = (typeof currentGroupMult === "number" && Number.isFinite(currentGroupMult))
+        ? currentGroupMult : 1.0;
+    const gHead = document.createElement("div");
+    gHead.style.cssText = "padding:7px 10px 3px; font-size:10px; color:#888; border-top:1px solid #2a2a3a;"
+        + "letter-spacing:0.5px;";
+    gHead.textContent = "STRENGTH -- whole group";
+    wrap.appendChild(gHead);
+    const gRow = document.createElement("div");
+    gRow.style.cssText = "padding:6px 10px 8px; display:flex; align-items:center; gap:10px;"
+        + "border-bottom:1px solid #1e1e2a;";
+    const gLbl = document.createElement("div");
+    gLbl.style.cssText = "flex:1; min-width:0; font-size:10px; color:#a0c0e0;";
+    gLbl.textContent = "Scales every LoRA of this group (click the value = 1.00)";
+    const gCtrl = document.createElement("div");
+    gCtrl.style.cssText = "display:flex; align-items:center;"
+        + "border:1px solid #4a9eff66; border-radius:5px; overflow:hidden; flex-shrink:0;";
+    const gBtn = (txt) => {
+        const b = document.createElement("div");
+        b.textContent = txt;
+        b.style.cssText = "width:22px; height:20px; display:flex; align-items:center;"
+            + "justify-content:center; cursor:pointer; color:#4a9eff; font-weight:bold;"
+            + "font-size:13px; user-select:none;";
+        b.addEventListener("mouseenter", () => { b.style.background = "#4a9eff22"; });
+        b.addEventListener("mouseleave", () => { b.style.background = "transparent"; });
+        return b;
+    };
+    const gDec = gBtn("\u2039"), gInc = gBtn("\u203a");
+    const gVal = document.createElement("div");
+    gVal.style.cssText = "min-width:62px; text-align:center; font-size:11px; font-weight:bold;"
+        + "padding:0 4px; cursor:pointer; border-left:1px solid #4a9eff33; border-right:1px solid #4a9eff33;";
+    gCtrl.appendChild(gDec); gCtrl.appendChild(gVal); gCtrl.appendChild(gInc);
+    gRow.appendChild(gLbl); gRow.appendChild(gCtrl);
+    wrap.appendChild(gRow);
+    const paintG = () => {
+        gVal.textContent = "\u00d7" + gMult.toFixed(2);
+        gVal.style.color = Math.abs(gMult - 1) < 1e-9 ? "#9aa" : "#ffcf90";
+    };
+    const setG = (v) => {
+        gMult = Math.max(GROUP_MULT_MIN, Math.min(GROUP_MULT_MAX, Math.round(v * 100) / 100));
+        onToggle?.("group_mult", gMult);
+        paintG();
+    };
+    gDec.addEventListener("mousedown", (ev) => { ev.preventDefault(); ev.stopPropagation(); setG(gMult - GROUP_MULT_STEP); });
+    gInc.addEventListener("mousedown", (ev) => { ev.preventDefault(); ev.stopPropagation(); setG(gMult + GROUP_MULT_STEP); });
+    gVal.addEventListener("mousedown", (ev) => { ev.preventDefault(); ev.stopPropagation(); setG(1.0); });
+    paintG();
+
+    // v983: the overlap-neutral energy cap. No threshold to tune: the Stack
+    // measures the group's own overlap when the prompt runs and scales the
+    // group down only as far as its LoRAs pile up (never boosts). Works in
+    // every mode, like the strength above.
+    let capOn = !!currentGroupCap;
+    const capRow = document.createElement("div");
+    const capBox = document.createElement("div");
+    const capTxt = document.createElement("div");
+    capTxt.style.cssText = "flex:1; min-width:0;";
+    capTxt.innerHTML = '<div style="font-weight:bold">Energy cap \u2014 overlap-neutral</div>'
+        + '<div style="font-size:10px; color:#888; margin-top:2px;">when LoRAs pull the same way and pile up, '
+        + 'scales the group down to what they would carry independently \u2014 measured on run, never boosts</div>';
+    capBox.style.cssText = "width:24px;height:18px;border-radius:4px;border:1px solid #4a9eff;display:flex;"
+        + "align-items:center;justify-content:center;font-weight:bold;font-size:11px;flex-shrink:0;";
+    const paintCap = () => {
+        capRow.style.cssText = "padding:6px 10px 8px; cursor:pointer; display:flex; align-items:center; gap:10px;"
+            + "border-bottom:1px solid #1e1e2a;"
+            + `background:${capOn ? "#4a9eff22" : "transparent"}; border-left:3px solid ${capOn ? "#4a9eff" : "transparent"};`;
+        capBox.textContent = capOn ? "\u2714" : "";
+        capBox.style.background = capOn ? "#4a9eff" : "transparent";
+        capBox.style.color = capOn ? "#1a1a2a" : "#666";
+    };
+    capRow.appendChild(capBox); capRow.appendChild(capTxt);
+    capRow.addEventListener("mousedown", (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        capOn = !capOn;
+        onToggle?.("group_cap", capOn);
+        paintCap();
+    });
+    paintCap();
+    wrap.appendChild(capRow);
+
+    // ── v982: Bake this group into ONE LoRA file ─────────────────────────
+    // Shown only when the caller hands a bake callback. Inside the popup --
+    // no second window. The status line says what came out (file, kept
+    // energy, size) or why nothing was written.
+    if (typeof onBake === "function") {
+        const BAKE_RANKS = ["32", "64", "128", "full"];
+        let bakeRank = "64";
+        let busy = false;
+        const bHead = document.createElement("div");
+        bHead.style.cssText = "padding:7px 10px 3px; font-size:10px; color:#888; border-top:1px solid #2a2a3a;"
+            + "letter-spacing:0.5px;";
+        bHead.textContent = "BAKE -- this group into one LoRA file";
+        wrap.appendChild(bHead);
+        const bRow = document.createElement("div");
+        bRow.style.cssText = "padding:6px 10px 4px; display:flex; align-items:center; gap:8px;";
+        const bLbl = document.createElement("div");
+        bLbl.style.cssText = "flex:1; min-width:0; font-size:10px; color:#a0c0a0;";
+        bLbl.textContent = "Rank";
+        const rankBox = document.createElement("div");
+        rankBox.style.cssText = "display:flex; border:1px solid #60b06066; border-radius:5px; overflow:hidden;";
+        const rankPainters = [];
+        for (const r of BAKE_RANKS) {
+            const c = document.createElement("div");
+            c.textContent = r;
+            const paintR = () => {
+                const on = bakeRank === r;
+                c.style.cssText = "padding:2px 7px; font-size:10px; cursor:pointer; user-select:none;"
+                    + `background:${on ? "#60b06033" : "transparent"}; color:${on ? "#b0f0b0" : "#8a9a8a"};`
+                    + "border-right:1px solid #60b06033;";
+            };
+            c.addEventListener("mousedown", (ev) => {
+                ev.preventDefault(); ev.stopPropagation();
+                if (busy) return;
+                bakeRank = r; rankPainters.forEach(p => p());
+            });
+            rankPainters.push(paintR); paintR();
+            rankBox.appendChild(c);
+        }
+        const bBtn = document.createElement("div");
+        bBtn.textContent = "Bake";
+        bBtn.style.cssText = "padding:4px 12px; cursor:pointer; border-radius:5px; background:#2a442a;"
+            + "color:#d0f0d0; font-weight:bold; font-size:11px; border:1px solid #60b060;";
+        bRow.appendChild(bLbl); bRow.appendChild(rankBox); bRow.appendChild(bBtn);
+        wrap.appendChild(bRow);
+        const bStat = document.createElement("div");
+        bStat.style.cssText = "padding:2px 10px 8px; font-size:10px; color:#889; white-space:normal;";
+        bStat.textContent = "Writes loras/polyhedron_baked/. Apply the file at weight 1.0 "
+            + "in place of the group.";
+        wrap.appendChild(bStat);
+        bBtn.addEventListener("mousedown", async (ev) => {
+            ev.preventDefault(); ev.stopPropagation();
+            if (busy) return;
+            busy = true;
+            bBtn.style.opacity = "0.5";
+            bStat.style.color = "#cca";
+            bStat.textContent = "Baking ... (loads every LoRA of the group)";
+            let rep;
+            try { rep = await onBake(bakeRank); } catch (e) { rep = { ok: false, error: String(e) }; }
+            busy = false;
+            bBtn.style.opacity = "1";
+            if (rep?.ok) {
+                bStat.style.color = "#b0f0b0";
+                bStat.textContent = `\u2713 ${rep.file} -- ${rep.sources} LoRAs, rank ${rep.rank}, `
+                    + `${(rep.energy_kept * 100).toFixed(1)}% energy kept, ${rep.size_mb} MB. `
+                    + "Load it at weight 1.0 and switch the group off.";
+            } else {
+                bStat.style.color = "#f0a0a0";
+                const first = (rep?.refused || []).slice(0, 3).map(x => `${x.name}: ${x.why}`).join("; ");
+                bStat.textContent = "\u2717 " + (rep?.error || "bake failed") + (first ? " -- " + first : "");
+            }
+            clampView();   // v983: the status line may have grown the popup
+        });
+    }
 
     // ── v913: Apply section (node-wide, not per group) ──────────────────
     const applyHead = document.createElement("div");
@@ -905,14 +1131,32 @@ function showGroupModePopup(group, currentMode, currentDareVariant, currentTrim,
     footer.appendChild(doneBtn);
     wrap.appendChild(footer);
 
+    wrap.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
     document.body.appendChild(wrap);
 
-    // Viewport correction (unchanged from v250).
-    requestAnimationFrame(() => {
+    // Viewport correction. v982: the popup grew (Strength + Bake) and, when
+    // flipped above the click, its TOP left the window -- header and modes
+    // were cut off (seen in the Nodes 2.0 browser probe). Now: never above
+    // 8 px, and taller than the window -> it scrolls inside itself.
+    // v983: a named function, run again whenever the popup GROWS after
+    // opening (Trim shows its stepper, the bake writes its status line) --
+    // measured in the browser: bottom 929 px in a 900 px window after Trim.
+    // No ResizeObserver: a plain call after each growing change.
+    requestAnimationFrame(clampView);
+    function clampView() {
+        if (!wrap.isConnected) return;
+        const vh = window.innerHeight;
+        if (wrap.getBoundingClientRect().height > vh - 16) {
+            wrap.style.maxHeight = `${vh - 16}px`;
+            wrap.style.overflowY = "auto";
+        }
         const r = wrap.getBoundingClientRect();
-        if (r.right  > window.innerWidth  - 8) wrap.style.left = `${window.innerWidth  - r.width  - 8}px`;
-        if (r.bottom > window.innerHeight - 8) wrap.style.top  = `${clickEvent.clientY - r.height - 6}px`;
-    });
+        if (r.right  > window.innerWidth  - 8) wrap.style.left = `${Math.max(8, window.innerWidth - r.width - 8)}px`;
+        if (r.bottom > vh - 8) {
+            const up = clickEvent.clientY - r.height - 6;
+            wrap.style.top = `${up >= 8 ? up : Math.max(8, vh - r.height - 8)}px`;
+        }
+    }
 
     // ── Close handling: click-away + Escape, both torn down on close ─────
     function close() {
@@ -1001,6 +1245,7 @@ function showPopup(name, screenX, screenY) {
         }
     }
 
+    el.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
     document.body.appendChild(el);
     popup = el;
 
@@ -1107,6 +1352,7 @@ function openStackOrderInput(node, row, e, onChange) {
         "text-align:center",
     ].join(";");
     el.appendChild(inp);
+    el.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
     document.body.appendChild(el);
     requestAnimationFrame(() => {
         el.style.transform = `scale(${canvasScale})`;
@@ -1261,6 +1507,7 @@ function showMultiplierTooltip(canvasX, canvasY, node) {
         <span style="color:#7060cc">×1.00</span> = default<br>
         <span style="color:#ff7744">×1.50</span> = 150% boosted
     `;
+    el.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
     document.body.appendChild(el);
     // Auto-remove nach 3s
     setTimeout(() => el?.remove(), 3000);
@@ -1306,6 +1553,7 @@ function showMultiplierInfo(e) {
         </div>
     `;
 
+    el.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
     document.body.appendChild(el);
     document.getElementById("uls-mult-close")?.addEventListener("click", () => el.remove());
 
@@ -1402,50 +1650,15 @@ app.registerExtension({
                     const curTrim = !!((uls.groupTrim    || {})[row.group]);
                     const curRes  = !!((uls.groupResolve || {})[row.group]);
                     const curTrimAmt = (uls.groupTrimAmount || {})[row.group];   // number | undefined (=Auto)
-                    showGroupModePopup(row.group, cur, curDV, curTrim, curRes, curTrimAmt, ev, (compositeKey) => {
-                        if (!node._uls.groupModes) node._uls.groupModes = {};
-                        if (!node._uls.groupDare)  node._uls.groupDare  = {};
-                        if (compositeKey.startsWith("DARE:")) {
-                            const dv = compositeKey.slice(5); // "channel" or "element"
-                            node._uls.groupModes[row.group] = "DARE";
-                            node._uls.groupDare[row.group]  = dv;
-                        } else {
-                            if (compositeKey === "SEQ") delete node._uls.groupModes[row.group];
-                            else node._uls.groupModes[row.group] = compositeKey;
-                            // Clear dare variant when leaving DARE mode
-                            delete node._uls.groupDare[row.group];
-                        }
-                        api.fetchApi("/uls/group_modes", {
-                            method: "POST",
-                            headers: {"Content-Type": "application/json"},
-                            body: JSON.stringify({ group: row.group, mode: node._uls.groupModes[row.group] || "SEQ" })
-                        }).catch(() => {});
+                    // v981: the shared writer -- same code path as Nodes 2.0
+                    const h = groupPopupHandlers(node, row.group, () => {
                         node._ulsSync?.();
                         app.graph?.setDirtyCanvas(true, false);
-                    }, (which, value) => {
-                        // Cleanup-switch toggled. Persisted in uls_config (like group_dare),
-                        // so it travels inside the saved workflow.
-                        if (which === "trim") {
-                            if (!node._uls.groupTrim) node._uls.groupTrim = {};
-                            if (value) node._uls.groupTrim[row.group] = true;
-                            else       delete node._uls.groupTrim[row.group];
-                        } else if (which === "resolve") {
-                            if (!node._uls.groupResolve) node._uls.groupResolve = {};
-                            if (value) node._uls.groupResolve[row.group] = true;
-                            else       delete node._uls.groupResolve[row.group];
-                        } else if (which === "trim_amount") {
-                            // v261: per-group Trim strength. null = Auto → drop the key
-                            // so the backend falls back to the group-size formula.
-                            if (!node._uls.groupTrimAmount) node._uls.groupTrimAmount = {};
-                            if (typeof value === "number") node._uls.groupTrimAmount[row.group] = value;
-                            else                           delete node._uls.groupTrimAmount[row.group];
-                        } else if (which === "apply") {
-                            // v913: node-wide -- one value for every group.
-                            node._uls.apply = applyNorm(value);
-                        }
-                        node._ulsSync?.();
-                        app.graph?.setDirtyCanvas(true, false);
-                    }, applyNorm(node._uls.apply));
+                    });
+                    showGroupModePopup(row.group, cur, curDV, curTrim, curRes, curTrimAmt, ev,
+                                       h.onChange, h.onToggle, applyNorm(node._uls.apply),
+                                       (uls.groupMult || {})[row.group], undefined /* no Bake in the public build */,
+                                       (uls.groupCap || {})[row.group]);
                 }
             }, true);
 
@@ -1483,7 +1696,7 @@ app.registerExtension({
                           groupDare: {},
                           groupTrim: {},
                           groupResolve: {},
-                          groupTrimAmount: {},
+                          groupTrimAmount: {}, groupMult: {}, groupCap: {},   // v981/v983
                           flatMode: false,
                           groupOrder: {} };
             this.size[0] = Math.max(this.size[0], 460);
@@ -1549,6 +1762,8 @@ app.registerExtension({
                 group_resolve: this._uls.groupResolve || {},
                 // v261: persist the per-group Trim strength too, same chain.
                 group_trim_amount: this._uls.groupTrimAmount || {},
+                group_mult: this._uls.groupMult || {},   // v981
+                group_cap: this._uls.groupCap || {},     // v983
                 flatMode: this._uls.flatMode || false,
                 groupOrder: this._uls.groupOrder || {},
                 apply: applyNorm(this._uls.apply),   // v913
@@ -1564,7 +1779,7 @@ app.registerExtension({
                               hoverRow: -1, hoverZone: "", dragSrc: -1, dragDest: -1,
                               groupModes: {}, groupDare: {},
                               groupTrim: {}, groupResolve: {},
-                              groupTrimAmount: {},
+                              groupTrimAmount: {}, groupMult: {}, groupCap: {},   // v981/v983
                               flatMode: false, groupOrder: {} };
             }
             if (!this._uls.groupModes) this._uls.groupModes = {};
@@ -1572,6 +1787,8 @@ app.registerExtension({
             if (!this._uls.groupTrim)    this._uls.groupTrim    = {};
             if (!this._uls.groupResolve) this._uls.groupResolve = {};
             if (!this._uls.groupTrimAmount) this._uls.groupTrimAmount = {};
+            if (!this._uls.groupMult) this._uls.groupMult = {};   // v981
+            if (!this._uls.groupCap) this._uls.groupCap = {};     // v983
             if (this._uls.flatMode === undefined) this._uls.flatMode = false;
             if (!this._uls.groupOrder) this._uls.groupOrder = {};
             // uls_config Widget immer verstecken
@@ -1619,6 +1836,8 @@ app.registerExtension({
                     this._uls.groupResolve = (d.group_resolve && typeof d.group_resolve === "object") ? d.group_resolve : {};
                     // v261: restore per-group Trim strength.
                     this._uls.groupTrimAmount = (d.group_trim_amount && typeof d.group_trim_amount === "object") ? d.group_trim_amount : {};
+                    this._uls.groupMult = (d.group_mult && typeof d.group_mult === "object") ? d.group_mult : {};   // v981
+                    this._uls.groupCap = (d.group_cap && typeof d.group_cap === "object") ? d.group_cap : {};       // v983
                     this._uls.apply = applyNorm(d.apply);   // v913
                     this._uls.rows.forEach(r => ensurePreview(r.name));
                     this._ulsResize();
@@ -1685,6 +1904,8 @@ app.registerExtension({
                 group_trim: this._uls.groupTrim || {},
                 group_resolve: this._uls.groupResolve || {},
                 group_trim_amount: this._uls.groupTrimAmount || {},
+                group_mult: this._uls.groupMult || {},   // v981
+                group_cap: this._uls.groupCap || {},     // v983
                 flatMode: this._uls.flatMode || false,
                 groupOrder: this._uls.groupOrder || {},
                 dare_variant: "channel",
@@ -2021,6 +2242,14 @@ app.registerExtension({
                 const grpLabel = row.group === "—" ? "GRP" : row.group.slice(0,4).toUpperCase();
                 ctx.fillText(grpLabel, grpPillX + GRP_W/2, y + ROW_H/2 + 3);
                 ctx.textAlign = "left";
+                // v981: a group with a strength != 1 carries an amber dot, top
+                // right of its pill -- the node shows what it does.
+                const gmv = (uls.groupMult || {})[row.group];
+                const capv = !!(uls.groupCap || {})[row.group];   // v983
+                if (capv || (typeof gmv === "number" && Math.abs(gmv - 1) > 1e-9)) {
+                    ctx.fillStyle = "#ffb040";
+                    ctx.beginPath(); ctx.arc(grpPillX + GRP_W - 4, y + 8, 2.5, 0, Math.PI * 2); ctx.fill();
+                }
 
                 // Order badge — top-left corner of GRP pill, inside the pill.
                 // Gold filled = has a custom order number. Dashed = no number (click to set).
@@ -2988,6 +3217,7 @@ function openGroupPreviewOverlay(row, e, node) {
         el.appendChild(dvBtns);
     }
 
+    el.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
     document.body.appendChild(el);
 
     // Viewport-Korrektur
@@ -3106,6 +3336,7 @@ function openPreviewOverlay(loraName, e) {
         if (ev.key === "Escape") { backdrop.remove(); document.removeEventListener("keydown", esc); }
     });
 
+    backdrop.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
     document.body.appendChild(backdrop);
 }
 
@@ -3156,6 +3387,7 @@ function showWeightInput(e, currentVal, onConfirm, label, accent) {
         "text-align:center",
     ].join(";");
     el.appendChild(inp);
+    el.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
     document.body.appendChild(el);
 
     requestAnimationFrame(() => {
@@ -3327,6 +3559,7 @@ function openLoraSelect(row, loraList, e, node, onPicked) {
     renderList("");
     input.addEventListener("input", () => renderList(input.value));
 
+    wrap.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
     document.body.appendChild(wrap);
 
     // Viewport-Korrektur

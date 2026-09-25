@@ -31,6 +31,36 @@ import uuid
 
 import numpy as np
 
+# v1010: the shared progress instrument (green bar + console + learned ETA).
+# A harness that loads this file alone gets silent stand-ins -- the node's
+# work never depends on its instruments.
+try:
+    from .ph_progress import NodeProgress as _NodeProgress, blocking as _blocking
+except Exception:
+    try:
+        from ph_progress import NodeProgress as _NodeProgress, blocking as _blocking
+    except Exception:
+        class _blocking:
+            est_total = est = None
+
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def tick(self, n=1):
+                pass
+
+            def rate_left(self):
+                return None, None
+
+        _NodeProgress = _blocking
+
+
 # ---------------------------------------------------------------------------
 # canon (APPEND-ONLY -- see module docstring)
 # ---------------------------------------------------------------------------
@@ -50,6 +80,9 @@ FILTER_CANON = (
     "sharpen_amount",
     "sharpen_radius",
     "preset",
+    "auto_mode",       # v998 F2 -- appended; runs FIRST in the pipeline
+    "sharpen_threshold",  # v1000 F3 -- appended; part of the last stage
+    "detail_amount",      # v1001 F4 -- appended; runs FIRST (before auto)
 )
 
 # Long edge of the in-node preview image (px). The preview is a downscaled
@@ -59,6 +92,238 @@ PREVIEW_MAX_EDGE = 768
 _PACK_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LUT_DIR = os.path.join(_PACK_ROOT, "luts")
 PRESET_DIR = os.path.join(_PACK_ROOT, "presets")
+
+
+# ---------------------------------------------------------------------------
+# the automatic (v998, F2) -- taken over from the Polyhedron Viewer
+# (pv/grade.py, v022/v064), with two corrections measured on 24.09.2026
+# ---------------------------------------------------------------------------
+# One dial, four stops; every stop moves the same four corrections by its own
+# share. OFF is in the table so nothing has to special-case it. The Viewer's
+# contour-driven auto sharpening is NOT taken over: its thresholds (soft
+# < 0.008, crisp > 0.020) read every H3 frame as crisp (measured 0.075-0.10)
+# and film grain counts as contour -- no auto sharpening without a reading
+# that tells grain from edges.
+AUTO_MODES = ("off", "neutral", "high", "ultra")
+AUTO_FACTORS = {
+    "off":     {"wb": 0.0,  "luma": 0.0,  "spread": 0.0,  "sat": 0.0},
+    "neutral": {"wb": 0.6,  "luma": 0.5,  "spread": 0.5,  "sat": 0.0},
+    "high":    {"wb": 0.85, "luma": 0.75, "spread": 0.75, "sat": 0.25},
+    "ultra":   {"wb": 1.0,  "luma": 1.0,  "spread": 1.0,  "sat": 0.5},
+}
+# Targets = medians of the 29 LIVE1 photographs, sampled every 8th pixel:
+# luma 0.444 (the Viewer's 0.45 confirmed), luma spread 0.193 (Viewer 0.22),
+# per-pixel chroma 0.046 (Viewer 0.085 was never measured).
+AUTO_TARGET_LUMA = 0.45
+AUTO_TARGET_SPREAD = 0.19
+AUTO_TARGET_CHROMA = 0.046
+AUTO_CHOICES = list(AUTO_MODES)   # the combo (a plain name: guards read the defaults)
+AUTO_FRAMES = 8     # frames sampled per batch, evenly spread
+AUTO_STEP = 8       # every 8th pixel in both directions
+
+
+def _auto_stats(batch):
+    """[mean_r, mean_g, mean_b, luma_mean, luma_std, chroma] of an IMAGE
+    batch (float [N, H, W, 3] or [H, W, 3], 0..1), read from up to AUTO_FRAMES
+    evenly spread frames, every AUTO_STEP-th pixel. ONE answer per batch: a
+    per-frame automatic would flicker on video (the Viewer grades per clip for
+    the same reason).
+
+    chroma is the mean distance of each pixel's channels from that pixel's
+    own mean -- CORRECTION 1: the Viewer took it from the frame's MEAN colour,
+    which measures the cast, not the saturation; a balanced picture read as
+    grey and HIGH doubled its saturation (measured x1.4-1.9 on Frank's H3
+    frames). Pure -- guard-driven."""
+    a = np.asarray(batch, dtype=np.float32)
+    if a.ndim == 3:
+        a = a[None]
+    n = int(a.shape[0])
+    if n <= 0:
+        return None
+    k = min(AUTO_FRAMES, n)
+    idx = sorted(set(int(round(i * (n - 1) / max(k - 1, 1))) for i in range(k)))
+    s = a[idx][:, ::AUTO_STEP, ::AUTO_STEP, :3].reshape(-1, 3).astype(np.float64)
+    if s.shape[0] == 0:
+        return None
+    luma = 0.2126 * s[:, 0] + 0.7152 * s[:, 1] + 0.0722 * s[:, 2]
+    chroma = np.abs(s - s.mean(axis=1, keepdims=True)).mean()
+    m = s.mean(axis=0)
+    return [float(m[0]), float(m[1]), float(m[2]), float(luma.mean()),
+            float(luma.std()), float(chroma)]
+
+
+def _auto_grade(stats, mode):
+    """The automatic correction for these stats at this mode, or None when
+    it would change nothing (off, unknown mode, no stats). Mirrored op for op
+    by _autoGrade in ph_filter.js. Pure -- guard-driven.
+
+    white balance  grey world: wb_r = G/R, wb_b = G/B, by the mode's share
+    brightness     toward AUTO_TARGET_LUMA, both ways
+    contrast       CORRECTION 2 (the Viewer's own words: "stretches a FLAT
+                   luma spread"): only a spread UNDER the target is
+                   stretched; a contrasty picture is never flattened
+    saturation     only a dull picture is lifted (the Viewer's words:
+                   "lifted when the frame is flat"), never lowered"""
+    f = AUTO_FACTORS.get(mode)
+    if not f or not stats or f["wb"] == 0.0:
+        return None
+    mr, mg, mb, luma, spread, chroma = [float(v) for v in stats[:6]]
+
+    def lim(v, lo, hi):
+        return lo if v < lo else hi if v > hi else v
+
+    wb_r = wb_b = 1.0
+    if mr > 0.01 and mg > 0.01 and mb > 0.01:
+        wb_r = lim(1.0 + (mg / mr - 1.0) * f["wb"], 0.5, 2.0)
+        wb_b = lim(1.0 + (mg / mb - 1.0) * f["wb"], 0.5, 2.0)
+    brightness = lim((AUTO_TARGET_LUMA - luma) * f["luma"], -0.5, 0.5)
+    contrast = 1.0
+    if 0.01 < spread < AUTO_TARGET_SPREAD:
+        contrast = lim(1.0 + (AUTO_TARGET_SPREAD / spread - 1.0) * f["spread"], 1.0, 2.0)
+    saturation = 1.0
+    if f["sat"] and 0.002 < chroma < AUTO_TARGET_CHROMA:
+        saturation = lim(1.0 + (AUTO_TARGET_CHROMA / chroma - 1.0) * f["sat"], 1.0, 2.0)
+    return {"wb_r": wb_r, "wb_b": wb_b, "brightness": brightness,
+            "contrast": contrast, "saturation": saturation}
+
+
+def _apply_auto_np(x, a):
+    """Stage 0 of the pipeline: the automatic, in the Viewer's order (gains,
+    brightness, contrast around 0.5, saturation against Rec.709 luma), then
+    clamped so every later stage sees 0..1 as before. Mirrored op for op by
+    _autoRGB in ph_filter.js."""
+    x = np.asarray(x, dtype=np.float32).copy()
+    if a is None:
+        return x
+    x[..., 0] *= np.float32(a["wb_r"])
+    x[..., 2] *= np.float32(a["wb_b"])
+    x = x + np.float32(a["brightness"])
+    x = (x - np.float32(0.5)) * np.float32(a["contrast"]) + np.float32(0.5)
+    luma = (np.float32(0.2126) * x[..., 0] + np.float32(0.7152) * x[..., 1]
+            + np.float32(0.0722) * x[..., 2])[..., None]
+    x = luma + (x - luma) * np.float32(a["saturation"])
+    return np.clip(x, 0.0, 1.0).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# detail from the original (v1001, F4) -- the Polyhedron Viewer's steered
+# frequency separation (pv/detail.py, v060), batched
+# ---------------------------------------------------------------------------
+# Both pictures are split into a tone layer (a small binomial blur) and a
+# contour layer. The original's contours lose noise (CORE), ringing (CAP)
+# and -- when the original carries compression blocks -- most of what sits
+# on the 8 px grid; only the SURPLUS moves over (where both layers point the
+# same way and the original's points further), weighted by the local 5x5
+# agreement of the two layers. What the processing destroyed and the
+# original still has comes back; nothing else does.
+DETAIL_CORE = 0.002
+DETAIL_CAP = 0.15
+DETAIL_GRID = 0.6
+DETAIL_BOX = 5
+DETAIL_EPS = 1e-6
+# THE GRID DECIDES ITSELF (measured 24.09.2026): the Viewer's grid was made
+# for JPEG files; on a clean original it cost 0.9-1.5 dB. The block ratio of
+# the source (8 px seam steps against all others) reads 0.95-1.045 on the 29
+# clean LIVE1 pictures and 1.00-1.05 on Frank's H3 frames, at least 1.094 at
+# JPEG quality 60 (median 1.28). The grid fades in from 1.05 to 1.20.
+BLOCK_CLEAN = 1.05
+BLOCK_FULL = 1.20
+
+
+def _block_ratio(batch):
+    """Mean 8 px seam step against every other step, both directions, on up
+    to AUTO_FRAMES evenly spread frames. 1.0 = no block edges. Pure."""
+    a = np.asarray(batch, dtype=np.float32)
+    if a.ndim == 3:
+        a = a[None]
+    n = int(a.shape[0])
+    k = min(AUTO_FRAMES, n)
+    idx = sorted(set(int(round(i * (n - 1) / max(k - 1, 1))) for i in range(k)))
+    out = []
+    for f in a[idx]:
+        lum = f[..., :3].astype(np.float64).mean(axis=2)
+        for ax in (1, 0):
+            if lum.shape[ax] < 16:
+                continue
+            d = np.abs(np.diff(lum, axis=ax))
+            seam = (np.arange(d.shape[ax]) % 8) == 7
+            on = d[:, seam] if ax == 1 else d[seam, :]
+            off = d[:, ~seam] if ax == 1 else d[~seam, :]
+            out.append(float(on.mean()) / max(float(off.mean()), 1e-6))
+    return float(np.mean(out)) if out else 1.0
+
+
+def _grid_strength(ratio):
+    """How much of the seam suppression a source with this block ratio gets:
+    0 below BLOCK_CLEAN, DETAIL_GRID from BLOCK_FULL on, linear between."""
+    t = (float(ratio) - BLOCK_CLEAN) / (BLOCK_FULL - BLOCK_CLEAN)
+    return DETAIL_GRID * (0.0 if t < 0.0 else 1.0 if t > 1.0 else t)
+
+
+def _soft_np(x):
+    """The tone layer: [1 2 1]/4 twice down, twice across, edges held.
+    x: [..., H, W, C]. The Viewer's detail._soft, batched."""
+    out = x
+    for axis in (-3, -2):
+        for _ in range(2):
+            n = out.shape[axis]
+            lo = np.take(out, np.r_[0, np.arange(n - 1)], axis=axis)
+            hi = np.take(out, np.r_[np.arange(1, n), n - 1], axis=axis)
+            out = (lo + 2.0 * out + hi) * 0.25
+    return out
+
+
+def _box_np(x, r=DETAIL_BOX // 2):
+    """5x5 mean, edges held, over [..., H, W, C] (float64 summed tables)."""
+    k = 2 * r + 1
+    lead = [(0, 0)] * (x.ndim - 3)
+    p = np.pad(x.astype(np.float64), lead + [(r, r), (r, r), (0, 0)], mode="edge")
+    c = np.pad(p.cumsum(-3).cumsum(-2), lead + [(1, 0), (1, 0), (0, 0)])
+    return ((c[..., k:, k:, :] - c[..., :-k, k:, :] - c[..., k:, :-k, :]
+             + c[..., :-k, :-k, :]) / (k * k)).astype(np.float32)
+
+
+def _grid_mask_np(height, width, grid):
+    """1 inside the 8 px blocks, 1 - grid on the two pixels of each seam."""
+    gx = np.ones(width, np.float32)
+    gx[(np.arange(width) % 8 == 7) | (np.arange(width) % 8 == 0)] -= np.float32(grid)
+    gy = np.ones(height, np.float32)
+    gy[(np.arange(height) % 8 == 7) | (np.arange(height) % 8 == 0)] -= np.float32(grid)
+    return gy[:, None] * gx[None, :]
+
+
+def _detail_np(orig, ai, amount, grid=DETAIL_GRID):
+    """Detail from the original onto the processed picture. orig, ai:
+    float32 [..., H, W, 3] of the same size. With grid = DETAIL_GRID this is
+    the Viewer's detail.reference exactly (the guard drives both). Mirrored
+    op for op by _detailBuf in ph_filter.js."""
+    orig = np.asarray(orig, np.float32)
+    ai = np.asarray(ai, np.float32)
+    if not (float(amount) > 0.0):
+        return ai.copy()
+    ho = orig - _soft_np(orig)
+    ha = ai - _soft_np(ai)
+    ho = np.sign(ho) * np.clip(np.abs(ho) - DETAIL_CORE, 0.0, DETAIL_CAP)
+    if float(grid) > 0.0:
+        ho = ho * _grid_mask_np(orig.shape[-3], orig.shape[-2], grid)[..., None]
+    num = _box_np((ho * ha).sum(-1, keepdims=True))
+    den = np.sqrt(np.maximum(_box_np((ho * ho).sum(-1, keepdims=True))
+                             * _box_np((ha * ha).sum(-1, keepdims=True)), 0.0)) + DETAIL_EPS
+    agree = np.clip(num / den, 0.0, 1.0)
+    surplus = np.where(((ho * ha) > 0) & (np.abs(ho) > np.abs(ha)), ho - ha, 0.0)
+    return np.clip(ai + float(amount) * agree * surplus, 0.0, 1.0).astype(np.float32)
+
+
+def _detail_fit(image_shape, source_shape):
+    """None when the source can carry detail onto the image, else the reason.
+    Same height and width; one source frame for all, or one per frame."""
+    if tuple(source_shape[1:3]) != tuple(image_shape[1:3]):
+        return ("detail source is %dx%d, the image %dx%d -- sizes must match"
+                % (source_shape[2], source_shape[1], image_shape[2], image_shape[1]))
+    if int(source_shape[0]) not in (1, int(image_shape[0])):
+        return ("detail source has %d frames, the image %d -- give 1 or %d"
+                % (source_shape[0], image_shape[0], image_shape[0]))
+    return None
 
 
 def _preview_size(w, h, max_edge=PREVIEW_MAX_EDGE):
@@ -242,6 +507,11 @@ def _sanitize_preset(params):
         if k == "lut_name":
             out[k] = os.path.basename(str(v))
             continue
+        if k == "auto_mode":
+            # a string choice: only a known stop survives (mirrors AUTO_MODES)
+            if str(v) in ("off", "neutral", "high", "ultra"):
+                out[k] = str(v)
+            continue
         try:
             out[k] = float(v)
         except (TypeError, ValueError):
@@ -263,7 +533,7 @@ def _gauss_kernel(radius):
     return half, (w / w.sum()).astype(np.float32)
 
 
-def _sharpen_np(x, amount, radius):
+def _sharpen_np(x, amount, radius, threshold=0.0):
     """Unsharp mask: out = x + amount * (x - gaussian_blur(x)), separable
     blur with replicate (edge-clamp) borders, clamped to 0..1.
     x: float32 [..., H, W, 3]. Mirrored op for op by _sharpenBuf in
@@ -285,7 +555,15 @@ def _sharpen_np(x, amount, radius):
         return out
 
     blur = _blur_axis(_blur_axis(x, x.ndim - 3), x.ndim - 2)
-    return np.clip(x + np.float32(float(amount)) * (x - blur), 0.0, 1.0).astype(np.float32)
+    d = x - blur
+    t = float(threshold)
+    if t > 0.0:
+        # v1000 (F3) soft coring: |d| <= t adds nothing, a larger |d| is
+        # shortened by t. Measured 24.09.2026 on 14 LIVE1 pictures (soft +
+        # noise): at the SAME sharpness 1-3 levels give +0.3..0.4 dB and up
+        # to 12 % less noise in flat areas than the plain mask.
+        d = np.sign(d) * np.maximum(np.abs(d) - np.float32(t), np.float32(0.0))
+    return np.clip(x + np.float32(float(amount)) * d, 0.0, 1.0).astype(np.float32)
 
 
 def _load_lut(name):
@@ -325,6 +603,11 @@ class ULSFilter:
         "to scrub the value and watch the preview react live, or click once "
         "to type an exact number. "
         "One-node color grading with an in-node before/after preview. "
+        "Pick white (above the preview) sets temperature and tint from a "
+        "click on something that should be neutral. auto_mode corrects "
+        "first, once per batch; the sliders work on top of it. Connect "
+        "detail_source (the picture before an edit or re-render, same size) "
+        "to carry its lost contours back -- before everything else. "
         "The color controls act on the IMAGE output and move the preview "
         "live; the divider compares the original (left) against the graded "
         "result (right). A .cube LUT from the pack's luts/ folder is applied "
@@ -341,10 +624,10 @@ class ULSFilter:
                 "image": ("IMAGE",),
                 "exposure": ("FLOAT", {"default": 0.0, "min": -4.0, "max": 4.0, "step": 0.05,
                              "tooltip": "Exposure in EV stops. 0 leaves brightness unchanged; +1 doubles light, -1 halves it. First step of the grading pipeline. Click-drag to scrub live."}),
-                "temperature": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01,
-                                "tooltip": "White balance temperature. Negative shifts toward blue (cooler), positive toward orange (warmer). Click-drag to scrub live."}),
-                "tint": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01,
-                         "tooltip": "White balance tint. Negative shifts toward green, positive toward magenta. Click-drag to scrub live."}),
+                "temperature": ("FLOAT", {"default": 0.0, "min": -2.0, "max": 2.0, "step": 0.01,
+                                "tooltip": "White balance temperature. Negative shifts toward blue (cooler), positive toward orange (warmer). Set by Pick white in the preview. Click-drag to scrub live."}),
+                "tint": ("FLOAT", {"default": 0.0, "min": -2.0, "max": 2.0, "step": 0.01,
+                         "tooltip": "White balance tint. Negative shifts toward green, positive toward magenta. Set by Pick white in the preview. Click-drag to scrub live."}),
                 "contrast": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01,
                              "tooltip": "Contrast around mid gray. Negative flattens, positive steepens. Click-drag to scrub live."}),
                 "gamma": ("FLOAT", {"default": 1.0, "min": 0.2, "max": 3.0, "step": 0.01,
@@ -363,12 +646,21 @@ class ULSFilter:
                              "tooltip": "3D LUT (.cube) applied after the colour controls. Files are read from this pack's luts/ folder; 'none' skips the LUT."}),
                 "lut_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
                                  "tooltip": "Blend between the ungraded (0) and fully LUT-graded (1) image. Only used when a LUT is selected. Click-drag to scrub live."}),
-                "sharpen_amount": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 2.0, "step": 0.05,
+                "sharpen_amount": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 4.0, "step": 0.05,
                                    "tooltip": "Unsharp-mask strength applied as the last pipeline step. 0 disables sharpening. Click-drag to scrub live."}),
                 "sharpen_radius": ("FLOAT", {"default": 1.0, "min": 0.5, "max": 5.0, "step": 0.1,
                                    "tooltip": "Unsharp-mask blur radius in pixels. Larger values sharpen coarser detail. Click-drag to scrub live."}),
                 "preset": (presets, {"default": "none",
                            "tooltip": "Named parameter set from this pack's presets/ folder. Loading a preset sets the sliders; they stay freely adjustable afterwards."}),
+                "auto_mode": (AUTO_CHOICES, {"default": "off",
+                              "tooltip": "Automatic correction, measured once per run over the whole batch (no flicker on video) and applied FIRST, before every slider: grey-world white balance, brightness toward mid grey, a flat picture stretched, a dull one saturated. neutral / high / ultra take a growing share. The sliders shape the result by hand on top."}),
+                "sharpen_threshold": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 32.0, "step": 1.0,
+                                      "tooltip": "Unsharp-mask threshold in 8-bit levels, as in Photoshop. Differences smaller than this are not sharpened (grain and noise stay calm), larger ones are sharpened minus it. 1-3 levels with a higher amount (2-3) sharpen as much as the plain mask with less noise. 0 = off. Click-drag to scrub live."}),
+                "detail_amount": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
+                                  "tooltip": "Detail from the original, used only when detail_source is connected: contours the processing lost and the original still has come back (noise, ringing and compression blocks stay out). 1 = as measured best, 2 = double. Click-drag to scrub live."}),
+            },
+            "optional": {
+                "detail_source": ("IMAGE", {"tooltip": "The picture BEFORE the processing that lost detail (the original of an edit, restore or re-render at the SAME size). Its lost contours are carried back onto image, first in the pipeline. One frame for all, or one per frame."}),
             },
         }
 
@@ -380,20 +672,58 @@ class ULSFilter:
 
     def apply(self, image, exposure, temperature, tint, contrast, gamma,
               shadows, highlights, saturation, vibrance, hue_shift,
-              lut_name, lut_strength, sharpen_amount, sharpen_radius, preset):
+              lut_name, lut_strength, sharpen_amount, sharpen_radius, preset,
+              auto_mode="off", sharpen_threshold=0.0, detail_amount=1.0,
+              detail_source=None):
         # Color pipeline + LUT + sharpen stages are ACTIVE (ground truth:
         # _grade_np -> _apply_lut_np -> _sharpen_np). The preset widget is
         # deliberately NOT applied here: presets write widget values in the
         # frontend; honoring the selector here too would double-apply.
         # The preview always carries the UNGRADED source frame: the frontend
         # grades it live with the mirrored JS pipeline.
-        ui = {"ph_filter": [self._make_preview(image)]}
+        stats = None
+        try:
+            stats = _auto_stats(image.detach().cpu().numpy() if hasattr(image, "detach") else image)
+        except Exception as e:  # the automatic must never kill the run
+            print("[PLS] Polyhedron Filter: auto analysis failed: %r" % (e,))
+        auto = _auto_grade(stats, auto_mode)
+        item = self._make_preview(image)
+        item["auto"] = stats   # the preview mirrors every stop live from these
+
+        # detail from the original (F4): checked, measured, previewed
+        dsrc, grid = None, 0.0
+        if detail_source is not None:
+            try:
+                dnp = (detail_source.detach().cpu().numpy() if hasattr(detail_source, "detach")
+                       else np.asarray(detail_source, dtype=np.float32))
+                ishape = tuple(image.shape)
+                why = _detail_fit(ishape, dnp.shape)
+                if why is None:
+                    grid = _grid_strength(_block_ratio(dnp))
+                    if float(detail_amount) > 0.0:
+                        dsrc = dnp
+                    item["detail"] = self._make_preview(detail_source)
+                    item["detail_grid"] = grid
+                    print("[PLS] Polyhedron Filter: detail from source %.2f, block grid %.2f"
+                          % (float(detail_amount), grid))
+                else:
+                    item["detail_note"] = why
+                    print("[PLS] Polyhedron Filter: detail skipped -- " + why)
+            except Exception as e:  # the detail must never kill the run
+                item["detail_note"] = "detail source unreadable"
+                print("[PLS] Polyhedron Filter: detail skipped: %r" % (e,))
+        ui = {"ph_filter": [item]}
+        if auto is not None:
+            print("[PLS] Polyhedron Filter: auto %s -> wb_r %.3f wb_b %.3f brightness %+.3f "
+                  "contrast %.3f saturation %.3f" % (auto_mode, auto["wb_r"], auto["wb_b"],
+                                                     auto["brightness"], auto["contrast"],
+                                                     auto["saturation"]))
 
         lut = None
         if lut_name != "none" and float(lut_strength) > 0.0:
             lut = _load_lut(lut_name)  # None on failure -> honest console note
 
-        if (lut is None and float(sharpen_amount) == 0.0
+        if (dsrc is None and auto is None and lut is None and float(sharpen_amount) == 0.0
                 and _is_neutral(exposure, temperature, tint, contrast, gamma,
                                 shadows, highlights, saturation, vibrance, hue_shift)):
             return {"ui": ui, "result": (image,)}
@@ -406,24 +736,36 @@ class ULSFilter:
         params = (exposure, temperature, tint, contrast, gamma,
                   shadows, highlights, saturation, vibrance, hue_shift)
 
-        def _process(chunk):
-            out = _grade_np(chunk, *params)
+        def _process(chunk, dchunk=None):
+            if dchunk is not None:
+                chunk = _detail_np(dchunk, chunk, float(detail_amount), grid)
+            out = _grade_np(_apply_auto_np(chunk, auto) if auto is not None else chunk, *params)
             if lut is not None:
                 size, data, dmin, dmax = lut
                 out = _apply_lut_np(out, size, data, dmin, dmax, float(lut_strength))
             if float(sharpen_amount) > 0.0:
-                out = _sharpen_np(out, float(sharpen_amount), float(sharpen_radius))
+                out = _sharpen_np(out, float(sharpen_amount), float(sharpen_radius),
+                                  float(sharpen_threshold) / 255.0)
             return out
 
         if torch is not None and hasattr(image, "cpu"):
             src = image.detach().cpu().numpy()
             out = np.empty_like(src, dtype=np.float32)
             step = 32  # frames per chunk: elementwise ops, bounded temporaries
-            for i in range(0, src.shape[0], step):
-                out[i:i + step] = _process(src[i:i + step])
+            # v1010: the green bar only -- a grade is quick; the bar just shows
+            # a long clip is moving (quiet: no console lines).
+            with _NodeProgress("Filter", "filter", total=int(src.shape[0]), unit="frame",
+                               quiet=True) as _prog:
+                for i in range(0, src.shape[0], step):
+                    dch = None
+                    if dsrc is not None:
+                        dch = dsrc[0:1] if dsrc.shape[0] == 1 else dsrc[i:i + step]
+                    out[i:i + step] = _process(src[i:i + step], dch)
+                    _prog.tick(min(step, int(src.shape[0]) - i))
             return {"ui": ui, "result": (torch.from_numpy(out).to(image.device, dtype=image.dtype),)}
 
-        out = _process(np.asarray(image, dtype=np.float32))
+        arr = np.asarray(image, dtype=np.float32)
+        out = _process(arr, None if dsrc is None else np.asarray(dsrc, dtype=np.float32))
         return {"ui": ui, "result": (out,)}
 
     # ------------------------------------------------------------------

@@ -89,11 +89,61 @@ export function isPackNode(node) {
     return c.startsWith("ULS") || c === "UltimateLoraStack";
 }
 
+/** v965: does this frontend already derive widget.hidden FROM options.hidden?
+ *
+ * Measured 19.09.2026. Frontend 1.53.6 gives BaseWidget
+ *   get hidden(){ return this._state.options.hidden }   (settingStore-*.js)
+ * and its classic and Vue isWidgetVisible both read widget.hidden -- the two
+ * truths this file was written for are ONE truth there. Our getter mirror on
+ * options.hidden then reads w.hidden -> options.hidden -> our getter -> ...
+ * and no workflow loads at all (RangeError, measured on every pack node).
+ * Frontend 1.49.6 keeps `hidden` a plain field on the instance: no accessor
+ * anywhere on the prototype chain, the mirror is needed and harmless.
+ *
+ * The decision is read from the prototype chain of the widget itself, never
+ * from a version string: the accessor IS the fact that matters. */
+export function hiddenIsAccessor(w) {
+    let p = (w && typeof w === "object") ? Object.getPrototypeOf(w) : null;
+    while (p && p !== Object.prototype) {
+        const d = Object.getOwnPropertyDescriptor(p, "hidden");
+        if (d) return typeof d.get === "function";
+        p = Object.getPrototypeOf(p);
+    }
+    return false;
+}
+
+/** "getter" = options.hidden is derived live (1.49.6 rule);
+ *  "value"  = the frontend derives widget.hidden from options.hidden itself,
+ *             so we only WRITE options.hidden for the forms it cannot see
+ *             (a "pls-hidden-" type, type "hidden", a zero-height row). */
+export function mirrorMode(w) {
+    return hiddenIsAccessor(w) ? "value" : "getter";
+}
+
+/** value mode: push the classic verdict into options.hidden, never define a
+ *  getter. Only the hidden direction is ever written: a widget the frontend
+ *  hides through options.hidden already reads back as hidden here. */
+function syncValue(w) {
+    const o = w.options;
+    if (classicHidden(w) && o.hidden !== true) {
+        o.hidden = true;
+        return true;
+    }
+    return false;
+}
+
 /** Make options.hidden follow the classic state. Idempotent; true if installed. */
 export function mirrorWidget(w) {
     if (!w || typeof w !== "object") return false;
     if (!w.options || typeof w.options !== "object") w.options = {};
     const o = w.options;
+    if (hiddenIsAccessor(w)) {
+        // v965: never a getter on an accessor frontend (see hiddenIsAccessor)
+        const first = !Object.prototype.hasOwnProperty.call(w, "__ulsHiddenSync");
+        if (first) Object.defineProperty(w, "__ulsHiddenSync", { value: true, enumerable: false });
+        syncValue(w);
+        return first;
+    }
     if (Object.prototype.hasOwnProperty.call(o, "__ulsHiddenMirror")) return false;
     let override = (o.hidden === true) ? true : undefined;
     Object.defineProperty(o, "hidden", {
@@ -149,6 +199,9 @@ function syncNode(node) {
     for (const w of (node.widgets || [])) {
         if (!w || typeof w !== "object") continue;
         const h = classicHidden(w);
+        if (h && hiddenIsAccessor(w) && w.options && w.options.hidden !== true) {
+            w.options.hidden = true;   // v965 value mode: a late "pls-hidden-" / zero-height verdict
+        }
         if (_lastHidden.get(w) !== h) {
             if (_lastHidden.has(w)) changed = true;
             _lastHidden.set(w, h);

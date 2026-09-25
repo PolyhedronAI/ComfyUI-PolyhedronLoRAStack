@@ -266,3 +266,55 @@ def safetensors_header_names(path, _max_header=64 << 20):
     if not isinstance(meta, dict):
         return None
     return frozenset(k for k in meta if k != "__metadata__")
+
+
+# ---------------------------------------------------------------------------
+# v986 -- one layer, however its LoRA spells it
+# ---------------------------------------------------------------------------
+# Two LoRAs may name the SAME model weight differently: kohya writes
+# `lora_unet_blocks_0_attn_qkv_proj` + .lora_up/.lora_down, the ComfyUI /
+# Diffusers-converted form writes `diffusion_model.blocks.0.attn.qkv_proj` +
+# .lora_B/.lora_A. Core maps both to one weight (comfy/lora.py,
+# model_lora_keys_unet: key_map["lora_unet_" + X.replace(".", "_")] and
+# key_map["diffusion_model." + X] point at the same key). Until v986 the
+# merge collected layers by their SPELLING, so a mixed group could not be
+# merged at all (it fell back to SEQ), and two spellings of one weight in a
+# merged dict would have let the later entry overwrite the earlier in
+# load_lora -- a LoRA silently lost.
+#
+# _canonical_base is that same equivalence, and nothing more: it strips the two
+# prefixes Core treats as one and writes the rest with underscores. Every
+# other spelling (text encoder, lycoris_, ...) passes through unchanged, i.e.
+# is grouped exactly as before.
+
+_CANON_PREFIXES = (("diffusion_model.", True), ("lora_unet_", False))
+
+
+def _canonical_base(base):
+    """A grouping key: equal for two bases that Core maps to one UNet weight."""
+    for pre, dotted in _CANON_PREFIXES:
+        if base.startswith(pre):
+            rest = base[len(pre):]
+            return "unet:" + (rest.replace(".", "_") if dotted else rest)
+    return base
+
+
+def _kohya_base(base):
+    """The kohya spelling of a UNet base (`lora_unet_` + underscores) -- exact in
+    this direction, unlike the reverse (an underscore in a module name cannot
+    be told from a dot). Other bases are returned as they are."""
+    c = _canonical_base(base)
+    return "lora_unet_" + c[len("unet:"):] if c.startswith("unet:") else base
+
+
+def _merged_naming(convs):
+    """(output convention, spell) for a merged/baked layer set. One naming in
+    the group: its own, spelling untouched -- the pre-v986 output, key for key.
+    Mixed naming: kohya (.lora_up/.lora_down), every UNet layer spelled the
+    kohya way, because only that direction translates without the model. The
+    written dict then holds ONE naming; Core reads it like any kohya LoRA."""
+    cs = [c for c in convs if c is not None]
+    if len(set(cs)) <= 1:
+        return (cs[0] if cs else None), (lambda b: b)
+    k = next((c for c in cs if c[0].startswith(".lora_up")), cs[0])
+    return k, _kohya_base

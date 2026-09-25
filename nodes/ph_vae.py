@@ -58,6 +58,42 @@ except Exception:                     # script import (tests, tooling)
                 return False
 
 
+# v1010: the shared progress instrument -- a whole-clip encode/decode is ONE
+# call that cannot report, so it runs inside a heartbeat (console every 15 s,
+# the green bar by elapsed / learned estimate) and learns its own rate per
+# VAE class and lane: the SECOND run of a size class opens with an ETA.
+try:
+    from .ph_progress import blocking as _blocking, model_key as _model_key
+except Exception:
+    try:
+        from ph_progress import blocking as _blocking, model_key as _model_key
+    except Exception:   # last resort: a silent capsule, the run is untouched
+        class _blocking:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def _model_key(obj):
+            return type(obj).__name__
+
+
+def _mvals(t):
+    """Millions of values in a tensor-like (the rate's unit): read from the
+    shape, so a stub or a nested latent never breaks the lane."""
+    try:
+        n = 1
+        for v in tuple(t.shape):
+            n *= int(v)
+        return max(1e-6, n / 1e6)
+    except Exception:
+        return 1.0
+
+
 _MODES = ["both", "encode", "decode", "roundtrip"]
 _TILING = ["auto", "off", "on"]
 
@@ -358,18 +394,23 @@ class ULSVAE:
     def _encode_lane(self, vae, pixels, verdict, tile_size, tile_overlap,
                      temporal_size, temporal_overlap):
         t0 = time.monotonic()
-        if verdict == "tiled":
-            # Stock VAEEncodeTiled semantics: pixel-space tiles, raw frame
-            # counts; sd.py converts internally.
-            t = vae.encode_tiled(pixels[:, :, :, :3], tile_x=int(tile_size),
-                                 tile_y=int(tile_size),
-                                 overlap=int(tile_overlap),
-                                 tile_t=int(temporal_size),
-                                 overlap_t=int(temporal_overlap))
-        else:
-            # Stock VAEEncode: full pass; comfy itself falls back to tiled
-            # on a REAL OOM exception - we keep that net underneath ours.
-            t = vae.encode(pixels[:, :, :, :3])
+        _what = "encode %df %dx%d (%s)" % (int(pixels.shape[0]), int(pixels.shape[2]),
+                                          int(pixels.shape[1]), verdict)
+        with _blocking("VAE", "vae:encode:%s:%s" % (_model_key(vae), verdict),
+                       size=_mvals(pixels), what=_what,
+                       bar=not (verdict == "tiled" and getattr(vae, "latent_dim", 2) == 2)):
+            if verdict == "tiled":
+                # Stock VAEEncodeTiled semantics: pixel-space tiles, raw frame
+                # counts; sd.py converts internally.
+                t = vae.encode_tiled(pixels[:, :, :, :3], tile_x=int(tile_size),
+                                     tile_y=int(tile_size),
+                                     overlap=int(tile_overlap),
+                                     tile_t=int(temporal_size),
+                                     overlap_t=int(temporal_overlap))
+            else:
+                # Stock VAEEncode: full pass; comfy itself falls back to tiled
+                # on a REAL OOM exception - we keep that net underneath ours.
+                t = vae.encode(pixels[:, :, :, :3])
         dur = time.monotonic() - t0
         n = int(pixels.shape[0])
         print(f"[PLS] VAE: encode done in {dur:.1f}s "
@@ -407,11 +448,16 @@ class ULSVAE:
             else:
                 tps, tpo = None, None
             comp = vae.spacial_compression_decode()
-            images = vae.decode_tiled(latent, tile_x=ts // comp,
-                                      tile_y=ts // comp, overlap=ov // comp,
-                                      tile_t=tps, overlap_t=tpo)
+            with _blocking("VAE", "vae:decode:%s:tiled" % _model_key(vae),
+                           size=_mvals(latent), what="decode latent %s (tiled)" % (tuple(latent.shape),),
+                           bar=(getattr(latent, "ndim", 4) != 4)):   # a 2-D tiled pass drives Core's own bar
+                images = vae.decode_tiled(latent, tile_x=ts // comp,
+                                          tile_y=ts // comp, overlap=ov // comp,
+                                          tile_t=tps, overlap_t=tpo)
         else:
-            images = vae.decode(latent)
+            with _blocking("VAE", "vae:decode:%s:full" % _model_key(vae),
+                           size=_mvals(latent), what="decode latent %s (full)" % (tuple(latent.shape),)):
+                images = vae.decode(latent)
         if images.ndim == 5:   # combine video batches, like stock
             images = images.reshape(-1, images.shape[-3], images.shape[-2],
                                     images.shape[-1])
@@ -469,7 +515,9 @@ class ULSVAE:
         if isinstance(samples, dict) and "sample_rate" in samples:
             rate, via = int(samples["sample_rate"]), "the latent's own sample_rate"
 
-        audio = audio_vae.decode(latent).movedim(-1, 1)
+        with _blocking("VAE", "vae:audio:%s" % _model_key(audio_vae),
+                       size=_mvals(latent), what="audio decode"):
+            audio = audio_vae.decode(latent).movedim(-1, 1)
 
         try:
             peak_in = float(audio.abs().max())

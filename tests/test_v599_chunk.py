@@ -194,6 +194,25 @@ loop_src = textwrap.dedent(PY[PY.index("        # THE CHUNK CLIMBS"):
                               PY.index("        wall = _now() - t_start")])
 
 
+class _SilentProgress:
+    est_total = None
+
+    def __init__(self, *a, **k):
+        self.ticks = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def tick(self, n=1):
+        self.ticks += n
+
+    def rate_left(self):
+        return None, None
+
+
 def _drive(peak_per_pair_mb):
     """Run the real loop. `peak_per_pair_mb` is what the allocator REPORTS --
     pass a lie to prove the wall clock still saves the run."""
@@ -235,6 +254,10 @@ def _drive(peak_per_pair_mb):
         "w": 768, "h": 768, "pad_w": 0, "pad_h": 0, "_RunClock": None,
         "_now": lambda: clk[0], "t_start": 0.0, "t_said": 0.0, "done": 0,
         "print": lambda *a: None,
+        # v1010 RE-GROUNDING (declared): the loop now drives the shared
+        # progress instrument (green bar + ETA); the harness hands it a
+        # silent stand-in -- the chunk law under test is untouched.
+        "prog": _SilentProgress(), "_fmt_clock": lambda s: "0:00",
     })
     exec(loop_src, env)
     return env["done"], env["chunk"], clk[0], sizes

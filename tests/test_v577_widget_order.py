@@ -381,8 +381,12 @@ def main():
     # of this line said 35 from arithmetic and the gate said 33 on the first
     # run. Keeping the internal number would make a correct public build look
     # broken; a lower one would let a real loss slip through.
-    if guarded < 34:
-        _fail(f"only {guarded} nodes are guarded - the audit measured 34. "
+    # v380: the census is 35. wan_sigma_schedule.py now carries the class
+    # ULSSigmaList (the internal Sigma List node); it is NOT registered in this
+    # build, but the gate reads INPUT_TYPES statically, so it joins the guarded
+    # set and the baseline (WIDGET_ORDER_baseline_v380). Measured, not derived.
+    if guarded < 35:
+        _fail(f"only {guarded} nodes are guarded - the audit measured 35. "
               f"Something went dynamic without being declared.")
 
     print(f"[test_v577_widget_order] PASS: {static_guarded} nodes guarded "

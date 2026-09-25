@@ -7,19 +7,19 @@
 
 import numpy as np
 
-# ── The extension law (v377) ────────────────────────────────────────────────
+# ── The extension law (v968) ────────────────────────────────────────────────
 # ONE list per media kind, for the loader AND the routes.
 #
-# Before v377 these tuples lived TWICE -- once in ph_media_loader, once in
+# Before v968 these tuples lived TWICE -- once in ph_media_loader, once in
 # uls_routes -- with a comment promising they were "kept in lock-step". A
 # comment is not a mechanism: the moment a format is added, it has to be
 # remembered in two files, and whichever half is forgotten fails silently
 # (the grid lists a file the loader refuses, or the loader accepts one the
 # grid never shows). Public issue #4 is exactly that shape. The law lives
-# here; both sides import it, and test_v377_media_formats forbids a second
+# here; both sides import it, and test_v968_media_formats forbids a second
 # literal extension tuple anywhere else in the tree.
 #
-# .avif joins in v377. Listing a format and DECODING it are two different
+# .avif joins in v968. Listing a format and DECODING it are two different
 # questions -- see avif_decoder_ready() below; the grid may show a file the
 # installed Pillow cannot open, and the loader has to say so in words.
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".avif", ".bmp", ".gif",

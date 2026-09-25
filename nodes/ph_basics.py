@@ -60,6 +60,47 @@ import torch
 from . import uls_noise
 from . import ph_te_detect
 
+# v1010: the shared progress instrument (green bar + console + learned ETA).
+# A harness that loads this file alone gets silent stand-ins -- the node's
+# work never depends on its instruments.
+try:
+    from .ph_progress import NodeProgress as _NodeProgress, blocking as _blocking
+except Exception:
+    try:
+        from ph_progress import NodeProgress as _NodeProgress, blocking as _blocking
+    except Exception:
+        class _blocking:
+            est_total = est = None
+
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def tick(self, n=1):
+                pass
+
+            def rate_left(self):
+                return None, None
+
+        _NodeProgress = _blocking
+
+
+def _file_mb(*paths):
+    """v1010: the rate unit of a load -- megabytes on disk (0.001 floor)."""
+    total = 0.0
+    for p in paths:
+        try:
+            total += os.path.getsize(p) / 1e6
+        except Exception:
+            pass
+    return max(1e-3, total)
+
+
 
 _UI_KEY = "pls_basics"  # status line channel, rendered by web/js/ph_basics.js
 
@@ -617,12 +658,14 @@ class ULSLoadCLIP:
             model_options["load_device"] = torch.device("cpu")
             model_options["offload_device"] = torch.device("cpu")
 
-        clip = comfy.sd.load_clip(
-            ckpt_paths=paths,
-            embedding_directory=folder_paths.get_folder_paths("embeddings"),
-            clip_type=clip_type,
-            model_options=model_options,
-        )
+        with _blocking("Load CLIP", "load:clip:%s" % str(clip_type), size=_file_mb(*paths),
+                       what="load %d file(s), %.0f MB" % (len(paths), _file_mb(*paths)), unit="MB"):
+            clip = comfy.sd.load_clip(
+                ckpt_paths=paths,
+                embedding_directory=folder_paths.get_folder_paths("embeddings"),
+                clip_type=clip_type,
+                model_options=model_options,
+            )
 
         total = 0.0
         for path in paths:
@@ -704,8 +747,10 @@ class ULSLoadVAE:
         dtype = getattr(torch, self._DTYPES[precision]) if precision in self._DTYPES else None
 
         vae_path = folder_paths.get_full_path_or_raise("vae", vae_name)
-        sd = comfy.utils.load_torch_file(vae_path)
-        vae = comfy.sd.VAE(sd=sd, dtype=dtype)
+        with _blocking("Load VAE", "load:vae", size=_file_mb(vae_path),
+                       what="load %s (%.0f MB)" % (vae_name, _file_mb(vae_path)), unit="MB"):
+            sd = comfy.utils.load_torch_file(vae_path)
+            vae = comfy.sd.VAE(sd=sd, dtype=dtype)
         if hasattr(vae, "throw_exception_if_invalid"):
             vae.throw_exception_if_invalid()
 
@@ -965,10 +1010,12 @@ class ULSLoadModel:
             size = _size_mb(name, ("unet_gguf", "diffusion_models_gguf", "unet"))
         elif kind == "checkpoint":
             path = folder_paths.get_full_path_or_raise("checkpoints", name)
-            out = comfy.sd.load_checkpoint_guess_config(
-                path, output_vae=False, output_clip=False,
-                embedding_directory=folder_paths.get_folder_paths("embeddings"),
-            )
+            with _blocking("Load Model", "load:model:checkpoint", size=_file_mb(path),
+                           what="load %s (%.0f MB)" % (name, _file_mb(path)), unit="MB"):
+                out = comfy.sd.load_checkpoint_guess_config(
+                    path, output_vae=False, output_clip=False,
+                    embedding_directory=folder_paths.get_folder_paths("embeddings"),
+                )
             model = out[0]
             dtype_txt = "checkpoint (MODEL only)"
             size = _size_mb(name, ("checkpoints",))
@@ -994,7 +1041,9 @@ class ULSLoadModel:
                     f"[PLS] Load Model: '{name}' not found in "
                     f"diffusion_models/unet/checkpoints."
                 )
-            model = comfy.sd.load_diffusion_model(path, model_options=model_options)
+            with _blocking("Load Model", "load:model:diffusion:%s" % weight_dtype, size=_file_mb(path),
+                           what="load %s (%.0f MB)" % (name, _file_mb(path)), unit="MB"):
+                model = comfy.sd.load_diffusion_model(path, model_options=model_options)
             dtype_txt = weight_dtype
             size = _size_mb(name, ("diffusion_models", "unet"))
 

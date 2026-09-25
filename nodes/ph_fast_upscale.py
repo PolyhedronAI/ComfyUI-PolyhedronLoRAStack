@@ -138,6 +138,36 @@ def _crop_or_pad(frames, dst_w, dst_h, keep, position, color, is_mask=False):
     return canvas
 
 
+# v1010: the shared progress instrument (green bar + console + learned ETA).
+# A harness that loads this file alone gets silent stand-ins -- the node's
+# work never depends on its instruments.
+try:
+    from .ph_progress import NodeProgress as _NodeProgress, blocking as _blocking
+except Exception:
+    try:
+        from ph_progress import NodeProgress as _NodeProgress, blocking as _blocking
+    except Exception:
+        class _blocking:
+            est_total = est = None
+
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def tick(self, n=1):
+                pass
+
+            def rate_left(self):
+                return None, None
+
+        _NodeProgress = _blocking
+
+
 def _esrgan_chunked(frames, upscale_model, per_batch):
     """The wired UPSCALE_MODEL via core (spandrel), fed in sub-batches so a
     65-frame 4x intermediate never has to exist as ONE tensor. No model
@@ -148,9 +178,20 @@ def _esrgan_chunked(frames, upscale_model, per_batch):
               "skipping the ESRGAN pass (plain resize)")
         return frames
     out = []
-    for i, j in _chunks(int(frames.shape[0]), per_batch):
-        (part,) = _MODEL_UPSCALER.upscale(upscale_model, frames[i:j])
-        out.append(part.cpu())
+    # v1010: Core's upscaler drives the green bar PER CHUNK (it restarts at 0
+    # each time); this counts the WHOLE clip on the console -- pace + ETA,
+    # learned per upscale model class (bar=False: one writer per bar).
+    _n = int(frames.shape[0])
+    try:
+        _mp = float(frames.shape[1] * frames.shape[2]) / 1e6
+    except Exception:
+        _mp = 1.0
+    with _NodeProgress("Fast Upscale", "fastup:%s" % type(getattr(upscale_model, "model", upscale_model)).__name__,
+                       total=_n, unit="frame", size=_mp, bar=False, quiet=_n <= 1) as _prog:
+        for i, j in _chunks(int(frames.shape[0]), per_batch):
+            (part,) = _MODEL_UPSCALER.upscale(upscale_model, frames[i:j])
+            out.append(part.cpu())
+            _prog.tick(j - i)
     return torch.cat(out, dim=0)
 
 

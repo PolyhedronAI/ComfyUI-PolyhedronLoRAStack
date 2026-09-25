@@ -49,6 +49,7 @@ def main():
         re.search(r"function _tableToCanon[\s\S]*?\n\}", js).group(0),
         re.search(r"function _legacyDisplayToCanon[\s\S]*?\n\}", js).group(0),
         re.search(r"function _saveOrderOf[\s\S]*?\n\}", js).group(0),
+        re.search(r"function _saveOrderByTypes[\s\S]*?\n\}", js).group(0),   # v1005
         # ---- verdicts, pinned -------------------------------------------------
         # marked short-circuits everything:
         'if (_saveOrderOf(["x"], true) !== "canon") {',

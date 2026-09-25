@@ -76,6 +76,7 @@ try:
     from .uls_merge_policy import (_joint_merge_downgrade, JOINT_MERGE_REASON,  # noqa: F401
                                     _apply_decision, BYPASS_KEY, APPLY_MODES,  # noqa: F401
                                     _foreign_keys, FOREIGN_SUFFIXES,          # noqa: F401
+                                    _canonical_base, _merged_naming,          # noqa: F401  v986
                                     payload_family,                           # noqa: F401
                                     safetensors_header_names,                 # noqa: F401
                                     safetensors_metadata)                     # noqa: F401
@@ -84,10 +85,21 @@ except ImportError:  # pragma: no cover - direct-run fallback, as elsewhere
     from uls_merge_policy import (_joint_merge_downgrade, JOINT_MERGE_REASON,   # noqa: F401
                                    _apply_decision, BYPASS_KEY, APPLY_MODES,   # noqa: F401
                                    _foreign_keys, FOREIGN_SUFFIXES,           # noqa: F401
+                                   _canonical_base, _merged_naming,           # noqa: F401  v986
                                    payload_family,                            # noqa: F401
                                    safetensors_header_names,                  # noqa: F401
                                    safetensors_metadata)                      # noqa: F401
     from uls_lora_convert import convert_foreign_lora                          # noqa: F401
+
+# v983: the overlap measurement (pure) for the energy cap.
+try:
+    from .uls_overlap_math import measure_overlap as _ov_measure, cap_factor as _ov_cap
+    from .uls_overlap_math import name_shortener as _ov_names          # v986
+    from . import uls_sched_loras as _SL                                  # v989
+except ImportError:  # pragma: no cover - direct-run fallback, as elsewhere
+    from uls_overlap_math import measure_overlap as _ov_measure, cap_factor as _ov_cap
+    from uls_overlap_math import name_shortener as _ov_names           # v986
+    import uls_sched_loras as _SL                                         # v989
 
 # v912: the joint-model witness (FLOW_AV / audio_shift / fix_empty_latent) --
 # the same probe the sampler and the upscaler already read, imported the same way.
@@ -491,6 +503,121 @@ def _row_clip_weight(row: dict, fallback: float) -> float:
     return fallback
 
 
+# v981: per-group strength. ONE dial per group scales every LoRA of that group
+# -- model AND CLIP weight -- so the ratio inside the group stays as set while
+# the whole group gets louder or quieter. Absent key = 1.0 = bit-identical to
+# v980. Clamped: a stray value can neither flip a group's sign nor blow it up.
+GROUP_MULT_MIN = 0.0    # two plain assignments: tests/_lift.py lifts Name targets only
+GROUP_MULT_MAX = 2.0
+
+
+def _group_mult(mapping, group) -> float:
+    """The strength factor of `group` from cfg["group_mult"]; 1.0 when absent
+    or unreadable. Pure -- guard-driven (test_v981_group_mult)."""
+    if not isinstance(mapping, dict) or group not in mapping:
+        return 1.0
+    v = _safe_weight(mapping.get(group), default=float("nan"))
+    if math.isnan(v):
+        return 1.0
+    return max(GROUP_MULT_MIN, min(GROUP_MULT_MAX, v))
+
+
+def _group_scaled(grp_rows, grp_weights, gm):
+    """(model weights, CLIP weights) of one group with its factor applied.
+    The CLIP weight is read from the row FIRST (wClip, else the model weight)
+    and then scaled, so an explicit CLIP strength moves with its group too."""
+    ws = [round(w * gm, 4) for w in grp_weights]
+    cs = [round(_row_clip_weight(r, w) * gm, 4)
+          for r, w in zip(grp_rows, grp_weights, strict=True)]
+    return ws, cs
+
+
+# v983: overlap-neutral energy cap per group (uls_overlap_math.cap_factor).
+# The measurement loads the group's LoRAs (through the same cache and
+# conversion as the merge) and runs one Gram product per layer -- cached by
+# (file, weights, mtime, size) so a queue with an unchanged group pays once.
+_CAP_CACHE = OrderedDict()
+_CAP_CACHE_MAX = 32
+
+
+def _group_cap_factor(grp_rows, ws, cs, get_path=None):
+    """(factor, ratio, note) for one group at the weights it will run with.
+    Never raises: a group that cannot be measured runs uncapped and says so."""
+    gp = get_path or (lambda n: folder_paths.get_full_path("loras", n))
+    items = []
+    for r, w, c in zip(grp_rows, ws, cs, strict=True):
+        name = r.get("name", "None")
+        if not name or name == "None" or (abs(w) < 1e-6 and abs(c) < 1e-6):
+            continue
+        path = gp(name)
+        if not path:
+            return 1.0, 1.0, "cap skipped: %s not found" % _short_name(name, 30)
+        try:
+            st = os.stat(path)
+            items.append((name, path, float(w), float(c), st.st_mtime, st.st_size))
+        except OSError:
+            return 1.0, 1.0, "cap skipped: %s unreadable" % _short_name(name, 30)
+    if len(items) < 2:
+        return 1.0, 1.0, None
+    key = tuple((n, round(w, 6), round(c, 6), m, z) for n, _p, w, c, m, z in items)
+    hit = _CAP_CACHE.get(key)
+    if hit is not None:
+        _CAP_CACHE.move_to_end(key)
+        return hit
+    try:
+        import torch
+        loras = []
+        for name, path, w, c, _m, _z in items:
+            td = _convert_lora_like_core(_cached_load_torch_file(path), path)
+            conv = _detect_convention(td) if td else None
+            if conv is None:
+                return 1.0, 1.0, "cap skipped: %s is not a plain LoRA" % _short_name(name, 30)
+            loras.append({"td": td, "conv": conv, "weight": w, "clip_weight": c})
+        # v986: a mixed key naming is measured per layer (_canonical_base in
+        # uls_overlap_math), as the merge now merges it -- no longer skipped.
+        meas = _ov_measure(loras, torch, dev=_resolve_pick_device(), tick=_check_interrupt)
+        factor, ratio = _ov_cap(meas["G"])
+        out = (factor, ratio, None)
+    except INTERRUPT_EXC:
+        raise
+    except Exception as ex:
+        return 1.0, 1.0, "cap skipped: measurement failed (%s)" % ex
+    _CAP_CACHE[key] = out
+    while len(_CAP_CACHE) > _CAP_CACHE_MAX:
+        _CAP_CACHE.popitem(last=False)
+    return out
+
+
+def _group_effective(cfg, group, grp_rows, grp_weights, get_path=None):
+    """THE weights a group runs with -- one function for the Stack, the Merge
+    Analyzer and the bake (v983). Group strength first (v981), then, when the
+    group's energy cap is on, the overlap-neutral factor measured at those
+    weights. Returns (model weights, CLIP weights, strength, cap) where cap is
+    None (off / one LoRA) or {factor, ratio, note}."""
+    gm = _group_mult(cfg.get("group_mult", {}), group)
+    ws, cs = _group_scaled(grp_rows, grp_weights, gm)
+    cap = None
+    gc = cfg.get("group_cap") if isinstance(cfg.get("group_cap"), dict) else {}
+    if gc.get(group) and len(grp_rows) >= 2:
+        f, ratio, note = _group_cap_factor(grp_rows, ws, cs, get_path)
+        cap = {"factor": f, "ratio": ratio, "note": note}
+        if f != 1.0:
+            ws = [round(w * f, 4) for w in ws]
+            cs = [round(c * f, 4) for c in cs]
+    return ws, cs, gm, cap
+
+
+def _cap_text(cap):
+    """The console / report suffix for a group's cap, '' when off."""
+    if not cap:
+        return ""
+    if cap.get("note"):
+        return "  [%s]" % cap["note"]
+    if cap["factor"] != 1.0:
+        return "  cap \u00d7%.2f (overlap %.2f)" % (cap["factor"], cap["ratio"])
+    return "  cap: none needed (overlap %.2f)" % cap["ratio"]
+
+
 # v302: lora-key prefixes that target the text encoder (kohya `lora_te`,
 # `lora_te1/2/3` for SDXL/SD3 duals, diffusers `text_encoder.`, cascade
 # `lora_prior_te`). Used to pick the CLIP weight inside the merged build.
@@ -511,6 +638,87 @@ def _convention_label(conv):
     if "lora_B" in up:
         return "WAN/FLUX (.lora_B/.lora_A)"
     return "%s/%s" % (conv[0], conv[1])
+
+
+def _concat_blocker(names, raw):
+    """v985 -- would the CONCAT/DARE merge of these LOADED dicts fall back to
+    SEQ, and why? None = the merge runs. Otherwise (kind, [(name, label)]):
+      'unrecognised' -- a LoRA matches no known layout (LyCORIS/LoHA/LoKr?)
+      'foreign'      -- keys the merged dict cannot carry (DoRA, diff, conv mid)
+    v986: MIXED KEY NAMING NO LONGER BLOCKS. Each LoRA is read in its own
+    convention and its layers are grouped by _canonical_base, the equivalence
+    Core's key map applies -- so kohya and lora_A/lora_B LoRAs merge per layer
+    (field, 21.09.2026: 5 of Frank's 19 H3 LoRAs used the other naming and sent
+    both groups to SEQ). `_naming_mix` reports the mix for the console.
+    The Stack's _apply_concat_or_dare decides with THIS, and the Merge
+    Analyzer asks the same function before it prints a group as CONCAT --
+    so the report can no longer claim a merge the run does not do (field,
+    21.09.2026: both of Frank's groups read 'CONCAT +TRIM' and ran SEQ)."""
+    convs = [_detect_convention(td) for td in raw]
+    unrec = [(names[i], "not a plain LoRA (LyCORIS/LoHA/LoKr?)")
+             for i, c in enumerate(convs) if c is None]
+    if unrec:
+        return ("unrecognised", unrec)
+    items = []
+    for n, td in zip(names, raw):
+        fk = _foreign_keys(td)
+        if fk:
+            items.append((n, ", ".join(fk)))
+        elif _has_mid_tensor(td):
+            items.append((n, "conv mid tensor"))
+    if items:
+        return ("foreign", items)
+    return None
+
+
+def _target_clashes(merged_td, up_suffix, keymap):
+    """v987 -- [(target weight, base A, base B)] for merged layers that Core's
+    key map sends to the SAME weight. Empty = every layer has its own weight."""
+    seen, out = {}, []
+    for k in merged_td:
+        if not k.endswith(up_suffix):
+            continue
+        base = k[: -len(up_suffix)]
+        t = keymap.get(base)
+        if t is None:
+            continue
+        if isinstance(t, tuple):          # Core maps some keys to (key, slice)
+            t = repr(t)
+        if t in seen:
+            out.append((t, seen[t], base))
+        else:
+            seen[t] = base
+    return out
+
+
+def _attach_schedule_loras(model, names_weights):
+    """v989 -- when a schedule-bound LoRA (HyperFlow ...) is active, attach
+    the record the Sampler checks (uls_sched_loras). Returns the model to hand
+    on: a clone carrying the record, or the model as it was. Never raises."""
+    try:
+        found = _SL.recognise(names_weights)
+        if not found or model is None or not hasattr(model, "set_attachments"):
+            return model
+        prev = model.get_attachment(_SL.ATTACH_KEY) if hasattr(model, "get_attachment") else None
+        m = model.clone()
+        m.set_attachments(_SL.ATTACH_KEY, _SL.record(found, prev))
+        for e, _n in found:
+            print(f"[PLS] {e['label']} LoRA active -- it needs its trained sigma grid: "
+                  f"a Polyhedron Sigma List with preset '{e['preset']}' on the "
+                  f"Sampler's 'sigmas' (the Sampler checks)")
+        return m
+    except Exception as ex:
+        print(f"[PLS] \u26a0 schedule-LoRA record not attached ({ex})")
+        return model
+
+
+def _naming_mix(names, raw):
+    """v986 -- [(name, convention label)] when the group mixes key naming,
+    else []. Information only: the merge reads each LoRA in its own naming."""
+    convs = [_detect_convention(td) for td in raw]
+    if len({c for c in convs if c is not None}) < 2:
+        return []
+    return [(n, _convention_label(c)) for n, c in zip(names, convs)]
 
 
 def _short_name(lora_name: str, n: int = 38) -> str:
@@ -755,6 +963,43 @@ def _handoff_bypass(model, clip, merged_td, up_suffix, down_suffix,
 
 # ─── Apply: CONCAT / DARE ──────────────────────────────────────────────────
 
+class _NoProgress:
+    """v1010: the silent stand-in when ph_progress is out of reach (a lifted
+    harness) -- the merge never depends on its instrument."""
+    est_total = None
+
+    def __init__(self, *a, **k):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def tick(self, n=1):
+        pass
+
+
+def _merge_progress(total, mode, label="LoRA merge", quiet=None):
+    """v1010: the green bar over the merged base layers, a plan line with the
+    learned estimate, and a console line every 5 s on a long merge. Lazy and
+    defensive: an import failure hands back _NoProgress."""
+    try:
+        from .ph_progress import NodeProgress
+    except Exception:
+        try:
+            from ph_progress import NodeProgress
+        except Exception:
+            return _NoProgress()
+    try:
+        return NodeProgress(label, "merge:%s" % str(mode).lower(), total=int(total),
+                            unit="layer", say_every=5.0,
+                            quiet=(int(total) <= 1) if quiet is None else bool(quiet))
+    except Exception:
+        return _NoProgress()
+
+
 def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
                           mode: str, dare_variant: str = "channel",
                           trim: bool = False, resolve: bool = False,
@@ -836,36 +1081,44 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
     # printed for every clean group too.
     _fb = " (BAKED, not bypass)" if handoff == "bypass" else ""
 
+    _sn = _ov_names(valid_names)          # v988: distinct names in the messages
     # --- Detect convention per LoRA ---
+    # v985: the decision is _concat_blocker's -- the Merge Analyzer asks the
+    # same function. The messages below are unchanged.
     convs = [_detect_convention(td) for td in raw]
-    unrecognised = [valid_names[i] for i, c in enumerate(convs) if c is None]
+    _blk = _concat_blocker(valid_names, raw)
+    _bk = _blk[0] if _blk else None
+    unrecognised = [n for n, _l in _blk[1]] if _bk == "unrecognised" else []
     if unrecognised:
         print(f"[PLS] ⚠ {mode}: {len(unrecognised)} LoRA(s) use non-standard "
               f"format (LyCORIS/LoHA/LoKr?), falling back to SEQ{_fb}:")
         for n in unrecognised:
-            print(f"[PLS]      - {_short_name(n)}")
+            print(f"[PLS]      - {_sn(n, 38)}")
         return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
 
-    # Use the first LoRA's convention as the output naming.
-    out_up_suffix, out_down_suffix = convs[0]
+    # The output naming: the group's own when it has one (the first LoRA's, as
+    # always); v986 -- kohya for a mixed group, every UNet layer spelled the
+    # kohya way (_merged_naming: the one direction that translates exactly).
+    (out_up_suffix, out_down_suffix), _spell = _merged_naming(convs)
 
-    # All LoRAs in ONE merge group must share ONE naming convention. Mixing
-    # kohya (.lora_up/.lora_down) with WAN/FLUX (.lora_B/.lora_A) here would
-    # re-suffix bases collected under one convention with the OTHER's output
-    # suffix → unmappable keys. The dangerous case is partial mapping: if some
-    # keys still resolve, the non-matching LoRAs get silently dropped from the
-    # merge while the report claims success. SEQ applies each LoRA under its
-    # own convention, so it is the correct, safe path for a mixed group.
-    if len({c for c in convs}) > 1:
-        print(f"[PLS] ⚠ {mode}: group mixes LoRA naming conventions "
-              f"(kohya vs WAN/FLUX) — falling back to SEQ{_fb} so each LoRA is "
-              f"applied correctly under its own convention.")
-        # v917: name them. With eight LoRAs in the group the line above gave
-        # no way to tell WHICH file brought the other convention (field,
-        # 05.09.). The minority convention is the odd one out.
-        for n, c in zip(valid_names, convs):
-            print(f"[PLS]      - {_short_name(n)}  [{_convention_label(c)}]")
-        return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
+    # HISTORY (up to v985): a group had to share ONE naming convention -- the
+    # layers were collected by spelling, so kohya and lora_B/lora_A layers of
+    # one weight never met and the group went to SEQ. v986: a group that mixes kohya (.lora_up/.lora_down) and lora_B/lora_A
+    # naming is MERGED: each LoRA is read in its own convention and its layers
+    # are grouped by _canonical_base (Core's own equivalence of the two
+    # spellings). Until v986 this fell back to SEQ -- no merge, no TRIM, no
+    # cap, no bake. Said once, with the odd ones out named.
+    _mix = _naming_mix(valid_names, raw)
+    if _mix:
+        from collections import Counter as _C
+        _cnt = _C(lab for _n, lab in _mix)
+        _major = _cnt.most_common(1)[0][0]
+        print(f"[PLS]   {mode}: key naming mixed ("
+              + ", ".join(f"{c}x {lab.split(' ')[0]}" for lab, c in _cnt.most_common())
+              + ") -- merged per layer, each LoRA in its own naming")
+        for n, lab in _mix:
+            if lab != _major:
+                print(f"[PLS]      - {_sn(n, 38)}  [{lab}]")
 
     # --- Conv/LoCon CP-decomposition guard (v253) ---
     # A LoRA carrying a 'mid' tensor has layer delta up · mid · down, but the
@@ -879,21 +1132,29 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
     # loader applies them all, the merge would have dropped them silently.
     foreign = [(valid_names[i], _foreign_keys(td)) for i, td in enumerate(raw)]
     foreign = [(n, f) for n, f in foreign if f]
+    # (same test as _concat_blocker's 'foreign' kind -- reached only when the
+    # two branches above did not fire; the v985 guard pins the equivalence)
     if foreign or any(_has_mid_tensor(td) for td in raw):
         print(f"[PLS] \u26a0 {mode}: {len(foreign)} LoRA(s) carry keys the merged dict "
               f"cannot represent -- falling back to SEQ so Core's loader applies them{_fb}:")
         for n, f in foreign:
-            print(f"[PLS]      - {_short_name(n)}: {', '.join(f)}")
+            print(f"[PLS]      - {_sn(n, 38)}: {', '.join(f)}")
         return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
 
     # --- Per-LoRA: enumerate (base, up_key, down_key, alpha_key) ---
+    # Each LoRA in ITS OWN convention (v986: convs may differ per LoRA).
     per_lora_keys = [_collect_factor_keys(td, conv) for td, conv in zip(raw, convs, strict=True)]
 
-    # --- Group keys by their base name across LoRAs ---
-    base_to_sources = {}   # base_name → [(lora_idx, base, up_key, down_key, alpha_key), …]
+    # --- Group keys by the WEIGHT they patch across LoRAs ---
+    # v986: grouped by _canonical_base, not by spelling -- two spellings of one
+    # weight become ONE merged layer (before, the later entry overwrote the
+    # earlier one inside load_lora). The merged layer keeps the spelling of
+    # its first source, which Core's key map resolves. For a group whose LoRAs
+    # all spell a weight alike this is the old grouping, key for key.
+    base_to_sources = {}   # canonical → [(lora_idx, base, up_key, down_key, alpha_key), …]
     for li, triples in enumerate(per_lora_keys):
         for base, uk, dk, ak in triples:
-            base_to_sources.setdefault(base, []).append((li, base, uk, dk, ak))
+            base_to_sources.setdefault(_canonical_base(base), []).append((li, base, uk, dk, ak))
 
     if not base_to_sources:
         print(f"[PLS] ⚠ {mode}: no factor keys found, falling back to SEQ{_fb}")
@@ -942,9 +1203,15 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
     trim_channels_kept = 0
     trim_channels_total = 0
     _n_bases = len(base_to_sources)   # v260: denominator for the live RESOLVE progress line
+    _mprog = _merge_progress(_n_bases, mode)   # v1010: bar + learned ETA over the layers
+    _mprog.__enter__()
 
-    for base, sources in base_to_sources.items():
+    for _ckey, sources in base_to_sources.items():
         _check_interrupt()                     # v265: red X (Cancel) aborts during the merge
+        _mprog.tick()
+        # v986: one naming -> the first source's spelling, as before; mixed ->
+        # that spelling in kohya form.
+        base = _spell(sources[0][1])
         bs, as_ = [], []
         out_dim = None
         in_dim_flat = None
@@ -1096,6 +1363,7 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
         merged_td[base + ".alpha"]        = torch.tensor(float(B_concat.shape[1]),
                                                           dtype=torch.float32)
 
+    _mprog.__exit__(None, None, None)
     if not merged_td:
         print(f"[PLS] ⚠ {mode}: merged dict empty, falling back to SEQ{_fb}")
         return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
@@ -1123,8 +1391,26 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
 
         full_keymap = {**model_keymap, **clip_keymap}
 
+        # v987: TWO merged layers must never land on ONE weight. load_lora
+        # writes patch_dict[target] per layer, so the second would silently
+        # replace the first -- a LoRA lost while the console says 'merged'.
+        # _canonical_base (v986) meets the two spellings Core's key map knows
+        # by name (lora_unet_ + underscores / diffusion_model.); any OTHER
+        # pair of spellings that Core maps to the same weight (diffusers
+        # names, a prefix we do not know) is caught here, with the model's
+        # own key map, and the group runs SEQ -- each LoRA through Core's
+        # loader, nothing lost.
+        _clash = _target_clashes(merged_td, out_up_suffix, full_keymap)
+        if _clash:
+            print(f"[PLS] \u26a0 {mode}: {len(_clash)} weight(s) are reached by two "
+                  f"spellings in this group -- merging would drop one; falling back "
+                  f"to SEQ{_fb}:")
+            for _t, _a, _b in _clash[:6]:
+                print(f"[PLS]      - {_t}: '{_a}' and '{_b}'")
+            return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
+
         if handoff == "bypass":
-            shorts = [_short_name(n, 18) for n in valid_names]
+            shorts = [_sn(n, 24) for n in valid_names]
             mode_tag = mode + (" +TRIM" if trim else "") + (" +RESOLVE" if resolve else "")
             res = _handoff_bypass(model, clip, merged_td, out_up_suffix, out_down_suffix,
                                   model_keymap, clip_keymap, mode_tag, n_active, shorts)
@@ -1149,7 +1435,7 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
                 new_clip = clip.clone()
                 new_clip.add_patches(clip_loaded, 1.0, 1.0)
 
-        shorts = [_short_name(n, 18) for n in valid_names]
+        shorts = [_sn(n, 24) for n in valid_names]
         mode_tag = mode + (" +TRIM" if trim else "") + (" +RESOLVE" if resolve else "")
         print(f"[PLS] ✓ {mode_tag} merged {n_active} LoRAs [{', '.join(shorts)}]  "
               f"layers={len(merged_td)//3}  patches={len(loaded)}")
@@ -1866,6 +2152,14 @@ class UltimateLoraStack:
         # v105: flat_mode disables group sorting — rows applied in list order.
         flat_mode = bool(cfg.get("flatMode", False))
 
+        # v981: per-group strength {"subject": 0.8, ...} and v983 energy cap
+        # {"subject": true} are read by _group_effective(cfg, ...) per group.
+        # v981: the global multiplier lost its slider long ago (FOOTER_H = 0)
+        # and the backend never applied it. A workflow that still carries a
+        # value != 1 would silently run at x1.0 -- say so instead. Reviving it
+        # would change the result of every such saved workflow.
+        _dead_mult = _safe_weight(cfg.get("mult", 1.0), default=1.0)
+
         # v105: custom group order — {"subject": 1, "detail": 2, "scene": 3, ...}
         custom_order = cfg.get("groupOrder", {}) if isinstance(cfg.get("groupOrder"), dict) else {}
 
@@ -1889,7 +2183,13 @@ class UltimateLoraStack:
         if not rows:
             lines.append("  ⚠ No rows received from frontend!")
             lines.append(f"  uls_config: {uls_config[:80]}")
+        if abs(_dead_mult - 1.0) > 1e-9:
+            lines.append(f"  ⚠ saved global multiplier ×{_dead_mult:g} is NOT applied "
+                         f"(no slider since long; use the per-group strength)")
 
+        # v988: names a reader can tell apart in the console (the shortener
+        # the Analyzer and Inspector use since v985/v986)
+        _nm = _ov_names([r.get("name", "") for _g, _rs, _w in ordered for r in _rs])
         for group, grp_rows, grp_weights in ordered:
             n = len(grp_rows)
             grp_label = f"[{group}]" if group != "—" else "[—]"
@@ -1915,16 +2215,19 @@ class UltimateLoraStack:
 
             names = [r.get("name", "None") for r in grp_rows]
             # v302: per-row CLIP strength (defaults to the model weight)
-            grp_clip = [round(_row_clip_weight(r, w), 4)
-                        for r, w in zip(grp_rows, grp_weights, strict=True)]
+            # v981: both scaled by the group's strength (1.0 = unchanged)
+            # v983: strength AND energy cap -- one function, shared with the
+            # Merge Analyzer and the bake
+            grp_weights, grp_clip, gm, cap = _group_effective(cfg, group, grp_rows, grp_weights)
+            gm_suffix = (f"  group ×{gm:g}" if gm != 1.0 else "") + _cap_text(cap)
 
             if n == 1:
-                short = _short_name(names[0])
-                lines.append(f"  {grp_label} {short}  ×{grp_weights[0]}")
+                short = _nm(names[0], 38)
+                lines.append(f"  {grp_label} {short}  ×{grp_weights[0]}{gm_suffix}")
             else:
                 dare_suffix = f" [{dare_variant[:4].upper()}]" if mode == "DARE" else ""
                 clean_suffix = (" +TRIM" if trim else "") + (" +RESOLVE" if resolve else "")
-                lines.append(f"  {grp_label} {mode}{dare_suffix}{clean_suffix} ({n} LoRAs):")
+                lines.append(f"  {grp_label} {mode}{dare_suffix}{clean_suffix} ({n} LoRAs){gm_suffix}:")
 
             model_out, clip_out, errs = apply_lora_set(
                 self._loader, model_out, clip_out,
@@ -1938,11 +2241,12 @@ class UltimateLoraStack:
             if n >= 2:
                 err_set = set(errs)
                 for row, w in zip(grp_rows, grp_weights, strict=True):
-                    short = _short_name(row.get("name", ""), 35)
+                    short = _short_name(row.get("name", ""), 35)   # matches the error texts
+                    disp = _nm(row.get("name", ""), 35)
                     if any(short in e for e in err_set):
-                        lines.append(f"    ⚠ {short}  skipped")
+                        lines.append(f"    ⚠ {disp}  skipped")
                     else:
-                        lines.append(f"    • {short}  ×{w}")
+                        lines.append(f"    • {disp}  ×{w}")
             elif errs:
                 # n==1 with error
                 for e in errs:
@@ -1959,6 +2263,8 @@ class UltimateLoraStack:
         triggers = []
         lora_info = []  # [{name, weight, group, trigger_words}, ...]
         for group, grp_rows, grp_weights in ordered:
+            # v981/v983: the Inspector sees the weights that were applied
+            grp_weights, _c, _gm, _cap = _group_effective(cfg, group, grp_rows, grp_weights)
             for row, w in zip(grp_rows, grp_weights, strict=True):
                 name = row.get("name", "")
                 tw, src = _get_trigger(name)     # v580: the source rides along
@@ -1980,6 +2286,11 @@ class UltimateLoraStack:
             cfg_out = {}
         cfg_out["lora_info"] = lora_info
         uls_config_out = json.dumps(cfg_out)
+
+        # v989: a schedule-bound LoRA (HyperFlow) tells the Sampler it is here
+        model_out = _attach_schedule_loras(
+            model_out, [(r.get("name", ""), e["weight"]) for r, e in
+                        zip([r for _g, rs, _w in ordered for r in rs], lora_info)])
 
         return (model_out, clip_out, debug, uls_config_out, trigger_words)
 
@@ -2127,6 +2438,8 @@ class ULSAccelerator:
         lines.append("──────────────────────────────")
         debug = "\n".join(lines)
         print(f"\n[Engine]\n{debug}\n")
+        # v989: a schedule-bound LoRA (HyperFlow) tells the Sampler it is here
+        model_out = _attach_schedule_loras(model_out, list(zip(active_names, active_weights)))
         return (model_out, clip_out, debug)
 
     @classmethod
@@ -2257,8 +2570,14 @@ class ULSInspector:
         missing_triggers = []
         guessed_count = 0
 
+        # v986: names a reader can tell apart. The first 32 characters of
+        # `polyhedron_minimax_h3_image_lora__<what>` are the shared part, so
+        # 18 of Frank's 19 rows read the same (field, 21.09.2026). The shared
+        # prefix is dropped per report, as in the Merge Analyzer (v985).
+        _nm = _ov_names([e.get("name", "?") for e in lora_info])
+
         for entry in lora_info:
-            name    = entry.get("name", "?")[:col_name]
+            name    = _nm(entry.get("name", "?"), col_name)
             weight  = entry.get("weight", 0.0)
             tw_raw  = entry.get("trigger_words", "")
             src     = _SRC_LABEL.get(str(entry.get("trigger_src", "")), "—")
@@ -2547,6 +2866,26 @@ H3_FRAME_PER_TOKEN = (1, 4, 4, 4, 4)
 H3_FRAME_RESCALE = 5.0 / 3.0
 H3_TRAIN_SPAN = 512          # ai-toolkit max_text_length default
 
+# v997: the two groups whose RATIO steers the framing. Measured 10.09. over
+# five field versions: 2.85:1 came back far too close, 0.73:1 gave a clean
+# full figure. The mechanism is that H3 has no cross-attention -- text and
+# video share one self-attention space, so the shares in the text land almost
+# directly on the area split in the picture. A CAMERA line alone does not
+# force a framing; these two sums do.
+#
+# Names are matched case-insensitively with spaces folded to underscores, so
+# "// Light & Grade" arrives as LIGHT_&_GRADE and still needs its own entry
+# when it is meant to count. Anything unlisted counts toward neither group and
+# is reported under "-" -- silence is better than a wrong bucket.
+H3_BLOCK_PERSON = ("SUBJECT", "WARDROBE", "HAIR", "FACE", "EYES", "SKIN",
+                   "MOOD", "ARMOR", "BODY")
+H3_BLOCK_RAUM = ("TRIGGERS", "LOOK", "CAMERA", "SCENE", "LIGHT", "SHOT",
+                 "ENVIRONMENT", "GRADE")
+# Detail blocks that pull the camera in when they grow. Under 15% of the whole
+# for anything wider than a chest shot (measured: 31% came back too close).
+H3_BLOCK_DETAIL = ("FACE", "EYES", "SKIN")
+H3_DETAIL_CEILING = 0.15
+
 
 def _any_encoder_truncates(clip) -> bool:
     """True only if some live encoder really has a cap.
@@ -2664,6 +3003,106 @@ def h3_reach(text_tokens, latent_t):
         "ratio": (t / v) if v > 0 else None,
         "start": t,
         "end": t + v,
+    }
+
+
+def h3_block_group(name):
+    """PERSON / RAUM / "-" for a block name. Unlisted names get "-", never a
+    guessed bucket: a wrong group silently poisons the ratio below."""
+    n = str(name).strip().upper().replace(" ", "_")
+    if n in H3_BLOCK_PERSON:
+        return "PERSON"
+    if n in H3_BLOCK_RAUM:
+        return "RAUM"
+    return "-"
+
+
+def h3_blocks(text):
+    """Ordered [(name, body)] for the `// NAME` sections of a raw prompt.
+
+    Mirrors what the CLIP Text Encode does before the encoder sees anything:
+    a `//` head is a comment and costs no tokens, blank lines drop out, and
+    the remaining lines of a section join with single spaces. Sections keep
+    prompt order, because that order is what the position axis measures.
+
+    Returns [] when the text carries no `//` heads at all -- which is the
+    normal case for a prompt wired straight out of the CTE, where the heads
+    are already gone. The caller must treat [] as "nothing to show", not as
+    an error.
+    """
+    if not isinstance(text, str) or "//" not in text:
+        return []
+    found = []
+    for line in text.split("\n"):
+        m = re.match(r"\s*//\s*([^\n]+)", line)
+        if m:
+            name = m.group(1).strip().upper().replace(" ", "_")
+            if name:
+                found.append([name, ""])
+        elif line.strip() and found:
+            body = line.strip()
+            found[-1][1] += (" " if found[-1][1] else "") + body
+    return [(n, b) for n, b in found if b]
+
+
+def h3_block_map(text, total_tokens):
+    """Per-block share, token estimate and DISTANCE from the video.
+
+    The distance is the point of this whole function. Text and video sit in
+    one packed sequence, so a block's midpoint is some number of token
+    positions away from where the video begins -- and RoPE encodes distance.
+    A block at 1200 is not "earlier", it is far, and it pulls weaker than one
+    at 80. That is the same v907 argument the reach line already makes, but
+    per block, which is the form you can act on.
+
+    Tokens per block are apportioned by CHARACTER SHARE of `total_tokens`
+    rather than tokenized separately: the headline count stays the one number
+    in the report, and a per-block re-tokenization would drift from it. The
+    shares are exact; the per-block token figures are that share applied.
+
+    Returns {"rows": [...], "person": float, "raum": float, "ratio": float|None,
+             "detail": float} with shares as fractions of 1.0, or None when
+    there are fewer than two blocks -- a one-row table is noise.
+    """
+    bl = h3_blocks(text)
+    if len(bl) < 2:
+        return None
+    lens = [len(b) for _, b in bl]
+    total_chars = sum(lens)
+    if total_chars <= 0:
+        return None
+    try:
+        tok = float(total_tokens)
+    except (TypeError, ValueError):
+        tok = 0.0
+
+    rows = []
+    run = 0
+    for (name, body), L in zip(bl, lens):
+        mid = run + L / 2.0
+        # distance from this block's middle to the end of the text, expressed
+        # in the same token unit as the headline count
+        dist = (total_chars - mid) / total_chars * tok
+        rows.append({
+            "name": name,
+            "chars": L,
+            "tokens": L / total_chars * tok,
+            "share": L / total_chars,
+            "group": h3_block_group(name),
+            "distance": dist,
+        })
+        run += L
+
+    person = sum(r["share"] for r in rows if r["group"] == "PERSON")
+    raum = sum(r["share"] for r in rows if r["group"] == "RAUM")
+    detail = sum(r["share"] for r in rows
+                 if r["name"] in H3_BLOCK_DETAIL)
+    return {
+        "rows": rows,
+        "person": person,
+        "raum": raum,
+        "ratio": (person / raum) if raum > 0 else None,
+        "detail": detail,
     }
 
 
@@ -3052,6 +3491,45 @@ class ULSTokenCounter:
             if pos_count > H3_TRAIN_SPAN:
                 lines.append(f"    ⚠ over {H3_TRAIN_SPAN} tokens — not a cap, but the span")
                 lines.append("      LoRAs are trained within (ai-toolkit default).")
+
+            # --- v997: the block map ------------------------------------
+            # Only when the RAW prompt is wired, because a prompt coming
+            # straight out of the CTE has its `//` heads already stripped
+            # and there is nothing left to map. Saying so beats an empty
+            # table.
+            bmap = h3_block_map(positive_prompt, pos_count)
+            if bmap is None:
+                lines.append("")
+                lines.append("    block map: wire the RAW prompt text (with its")
+                lines.append("    // heads) to see where the tokens actually go.")
+            else:
+                lines.append("")
+                lines.append("    BLOCK          ~tok  share   group   distance")
+                for r in bmap["rows"]:
+                    lines.append("    %-12s %5d %5.1f%%  %-6s %8d"
+                                 % (r["name"][:12], round(r["tokens"]),
+                                    100.0 * r["share"], r["group"],
+                                    round(r["distance"])))
+                lines.append("    distance = token positions to the video. Near pulls harder.")
+                if bmap["ratio"] is not None:
+                    lines.append("    PERSON %.0f%%  RAUM %.0f%%  \u2192 ratio %.2f : 1"
+                                 % (100.0 * bmap["person"],
+                                    100.0 * bmap["raum"], bmap["ratio"]))
+                    # The ratio is the framing lever, so it gets the verdict.
+                    # Bands measured 10.09. over five field versions.
+                    if bmap["ratio"] >= 1.5:
+                        lines.append("    \u26a0 person text outweighs the room by a lot \u2014")
+                        lines.append("      expect a close-up whatever CAMERA says.")
+                        lines.append("      Lengthen SCENE/CAMERA before touching the stack.")
+                    elif bmap["ratio"] <= 0.8:
+                        lines.append("      room-heavy \u2014 the wide end of the range.")
+                if bmap["detail"] > H3_DETAIL_CEILING:
+                    # One decimal on the value: at 15.2% a rounded "15% (over
+                    # 15%)" reads like a bug. Seen on the first real render.
+                    lines.append("    \u26a0 FACE+EYES+SKIN %.1f%% (over %.0f%%) \u2014 micro detail"
+                                 % (100.0 * bmap["detail"],
+                                    100.0 * H3_DETAIL_CEILING))
+                    lines.append("      pulls the camera in. Cut it for wide shots.")
         lines.append("─────────────────────────────────")
 
         # Actionable hints

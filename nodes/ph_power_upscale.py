@@ -43,8 +43,10 @@ VIDEO out is None, mirroring the Media Loader's convention.
 import base64
 import inspect
 import io
+import json
 import math
 import os
+import threading
 import time
 import uuid
 
@@ -61,7 +63,8 @@ try:  # package load (ComfyUI) vs direct module load (tools)
     from . import uls_tile_math
     from .ph_runclock import _fmt_clock, _RunClock  # noqa: F401 (v576 re-export)
     from .uls_sampler import (_apply_sigma_shift, _resolve_low_shift, _low_or,
-                              SAME_AS_HIGH, _current_node_id)
+                              SAME_AS_HIGH, _current_node_id,
+                              _latent_parts, _joint_video_half)   # v1004
     from .ph_logmute import MuteStagingLogs as _MuteInfoLogs
 except ImportError:  # pragma: no cover
     import os as _os
@@ -72,7 +75,8 @@ except ImportError:  # pragma: no cover
     import uls_tile_math
     from ph_runclock import _fmt_clock, _RunClock  # noqa: F401 (v576 re-export)
     from uls_sampler import (_apply_sigma_shift, _resolve_low_shift, _low_or,
-                             SAME_AS_HIGH, _current_node_id)
+                             SAME_AS_HIGH, _current_node_id,
+                             _latent_parts, _joint_video_half)   # v1004
     from ph_logmute import MuteStagingLogs as _MuteInfoLogs
 
 # ComfyUI's VIDEO type (optional) -- the exact Media Loader pattern: the
@@ -1215,7 +1219,8 @@ def _grid_advice(sw, sh, tile, overlap, nx, ny):
 
 def _refine_tiles(model, positive, negative, vae, image, grid, seed, steps,
                   cfg, sampler_name, scheduler, denoise, clock,
-                  stage_tag, tile_probe=None, vae_encode=None, vae_decode=None):
+                  stage_tag, tile_probe=None, vae_encode=None, vae_decode=None,
+                  sig_run=None, rsec=None, peaks=None):
     """Feather-tiled img2img refine over the WHOLE frame stack per tile.
     Each tile: crop [N,th,tw,3] -> vae.encode (a Wan VAE returns ONE 5D
     video latent -> the model keeps time consistent) -> comfy.sample.sample
@@ -1228,10 +1233,34 @@ def _refine_tiles(model, positive, negative, vae, image, grid, seed, steps,
     mute seconds between 'low tile 1/1' and its done line - the callback fed
     the bar and the probe but never SPOKE. Now every step prints its measured
     duration plus the stage and run ETA, the encode/decode phases feed the
-    same clock, and the tick counters are gone (the clock owns the bar)."""
+    same clock, and the tick counters are gone (the clock owns the bar).
+
+    v1008: `sig_run` (a list of sigmas) replaces the scheduler: the tile is
+    sampled with sample_custom on EXACTLY that run (the wired curve's tail,
+    _sigma_run); an empty run means denoise 0 -- the tile is a VAE round trip
+    and says so. `rsec` names the rates section: every tile's encode / steps /
+    decode run inside a heartbeat phase (HUD + a console tick every 15 s,
+    never silent), are learned per megapixel-frame and remembered. `peaks`
+    (a dict) collects the measured VRAM peak per phase for the stage line."""
     n, height, width = int(image.shape[0]), int(image.shape[1]), int(image.shape[2])
     tw, th = grid["tile_w"], grid["tile_h"]
-    steps = max(1, int(steps))
+    if sig_run is not None:
+        steps = max(0, len(sig_run) - 1)
+    else:
+        steps = max(1, int(steps))
+    node_id = _current_node_id() if rsec is not None else None
+    t_mpf = float(tw * th * n) / 1e6
+    t_est = {"enc": None, "step": None, "dec": None}
+    if rsec is not None:
+        _r = _rates_load(rsec)
+        for _k in t_est:
+            t_est[_k] = (_r[_k] * t_mpf) if _r.get(_k) else None
+    peaks = peaks if peaks is not None else {}
+
+    def _peak(kind, ph):
+        v = getattr(ph, "peak_gb", None)
+        if v is not None:
+            peaks[kind] = v if peaks.get(kind) is None else max(peaks[kind], v)
     # v561: ONE tile covering the whole canvas needs no accumulator at all - the
     # feather is 1.0 everywhere, so acc/wacc/multiply/divide are pure waste. On a
     # 129-frame 848x848 stage that is a 1.1 GB CPU tensor plus 278M CPU multiplies
@@ -1249,16 +1278,36 @@ def _refine_tiles(model, positive, negative, vae, image, grid, seed, steps,
         # so 1041.6 s (83 %) happened inside THIS loop and nobody knows where.
         # Guessing which quarter to optimise is exactly how v564 fixed the wrong
         # ping-pong. Measure first, cut second.
+        ti = t["iy"] * grid["nx"] + t["ix"] + 1   # 1-based reading order
+        _pk = dict(stage=stage_tag, label=f"{stage_tag} tile {ti}", tile=ti,
+                   tiles=len(grid["tiles"]), rect=(x, y, tw, th), announce=False)
         tt = [time.monotonic()]
-        latent = (vae_encode or vae.encode)(crop)
+        if rsec is not None:
+            with _Phase("encode", t_est["enc"], clock, node_id, (width, height), **_pk) as _pe:
+                latent = (vae_encode or vae.encode)(crop)
+            _peak("encode", _pe)
+        else:
+            latent = (vae_encode or vae.encode)(crop)
         tt.append(time.monotonic())
         clock.measure(f"enc:{stage_tag}", tt[1] - tt[0])
         tseed = uls_tile_math.tile_seed(seed, t["ix"], t["iy"], grid["nx"])
         noise = comfy.sample.prepare_noise(latent, tseed, None)
-        ti = t["iy"] * grid["nx"] + t["ix"] + 1   # 1-based reading order
         print(f"[PLS] Power Upscale:   {stage_tag} tile {ti}/{len(grid['tiles'])} "
               f"({tw}x{th} @ {x},{y})")
-        stw = {"last": time.monotonic()}   # v567: per-step stopwatch
+        stw = {"last": time.monotonic(), "phase": None}   # v567: per-step stopwatch
+
+        def _open_step(i, _ti=ti, _s=stw, _pk=_pk):
+            # v1008: the v1007 heartbeat for the tile path -- the callback
+            # fires at a step's END, so the phase of step i+1 opens there.
+            if _s["phase"] is not None:
+                _s["phase"].__exit__(None, None, None)
+                _peak("sample", _s["phase"])
+                _s["phase"] = None
+            if rsec is not None and i <= steps:
+                ph = _Phase("sample", t_est["step"], clock, node_id, (width, height),
+                            step=i, steps=steps, **_pk)
+                ph.__enter__()
+                _s["phase"] = ph
 
         def _cb(step, x0, x_, total, _ti=ti, _x=x, _y=y, _s=stw):
             now = time.monotonic()
@@ -1276,17 +1325,54 @@ def _refine_tiles(model, positive, negative, vae, image, grid, seed, steps,
                 tile_probe(stage_tag, _ti, len(grid["tiles"]), step + 1, steps,
                            (_x, _y, tw, th), (width, height), x0,
                            clock.elapsed(), reta)
+            _open_step(step + 2)
 
-        samples = comfy.sample.sample(
-            model, noise, steps, cfg, sampler_name, scheduler,
-            positive, negative, latent, denoise=float(denoise),
-            disable_noise=False, start_step=None, last_step=None,
-            force_full_denoise=False, noise_mask=None, callback=_cb,
-            disable_pbar=True, seed=tseed,
-        )
+        _open_step(1)
+        try:
+            if sig_run is not None and steps == 0:
+                # v1008: denoise 0 on the wired curve -- nothing to sample. The
+                # tile is a VAE round trip, and the console says so ONCE.
+                if ti == 1:
+                    print(f"[PLS] Power Upscale:   {stage_tag}: denoise 0 on the wired "
+                          f"curve -> no step; the stage is a VAE round trip only")
+                samples = latent
+            elif sig_run is not None:
+                # v1008: the wired curve reaches the TILE refine too -- exactly
+                # the run _sigma_run cut from it, no scheduler in between.
+                samples = comfy.sample.sample_custom(
+                    model, noise, float(cfg), comfy.samplers.sampler_object(sampler_name),
+                    torch.tensor([float(v) for v in sig_run], dtype=torch.float32),
+                    positive, negative, latent, noise_mask=None, callback=_cb,
+                    disable_pbar=True, seed=tseed,
+                )
+            else:
+                samples = comfy.sample.sample(
+                    model, noise, steps, cfg, sampler_name, scheduler,
+                    positive, negative, latent, denoise=float(denoise),
+                    disable_noise=False, start_step=None, last_step=None,
+                    force_full_denoise=False, noise_mask=None, callback=_cb,
+                    disable_pbar=True, seed=tseed,
+                )
+        finally:
+            _open_step(steps + 99)   # closes whatever phase is open, opens none
         tt.append(time.monotonic())
-        px = (vae_decode or vae.decode)(samples)
+        if rsec is not None:
+            with _Phase("decode", t_est["dec"], clock, node_id, (width, height), **_pk) as _pd:
+                px = (vae_decode or vae.decode)(samples)
+            _peak("decode", _pd)
+        else:
+            px = (vae_decode or vae.decode)(samples)
         tt.append(time.monotonic())
+        if rsec is not None:
+            # v1008: learn per tile -- the next tile (and the next run of this
+            # size class) opens with real numbers
+            _rates_learn(rsec, t_mpf, tt[1] - tt[0],
+                         (tt[2] - tt[1]) / max(1, steps) if steps else None,
+                         tt[3] - tt[2],
+                         peak_gb=max([v for v in peaks.values() if v is not None] or [0.0]) or None)
+            _r = _rates_load(rsec)
+            for _k in t_est:
+                t_est[_k] = (_r[_k] * t_mpf) if _r.get(_k) else None
         clock.measure(f"dec:{stage_tag}", tt[3] - tt[2])
         if ti == 1:
             # v562 (Fable's catch): Comfy returns the decode on
@@ -1746,6 +1832,535 @@ except ImportError:  # pragma: no cover - direct-run fallback, as elsewhere here
                                 _joint_streams)        # noqa: F401
 
 
+# ── v1008: ONE refine vocabulary for EVERY model ────────────────────────────
+# Frank, 25.09.: "Warum heisst das eigentlich H3 Refine? Das sollte fuer alle
+# Modelle brauchbar bleiben ... auch WAN 2.2 ... ebenso SD1." He was right:
+# v1004-v1007 built the exact start, the cache, the heartbeat and the order
+# choice for the JOINT branch only, under an H3 name. v1008 moves them to
+# where every model reaches them:
+#   refine_order  after pixel / before pixel / off -- read by EVERY model.
+#                 Tile path: 'before pixel' = the pixel model moves behind the
+#                 last decode (what pixel_stage='model final' always did);
+#                 'off' = no model pass, the pixel path delivers the canvas.
+#                 Joint path: as v1004 (the whole-clip refine before/after).
+#   audio_stream  keep / denoise -- joint (video+audio) models only.
+#   sigmas        read by the tile refine too (exact start on a flow curve,
+#                 step slicing on any other), so a Wan lightx2v or an SD
+#                 Turbo curve reaches the refine it was built for.
+#   caches        the joint latent cache (v1006) + a PIXEL cache for the tile
+#                 path's first model pass (RAM-budgeted, never lossy).
+#   clock         the v1007 heartbeat, plan and learned rates for both paths,
+#                 plus MEASURED peak VRAM per phase (weak cards over long
+#                 clips: the node says where the memory went and which dial
+#                 relieves it, from the last run's numbers -- never a guess).
+#
+# THE JOINT BRANCH (history v1004, unchanged in substance): the tile refine
+# cannot serve a joint model -- its forward reads the audio half of a packed
+# latent and its packed layout hangs on the geometry of the WHOLE clip. So a
+# joint model is refined as ONE pass over the whole frame stack as ONE video
+# latent, packed with the run's own audio latent (wired in through 'latent'),
+# conditioned by the Reference node's output, sampled from the denoise point
+# down. Measured on Core 7a131a3a before a line was written:
+#   - KSampler.sample (samplers.py:1280) packs a nested latent and its noise
+#     flat, runs the ordinary path and unpacks;
+#   - denoise_mask is handled PER STREAM (samplers.py:1297-1314), so the audio
+#     stream can be frozen with a zero mask while the video is refined;
+#   - the VAE's own spatial factor and frame law are READ from it
+#     (downscale_ratio / upscale_ratio, sd.py) -- 16x and 17k+5 <-> 5k+2 for
+#     the H3 video VAE; the canvas is snapped first so the VAE's own crop never
+#     moves the picture; a frame count off the law is said by number.
+# No sigma shift is laid on a joint model: _apply_sigma_shift would replace
+# ModelSamplingAV (which carries the audio clock, witness C of the joint
+# probe) with a plain flow sampler. The curve carries its own shift.
+_REFINE_ORDERS = ("after pixel", "before pixel", "off")
+_AUDIO_STREAM_MODES = ("keep", "denoise")
+_JOINT_SNAP_DEFAULT = 16   # a joint VAE that does not state its factor (H3's is 16)
+
+
+def _sigma_tail(vals, denoise):
+    """The sigmas a refine runs from a FLOW curve. v1006: the refine STARTS
+    EXACTLY at sigma = denoise -- that value is inserted as the first point,
+    followed by every curve point strictly below it. So the dial never says one
+    thing and the run another: 0.30 on a shift-12 Hyperflow curve (1, .994,
+    .984, .966, .923, .835, .697, .469, 0) is [0.30, 0] -- ONE step with 30 %
+    noise. A start that is not a curve point is said by the caller (off-grid
+    for a distilled LoRA). denoise >= 1 runs the whole curve; denoise <= 0 is
+    no refine (empty). Pure -- the guard drives it without torch."""
+    vals = [float(v) for v in vals]
+    if len(vals) < 2:
+        return list(vals)
+    d = float(denoise)
+    if d >= 1.0:
+        return list(vals)
+    if d <= 0.0:
+        return []
+    below = [v for v in vals if v < d - 1e-9]
+    if not below or below[-1] > 1e-9:
+        below.append(0.0)          # the terminal is always the terminal
+    return [d] + below
+
+
+def _sigma_on_grid(vals, denoise):
+    """True when the dialled start IS a point of the curve (within 1e-6)."""
+    d = float(denoise)
+    return any(abs(float(v) - d) < 1e-6 for v in vals)
+
+
+def _is_flow_curve(vals):
+    """A flow-matching curve lives in [0, 1]: sigma IS the noise fraction
+    (x = s*noise + (1-s)*image). An eps/v curve (SD1, SDXL) starts near 14.6,
+    where 'denoise 0.30' is NOT a sigma. Pure."""
+    vals = [float(v) for v in vals]
+    return bool(vals) and max(vals) <= 1.0 + 1e-6
+
+
+def _sigma_run(vals, denoise):
+    """(run, how) -- the sigmas a refine runs from ANY wired curve.
+    how = 'exact' (flow curve: _sigma_tail, the start IS denoise), 'slice'
+    (any other curve: the last round(n * denoise) steps -- the same reading
+    Core gives denoise on its own schedules, where sigma is not a noise
+    fraction), 'whole' (denoise >= 1 or a one-value list) or 'none'
+    (denoise <= 0: nothing to run). Pure."""
+    vals = [float(v) for v in vals]
+    if len(vals) < 2:
+        return list(vals), "whole"
+    d = float(denoise)
+    if d >= 1.0:
+        return list(vals), "whole"
+    if d <= 0.0:
+        return [], "none"
+    if _is_flow_curve(vals):
+        return _sigma_tail(vals, d), "exact"
+    n = len(vals) - 1
+    k = max(1, min(n, int(round(n * d))))
+    return vals[-(k + 1):], "slice"
+
+
+def _vae_spatial(vae, default=8):
+    """The VAE's spatial factor, READ from it (Core's downscale_ratio: an int,
+    or (time_law, h, w) for a video VAE). `default` when it states none."""
+    r = getattr(vae, "downscale_ratio", None)
+    try:
+        if isinstance(r, (tuple, list)) and len(r) >= 2:
+            return max(1, int(r[1]))
+        if isinstance(r, (int, float)) and not isinstance(r, bool) and r > 0:
+            return max(1, int(r))
+    except Exception:
+        pass
+    return int(default)
+
+
+def _vae_frame_law(vae, n):
+    """(latent frames, frames back) for n input frames on this VAE, READ from
+    its own time law (downscale_ratio[0] / upscale_ratio[0]; H3: 17k+5 <->
+    5k+2, Wan: 4k+1). (n, n) when the VAE has no time law (a still VAE)."""
+    n = int(n)
+    d = getattr(vae, "downscale_ratio", None)
+    u = getattr(vae, "upscale_ratio", None)
+    try:
+        if (isinstance(d, (tuple, list)) and isinstance(u, (tuple, list))
+                and callable(d[0]) and callable(u[0])):
+            t = int(d[0](n))
+            return t, int(u[0](t))
+    except Exception:
+        pass
+    return n, n
+
+
+def _snap_to(w, h, snap):
+    """The largest /snap canvas inside (w, h), never below one cell -- the VAE
+    would crop to it anyway (centre crop); snapping first keeps the crop at 0."""
+    snap = max(1, int(snap))
+    return max(snap, int(w) // snap * snap), max(snap, int(h) // snap * snap)
+
+
+def _patch_count(model):
+    """How many weight patches (LoRAs, accelerators) the wired model carries.
+    0 means the raw loader output is on the wire -- the refine then runs
+    WITHOUT the sampler's Turbo/Hyperflow chain, which is what happened in
+    Frank's 24.09. workflow. Read from the patcher, never inferred."""
+    try:
+        return len(getattr(model, "patches", {}) or {})
+    except Exception:
+        return -1
+
+
+_PIXEL_WHERE = {"behind": "pixel model behind the last decode",
+                "front": "pixel model in front of the VAE",
+                "none": "no pixel model"}
+
+
+def _joint_verdict(mode, on, sigmas_n, steps_run, start_sigma, audio_mode,
+                   patches, frames_in, frames_out, why="", where="none"):
+    """ONE line for the frontend: what the run did with the joint model. Pure."""
+    if not on or steps_run <= 0:
+        return ("Joint refine OFF (%s) -- pixel path only · %s"
+                % (why or mode, _PIXEL_WHERE.get(where, where)))
+    curve = ("%d-step curve" % sigmas_n) if sigmas_n > 0 else "scheduler"
+    tail = ""
+    if frames_out != frames_in:
+        tail = " · %d frames in, %d out (VAE frame law)" % (frames_in, frames_out)
+    pch = ("%d patches" % patches) if patches > 0 else "NO patches (raw model!)"
+    return ("Joint refine %s: %d steps from σ %.2f (%s) · audio %s · "
+            "model carries %s · %s%s" % (mode, steps_run, start_sigma, curve,
+                                             "kept" if audio_mode == "keep" else "denoised",
+                                             pch, _PIXEL_WHERE.get(where, where), tail))
+
+
+def _tile_verdict(order, n_stages, tiles, steps, start_sigma, curve_n, where, why=""):
+    """ONE line for the frontend: what the run did with an ordinary model. Pure."""
+    if n_stages <= 0:
+        return ("Refine OFF (%s) -- pixel path only · %s"
+                % (why or order, _PIXEL_WHERE.get(where, where)))
+    curve = ((" from σ %.2f (%d-step curve)" % (start_sigma, curve_n))
+             if curve_n > 0 else " (scheduler)")
+    return ("Tile refine %s: %d stage%s · %d tile%s · %d step%s%s · %s"
+            % (order, n_stages, "" if n_stages == 1 else "s", tiles,
+               "" if tiles == 1 else "s", steps, "" if steps == 1 else "s", curve,
+               _PIXEL_WHERE.get(where, where)))
+
+
+# ── v1006/v1008: the caches -- ONE entry each, keyed on CONTENT ─────────────
+# Frank's 24.09. field run: ESRGAN 351 s + encode 127 s before the first refine
+# step, and every denoise/cfg/seed experiment on the SAME clip paid them again
+# (ComfyUI re-runs the whole node when any dial moves). What a refine starts
+# from depends on nothing but the input frames, the pixel wire and the canvas
+# -- so it is remembered on the CPU under a fingerprint of exactly those:
+#   _LATENT_CACHE  the joint path's video latent (~20 MB) -- a hit skips the
+#                  pixel pass AND the encode (v1006).
+#   _PIXEL_CACHE   the tile path's FIRST model pass (v1008) -- a hit skips the
+#                  ESRGAN pass of stage 1. Full frames are big (121 frames at
+#                  1872x1072 are 2.9 GB in float32), so the store is BUDGETED
+#                  against free system RAM and kept at full precision or not
+#                  at all -- the cache never trades quality for a hit.
+# Nothing else is cached: the sampling and the decode depend on the dials. The
+# fingerprint reads the frames (shape, dtype, stripe sums and a strided byte
+# sample) -- never their id -- so a new clip of the same size can never hit.
+_LATENT_CACHE = {"key": None, "vid_lat": None, "note": ""}
+_PIXEL_CACHE = {"key": None, "frames": None, "note": ""}
+_PIXEL_CACHE_SHARE = 0.35   # at most this share of the FREE system RAM
+
+
+def _content_fingerprint(frames):
+    """Content fingerprint of a frame stack, cheap and deterministic."""
+    import hashlib
+    try:
+        f = frames
+        h = hashlib.md5()
+        h.update(repr((tuple(f.shape), str(f.dtype))).encode())
+        n = int(f.shape[0])
+        for i in range(0, n, max(1, n // 8)):
+            h.update(repr(float(f[i].double().sum().item())).encode())
+        sample = f[::max(1, n // 6), ::13, ::11, :].contiguous().to(torch.float32).cpu().numpy()
+        h.update(sample.tobytes())
+        return h.hexdigest()
+    except Exception as exc:  # pragma: no cover - a fingerprint must never break a run
+        return "nofp-%s-%s" % (type(exc).__name__, time.monotonic())
+
+
+def _wire_id(um):
+    """The pixel wire as a key part: class, scale and the loaded object."""
+    return ("none" if um is None else
+            "%s:%s:%s" % (type(getattr(um, "model", um)).__name__,
+                          getattr(um, "scale", "?"), id(um)))
+
+
+def _cache_key(frames, vae, um, canvas, resize_method):
+    """The fingerprint the cached LATENT is filed under: frames + VAE + the
+    pixel wire + the canvas it lands on. `um` may be None (no pixel pass)."""
+    vae_id = "%s:%s" % (type(getattr(vae, "first_stage_model", vae)).__name__,
+                        getattr(vae, "latent_channels", "?"))
+    return "|".join([_content_fingerprint(frames), vae_id, _wire_id(um),
+                     "%dx%d" % (int(canvas[0]), int(canvas[1])), str(resize_method)])
+
+
+def _pixel_cache_key(frames, um, canvas, resize_method, kind):
+    """The fingerprint a cached PIXEL pass is filed under: frames + the wire +
+    the canvas + the fit + the pass kind. No VAE -- a pixel pass never meets one."""
+    return "|".join([_content_fingerprint(frames), _wire_id(um),
+                     "%dx%d" % (int(canvas[0]), int(canvas[1])), str(resize_method),
+                     str(kind)])
+
+
+def _latent_cache_get(key):
+    if key is not None and _LATENT_CACHE["key"] == key and _LATENT_CACHE["vid_lat"] is not None:
+        return _LATENT_CACHE["vid_lat"]
+    return None
+
+
+def _latent_cache_put(key, vid_lat, note=""):
+    try:
+        _LATENT_CACHE["key"] = key
+        _LATENT_CACHE["vid_lat"] = vid_lat.detach().to("cpu").clone()
+        _LATENT_CACHE["note"] = note
+    except Exception:
+        _LATENT_CACHE["key"] = None
+        _LATENT_CACHE["vid_lat"] = None
+
+
+def _ram_available():
+    """Free system RAM in bytes, or None when it cannot be read."""
+    try:
+        import psutil
+        return int(psutil.virtual_memory().available)
+    except Exception:
+        return None
+
+
+def _pixel_cache_get(key):
+    if key is not None and _PIXEL_CACHE["key"] == key and _PIXEL_CACHE["frames"] is not None:
+        return _PIXEL_CACHE["frames"]
+    return None
+
+
+def _pixel_cache_put(key, frames, note="", avail=None):
+    """(stored, why). Full precision or nothing: the stack is kept as it is
+    (a CPU clone) when it fits _PIXEL_CACHE_SHARE of the free RAM; otherwise
+    the OLD entry is dropped too (it would only hold RAM for a clip that is
+    gone) and the reason is returned for the console."""
+    try:
+        need = int(frames.numel()) * int(frames.element_size())
+    except Exception:
+        return False, "size unreadable"
+    avail = _ram_available() if avail is None else avail
+    _PIXEL_CACHE["key"] = None
+    _PIXEL_CACHE["frames"] = None
+    if avail is None:
+        return False, "free RAM unreadable (no psutil) -- not stored"
+    if need > _PIXEL_CACHE_SHARE * avail:
+        return False, ("%.1f GB would exceed %d %% of the %.1f GB free RAM -- not stored"
+                       % (need / 1e9, int(_PIXEL_CACHE_SHARE * 100), avail / 1e9))
+    try:
+        _PIXEL_CACHE["frames"] = frames.detach().to("cpu").clone()
+        _PIXEL_CACHE["key"] = key
+        _PIXEL_CACHE["note"] = note
+        return True, "%.1f GB kept in RAM" % (need / 1e9)
+    except Exception as exc:
+        _PIXEL_CACHE["key"] = None
+        _PIXEL_CACHE["frames"] = None
+        return False, "store failed (%s)" % type(exc).__name__
+
+
+# ── v1007/v1008 clock -- v1010: MOVED to nodes/ph_progress.py ───────────────
+# The heartbeat, the learned rates, the plan, the VRAM peaks and the memory
+# note are the same code, at a shared address, so every long-running node of
+# the suite tells time the way this one does (Frank, 25.09.: "fuer unsere
+# Nodes, die ein wenig laenger brauchen ... dass man sieht, was gerade
+# laeuft"). Re-exported here, the v576 ph_runclock pattern: every caller in
+# this file keeps its names.
+try:
+    from .ph_progress import (_HEARTBEAT_S, _RATES_EMA, _RATES, _rates_section,  # noqa: F401
+                              _rates_load, _rates_learn, _phase_plan, _vram_total_gb,
+                              _vram_peak_reset, _vram_peak_gb, _memory_note, _Phase,
+                              _peak_line)
+except ImportError:  # pragma: no cover - direct-run fallback, as elsewhere here
+    from ph_progress import (_HEARTBEAT_S, _RATES_EMA, _RATES, _rates_section,  # noqa: F401
+                             _rates_load, _rates_learn, _phase_plan, _vram_total_gb,
+                             _vram_peak_reset, _vram_peak_gb, _memory_note, _Phase,
+                             _peak_line)
+
+
+def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
+                  steps, cfg, sampler_name, scheduler, denoise, audio_mode,
+                  clock, probe=None, mute=True, cached=None, vae_tiling="Off"):
+    """The whole-clip refine on a joint (video+audio) model. Returns
+    (frames_out, info) -- info carries steps_run / start_sigma / sigmas_n /
+    frames_out for the verdict. Raises only on a broken wire it cannot heal
+    (said by name); everything else is measured and printed."""
+    import comfy.samplers as _cs
+    from comfy.nested_tensor import NestedTensor
+    snap = _vae_spatial(vae, _JOINT_SNAP_DEFAULT)
+    if cached is not None:
+        # v1006: (vid_lat, n_in, sw, sh) from the cache -- no frames needed
+        vid_lat_c, n_in, sw, sh = cached
+        h_in, w_in = sh, sw
+        src = None
+    else:
+        vid_lat_c = None
+        n_in, h_in, w_in = int(frames.shape[0]), int(frames.shape[1]), int(frames.shape[2])
+        sw, sh = _snap_to(w_in, h_in, snap)
+        src = frames
+    if src is not None and (sw, sh) != (w_in, h_in):
+        print(f"[PLS] Power Upscale: joint refine: canvas {w_in}x{h_in} is not /{snap} "
+              f"-> fitted to {sw}x{sh} (the VAE would centre-crop it otherwise)")
+        src = _lanczos_to(frames, sw, sh)
+    t_lat, n_back = _vae_frame_law(vae, n_in)
+    if n_back != n_in:
+        print(f"[PLS] Power Upscale: joint refine: {n_in} frames encode to {t_lat} latent "
+              f"frames and decode to {n_back} (the VAE's frame law) -- the last "
+              f"{n_in - n_back} frame(s) do not survive the round trip")
+    # -- the audio stream comes from the run's own latent --
+    parts = _latent_parts(latent["samples"]) if latent is not None else []
+    if len(parts) < 2:
+        raise ValueError("⬡ Power Upscale: the joint refine needs the run's packed "
+                         "AV latent on 'latent' (the Sampler's LATENT output) to "
+                         "carry the audio stream -- got %s." %
+                         ("nothing" if latent is None else "a single-stream latent"))
+    audio_lat = parts[1]
+    # -- the sigmas: the wired curve's run, or Core's own slicing --
+    if sigmas is not None:
+        curve = [float(v) for v in sigmas.flatten().tolist()]
+        run, how = _sigma_run(curve, denoise)
+        sig = torch.tensor(run, dtype=torch.float32)
+        sigmas_n = max(0, len(curve) - 1)
+        if not run:
+            raise ValueError("⬡ Power Upscale: joint refine: denoise %.2f leaves "
+                             "no step on the curve." % float(denoise))
+        print(f"[PLS] Power Upscale: joint refine: curve {sigmas_n} steps, denoise "
+              f"{float(denoise):.2f} -> {len(run) - 1} step(s) from σ "
+              f"{run[0]:.3f} ({', '.join('%.3f' % v for v in run)})"
+              + ("" if how != "exact" or _sigma_on_grid(curve, denoise) else
+                 f" -- the start is NOT a point of the curve (nearest: "
+                 f"{min(curve, key=lambda v: abs(v - float(denoise))):.3f}); a "
+                 f"distilled LoRA was trained on its grid, so judge the result by eye")
+              + (" -- step slicing (not a flow curve: sigma is not a noise fraction)"
+                 if how == "slice" else ""))
+    else:
+        ks = _cs.KSampler(model, steps=max(1, int(steps)),
+                          device=comfy.model_management.get_torch_device(),
+                          sampler=sampler_name, scheduler=scheduler,
+                          denoise=float(denoise), model_options=model.model_options)
+        sig = ks.sigmas
+        sigmas_n = 0
+        print(f"[PLS] Power Upscale: joint refine: scheduler={scheduler} steps={int(steps)} "
+              f"denoise {float(denoise):.2f} -> {max(0, len(sig) - 1)} step(s) from "
+              f"σ {float(sig[0]):.3f}")
+    steps_run = max(0, int(sig.shape[-1]) - 1)
+    if steps_run == 0:
+        raise ValueError("⬡ Power Upscale: the joint refine has no step to run "
+                         "(denoise %.2f on this curve) -- the decision above should "
+                         "have turned it off." % float(denoise))
+    # -- v1007: the PLAN, before the first silent second --
+    node_id = _current_node_id()
+    mpf = float(sw * sh * n_in) / 1e6
+    rsec = _rates_section("joint", model)
+    rates = _rates_load(rsec)
+    plan_lines, est = _phase_plan(mpf, steps_run, vid_lat_c is not None, rates)
+    print(f"[PLS] Power Upscale: === JOINT REFINE (video+audio model) === {n_in} frames "
+          f"{sw}x{sh} ({mpf:.0f} megapixel-frames) -> ONE video latent, cfg={float(cfg):.2f} "
+          f"sampler={sampler_name} audio={audio_mode} model patches={_patch_count(model)}")
+    for ln in plan_lines:
+        print(f"[PLS] Power Upscale:   {ln}")
+    total_gb = _vram_total_gb()
+    mnote = _memory_note(rates, mpf, total_gb,
+                         "refine_order='before pixel' (refines at the input size), "
+                         "vae_tiling 512, fewer frames per clip")
+    if mnote:
+        print(f"[PLS] Power Upscale: {mnote}")
+    v_enc, v_dec, v_label = _vae_ops(vae, vae_tiling)
+    # -- encode the whole clip as ONE video latent --
+    tt = [time.monotonic()]
+    enc_s = None
+    peaks = []
+    if vid_lat_c is not None:
+        vid_lat = vid_lat_c
+        tt.append(time.monotonic())
+        print(f"[PLS] Power Upscale: joint encode: video latent {tuple(vid_lat.shape)} "
+              f"REUSED from the cache (same frames, pixel wire and canvas as the "
+              f"previous run -- the encode is skipped) + audio latent "
+              f"{tuple(audio_lat.shape)}")
+    else:
+        with _Phase("encode", est["enc"], clock, node_id, (sw, sh)) as _pe:
+            with _MuteInfoLogs(mute, label="Power Upscale"):
+                vid_lat = v_enc(src[:, :, :, :3])
+        peaks.append(("encode", _pe.peak_gb))
+        tt.append(time.monotonic())
+        enc_s = tt[1] - tt[0]
+        clock.measure("enc:joint", enc_s)
+        if vid_lat.dim() == 4:          # a still-VAE would answer [N,C,H,W]; a video VAE answers 5D
+            vid_lat = vid_lat.movedim(0, 1).unsqueeze(0)
+        print(f"[PLS] Power Upscale: joint encode done in {_fmt_clock(enc_s)} (vae={v_label}) "
+              f"-> video latent {tuple(vid_lat.shape)} + audio latent {tuple(audio_lat.shape)}"
+              + (f" (planned ~{_fmt_clock(est['enc'])})" if est["enc"] else ""))
+    vid_lat_keep = vid_lat.detach().to("cpu")   # v1006: handed back for the cache
+    packed = NestedTensor([vid_lat, audio_lat.to(vid_lat.dtype)])
+    # -- noise + the per-stream denoise mask --
+    noise = comfy.sample.prepare_noise(packed, int(seed), None)
+    mask = None
+    if str(audio_mode) == "keep":
+        mask = NestedTensor([torch.ones((1, 1) + tuple(vid_lat.shape[2:]), dtype=torch.float32),
+                             torch.zeros((1, 1) + tuple(audio_lat.shape[2:]), dtype=torch.float32)])
+    sampler = _cs.sampler_object(sampler_name)
+    stw = {"last": time.monotonic(), "phase": None, "peak": None}
+
+    def _open_step(i):
+        # v1007: every step gets its own heartbeat; the callback fires at a
+        # step's END, so the phase for step i+1 opens there.
+        if stw["phase"] is not None:
+            stw["phase"].__exit__(None, None, None)
+            pk = stw["phase"].peak_gb
+            if pk is not None:
+                stw["peak"] = pk if stw["peak"] is None else max(stw["peak"], pk)
+            stw["phase"] = None
+        if i <= steps_run:
+            ph = _Phase("sample", est["step"], clock, node_id, (sw, sh),
+                        step=i, steps=steps_run)
+            ph.__enter__()
+            stw["phase"] = ph
+
+    def _cb(step, x0, x_, total):
+        now = time.monotonic()
+        dt = now - stw["last"]
+        clock.measure("step:joint", dt)
+        stw["last"] = now
+        print(f"[PLS] Power Upscale:   joint sample step {step + 1}/{steps_run} done in "
+              f"{_fmt_clock(dt)}"
+              + (f" (planned ~{_fmt_clock(est['step'])})" if est["step"] else "")
+              + f" -- stage left ~{_fmt_clock(clock.eta('joint') or 0)}, run left "
+              f"~{_fmt_clock(clock.eta() or 0)}")
+        if probe is not None:
+            probe("joint", 1, 1, step + 1, steps_run, (0, 0, sw, sh), (sw, sh),
+                  _joint_video_half(x0), clock.elapsed(), clock.eta())
+        _open_step(step + 2)
+
+    print(f"[PLS] Power Upscale: joint sample begin -> {steps_run} step(s) on "
+          f"{tuple(vid_lat.shape)} from σ {float(sig[0]):.3f}")
+    _open_step(1)
+    try:
+        with _MuteInfoLogs(mute, label="Power Upscale"):
+            out = comfy.sample.sample_custom(model, noise, float(cfg), sampler, sig,
+                                             positive, negative, packed,
+                                             noise_mask=mask, callback=_cb,
+                                             disable_pbar=True, seed=int(seed))
+    finally:
+        _open_step(steps_run + 99)   # closes whatever phase is open, opens none
+    peaks.append(("sample", stw["peak"]))
+    tt.append(time.monotonic())
+    vid_out = _joint_video_half(out)
+    with _Phase("decode", est["dec"], clock, node_id, (sw, sh)) as _pd:
+        with _MuteInfoLogs(mute, label="Power Upscale"):
+            px = v_dec(vid_out)
+    peaks.append(("decode", _pd.peak_gb))
+    tt.append(time.monotonic())
+    clock.measure("dec:joint", tt[3] - tt[2])
+    del noise, packed, out, vid_lat
+    _free()
+    if px.dim() == 5:
+        px = px.reshape(-1, px.shape[-3], px.shape[-2], px.shape[-1])
+    px = px[:, :, :, :3].to(torch.float32).cpu()
+    print(f"[PLS] Power Upscale: joint refine done: encode {tt[1] - tt[0]:.1f}s + "
+          f"sample {tt[2] - tt[1]:.1f}s ({(tt[2] - tt[1]) / max(1, steps_run):.1f}s/step) "
+          f"+ decode {tt[3] - tt[2]:.1f}s -> {int(px.shape[2])}x{int(px.shape[1])} "
+          f"x{int(px.shape[0])} frames")
+    pl = _peak_line("joint refine", peaks, total_gb)
+    if pl:
+        print(pl)
+    top = max([v for _k, v in peaks if v is not None] or [0.0]) or None
+    # v1007: learn -- the next run of this size class opens with real numbers
+    learned = _rates_learn(rsec, mpf, enc_s, (tt[2] - tt[1]) / max(1, steps_run),
+                           tt[3] - tt[2], peak_gb=top)
+    print(f"[PLS] Power Upscale: joint rates learned (s per megapixel-frame, {rsec}): "
+          f"encode {learned['enc'] if learned['enc'] is None else round(learned['enc'], 3)} · "
+          f"step {round(learned['step'], 3) if learned['step'] else None} · "
+          f"decode {round(learned['dec'], 3) if learned['dec'] else None} "
+          f"({learned['runs']} run(s); remembered in the user directory)")
+    clock.push()
+    return px, {"steps_run": steps_run, "start_sigma": float(sig[0]) if steps_run else 0.0,
+                "sigmas_n": sigmas_n, "frames_out": int(px.shape[0]),
+                "vid_lat": vid_lat_keep, "n_in": n_in, "canvas": (sw, sh),
+                "cached": vid_lat_c is not None}
+
+
 class ULSPowerUpscale:
     """⬡ Polyhedron Power Upscale — MoE-aware tiled upscaler (see module doc)."""
 
@@ -1787,7 +2402,7 @@ class ULSPowerUpscale:
                                                  "detail; higher re-imagines."}),
                 "steps": ("INT", {"default": 3, "min": 1, "max": 10000,
                                   "tooltip": "Stage-H steps per tile (Lightning/distilled experts need few)."}),
-                "cfg": ("FLOAT", {"default": 1.6, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01,
+                "cfg": ("FLOAT", {"default": 1.6, "min": 0.0, "max": 100.0, "step": 0.01, "round": 0.01,
                                   "tooltip": "Stage-H CFG. Distilled / Lightning LoRAs live near 1."}),
                 "upscale_by_low": ("FLOAT", {"default": 1.30, "min": 1.0, "max": 8.0, "step": 0.05, "round": 0.01,
                                              "tooltip": "High + Low: stage-L size factor (total = product of both)."}),
@@ -1795,7 +2410,7 @@ class ULSPowerUpscale:
                                           "tooltip": "High + Low: stage-L refine strength (detail polish)."}),
                 "steps_low": ("INT", {"default": 5, "min": 1, "max": 10000,
                                       "tooltip": "High + Low: stage-L steps per tile."}),
-                "cfg_low": ("FLOAT", {"default": 1.9, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01,
+                "cfg_low": ("FLOAT", {"default": 1.9, "min": 0.0, "max": 100.0, "step": 0.01, "round": 0.01,
                                       "tooltip": "High + Low: stage-L CFG."}),
                 # ── Universal controls ──
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
@@ -1919,7 +2534,10 @@ class ULSPowerUpscale:
                                                        "of a tiny internal blend at the VAE "
                                                        "tile borders. NEVER temporal: a Wan "
                                                        "VAE compresses time 4:1, so time "
-                                                       "tiles would stutter."}),
+                                                       "tiles would stutter. The joint "
+                                                       "(video+audio) refine's whole-clip "
+                                                       "encode/decode reads it too -- a weak "
+                                                       "card's first lever against a VAE OOM."}),
                 # ── v564: the explicit either/or. Appended LAST.
                 #    v566 added 'model only' - the canvas IS the model factor.
                 #    v568 REMOVED 'model (high only)': it exists for free now,
@@ -1946,7 +2564,7 @@ class ULSPowerUpscale:
                                             "(resize_method='none' keeps the raw model result; a kernel supersamples it "
                                             "back to the dialled canvas). Measured: a pixel model in FRONT of a VAE round "
                                             "trip is nearly free of effect -- the /8 compression cannot carry its fine "
-                                            "detail. Switch without unplugging."}),
+                                            "detail. Switch without unplugging. refine_order='before pixel' is the same move for every model (it turns 'model + fit' / 'model only' into 'model final'); 'off' skips the refine."}),
                 # ── v582: the user's dial for the FINAL pass canvas. The pixel
                 #    model always computes its NATIVE factor (baked into the
                 #    weights); this factor decides where the fit lands it. ────
@@ -1991,6 +2609,33 @@ class ULSPowerUpscale:
                                                          "or without a wired "
                                                          "'model_low' -- without one, stage L falls back to the "
                                                          "'model' input and gets its own shifted copy of it."}),
+                # ── v1004 appended these two LAST in required (#577); v1008
+                #    RENAMED them (h3_refine -> refine_order, h3_audio ->
+                #    audio_stream) and made the first one read by EVERY model.
+                #    Same slots, same values: a save stores values by POSITION,
+                #    so every v1004-v1007 workflow loads unchanged (the browser
+                #    probe A-D proves it on a live frontend). The defaults
+                #    reproduce v1001 bit for bit: 'after pixel' leaves the tile
+                #    path exactly as pixel_stage says, and the joint refine
+                #    still needs the optional 'latent' wire, which an old save
+                #    does not carry. ──
+                "refine_order": (list(_REFINE_ORDERS), {"default": "after pixel",
+                                                        "tooltip": "WHERE the model refine sits against the pixel model (ESRGAN), for EVERY "
+                                                                   "model. 'after pixel' = ESRGAN + fit first, then the refine on that canvas "
+                                                                   "(tile path: exactly what pixel_stage says; video+audio models: the refine on "
+                                                                   "the big canvas). 'before pixel' = the refine first, then the pixel model "
+                                                                   "BEHIND the last decode, where its detail reaches the file untouched (tile "
+                                                                   "path: the same as pixel_stage='model final'; video+audio models: the refine "
+                                                                   "at the input size -- also the light option for weak cards). 'off' = no model "
+                                                                   "pass at all: ESRGAN + fit deliver the canvas (final_upscale_by). Measured law: "
+                                                                   "a pixel model in FRONT of a VAE round trip is nearly free of effect -- the "
+                                                                   "VAE's compression erases most of its detail."}),
+                "audio_stream": (list(_AUDIO_STREAM_MODES), {"default": "keep",
+                                                              "tooltip": "Video+audio (joint) models only, e.g. MiniMax H3: what the "
+                                                                         "refine does with the AUDIO stream of the packed latent. "
+                                                                         "'keep' freezes it (denoise mask 0 -- the run's audio comes "
+                                                                         "out bit-identical); 'denoise' lets the model touch it with "
+                                                                         "the same sigmas as the video. Ordinary models never read it."}),
             },
             "optional": {
                 "image": ("IMAGE", {"tooltip": "Frame input [N,H,W,C] — stills or an unpacked video. Wire "
@@ -2007,6 +2652,20 @@ class ULSPowerUpscale:
                                                                   "(the H model is NOT inherited) and a "
                                                                   "'model final' run says so and skips the "
                                                                   "final pass."}),
+                # ── v1004: two wires; v1008: 'sigmas' serves every model ──
+                "latent": ("LATENT", {"tooltip": "Video+audio (joint) models only: the packed AV latent of the run "
+                                                 "(the Sampler's LATENT output). Its AUDIO stream rides into the "
+                                                 "refine; the video stream is re-encoded from the frames. Unwired -> "
+                                                 "no joint refine (pixel path only, said out loud). Ordinary models "
+                                                 "ignore this wire."}),
+                "sigmas": ("SIGMAS", {"tooltip": "The sampler's own sigma curve (e.g. a Hyperflow / lightx2v / Turbo "
+                                                 "list), for EVERY model. The refine runs its tail: on a flow curve "
+                                                 "(values in 0..1: Wan, Flux, H3) it starts EXACTLY at sigma = denoise "
+                                                 "(0.30 = 30 % noise, whatever the curve's grid); on any other curve "
+                                                 "(SD1/SDXL, sigma is not a noise fraction) it runs the last "
+                                                 "round(steps x denoise) steps. 'steps' and 'scheduler' are not read "
+                                                 "while this is wired (said in the console). Unwired -> 'scheduler' + "
+                                                 "'steps' with Core's denoise slicing."}),
             },
         }
 
@@ -2031,7 +2690,8 @@ class ULSPowerUpscale:
                 result_preview=True, process_preview="latent2rgb", mute_staging_logs=True,
                 resize_method="lanczos (cpu)", per_batch=8, vae_tiling="Off",
                 pixel_stage="model + fit", final_upscale_by=1.0,
-                sigma_shift_low=-1.0):
+                sigma_shift_low=-1.0, refine_order="after pixel", audio_stream="keep",
+                latent=None, sigmas=None):
         t_all = time.monotonic()   # v553/v567: wall clock of THIS function,
         # started before input resolve so 'total=' and the ComfyUI badge
         # disagree only by executor overhead OUTSIDE the node body.
@@ -2042,12 +2702,81 @@ class ULSPowerUpscale:
         else:
             print("\u2b21 Power Upscale: the model on '%s' denoises %d "
                   "latent streams jointly (video + audio) -- MiniMax H3 and "
-                  "its kin. It cannot refine image tiles, so the REFINE "
-                  "stages are OFF for this run (denoise/steps/cfg have no "
-                  "effect) and the PIXEL path runs alone: final ESRGAN + "
-                  "fit deliver the upscaled file. For a true refine, wire "
-                  "an ordinary image/video model (e.g. Wan) with its "
-                  "matching VAE and conditioning." % _joint)
+                  "its kin. It cannot refine image tiles, so the tile REFINE "
+                  "stages are OFF for this run and the PIXEL path (final "
+                  "ESRGAN + fit) delivers the canvas. With refine_order on and "
+                  "'latent' wired, the whole-clip JOINT refine runs with it "
+                  "(see the lines below). For a TILE refine wire an ordinary "
+                  "image/video model (e.g. Wan) with its matching VAE and "
+                  "conditioning." % _joint)
+        # ── v1008: ONE order dial for every model. Decided ONCE, up front,
+        #    and every 'no' is said by name (the v552/v885 rule). ──
+        _order = str(refine_order or "after pixel")
+        if _order not in _REFINE_ORDERS:
+            print(f"[PLS] Power Upscale: refine_order={refine_order!r} is not a mode "
+                  f"-- running 'after pixel' (the default), loudly.")
+            _order = "after pixel"
+        # the tile path: 'before pixel' IS pixel_stage='model final' (the
+        # pixel model moves behind the last decode); 'off' drops the stages.
+        # Rebinding pixel_stage here keeps every reader below on ONE truth.
+        if _joint is None and _order == "before pixel":
+            if str(pixel_stage) in ("model + fit", "model only"):
+                print(f"[PLS] Power Upscale: refine_order='before pixel' -> the tile "
+                      f"refine runs first and the pixel model runs ONCE behind the last "
+                      f"decode (pixel_stage '{pixel_stage}' acts as 'model final' this "
+                      f"run: stages grow by fit to upscale_by, final_upscale_by sets the "
+                      f"file canvas).")
+                pixel_stage = "model final"
+            elif str(pixel_stage) == "fit only":
+                print("[PLS] Power Upscale: refine_order='before pixel' with "
+                      "pixel_stage='fit only' -- there is no pixel model to move; "
+                      "the order changes nothing this run.")
+        # ── v1004: is the JOINT refine ON for this run? ──
+        _joint_why = ""
+        _joint_on = False
+        if _joint is not None:
+            if _order == "off":
+                _joint_why = "refine_order=off"
+            elif latent is None:
+                _joint_why = "'latent' not wired (the audio stream has no source)"
+            elif len(_latent_parts(latent.get("samples"))) < 2:
+                _joint_why = "'latent' is not a packed AV latent (no audio stream)"
+            else:
+                _joint_on = True
+                _reject_none_conditioning(positive, negative)
+            if not _joint_on:
+                print(f"[PLS] Power Upscale: joint refine OFF -- {_joint_why}. The pixel "
+                      f"path runs alone (final ESRGAN + fit); denoise/steps/cfg "
+                      f"reach nothing this run.")
+            else:
+                _pc = _patch_count(model)
+                if _pc == 0:
+                    print("[PLS] Power Upscale: NOTE - the wired 'model' carries "
+                          "NO weight patches: the refine runs on the raw loader output, "
+                          "without the Turbo/Hyperflow/LoRA chain your sampler uses. "
+                          "Wire the END of that chain (e.g. the NAG output) into "
+                          "'model' if the refine should see the same model.")
+                if sigmas is None:
+                    print(f"[PLS] Power Upscale: NOTE - no 'sigmas' wired: the joint "
+                          f"refine builds its own {scheduler} schedule over {int(steps)} "
+                          f"steps with Core's denoise slicing. An accelerator that "
+                          f"expects its own curve (Hyperflow, Turbo) wants that "
+                          f"curve here too.")
+                if abs(float(cfg) - 1.0) > 1e-9:
+                    print(f"[PLS] Power Upscale: NOTE - cfg={float(cfg):.2f} on the joint "
+                          f"refine: any value but 1.0 runs a SECOND forward per step "
+                          f"(the negative), doubling the step time -- 121 s instead of "
+                          f"~60 s at 1872x1072 in the 24.09. field run. Distilled "
+                          f"curves (Hyperflow, Turbo) are made for cfg 1.0.")
+                if float(denoise) <= 0.0:
+                    _joint_on = False
+                    _joint_why = "denoise=0 (nothing to refine)"
+                    print("[PLS] Power Upscale: joint refine OFF -- denoise=0.")
+                if float(denoise) >= 0.7:
+                    print(f"[PLS] Power Upscale: NOTE - denoise={float(denoise):.2f} "
+                          f"starts the joint refine with {float(denoise) * 100:.0f} % noise "
+                          f"on the picture -- that is a re-render, not a detail pass. "
+                          f"A detail pass lives around 0.20-0.35.")
         # v884: ONE source of truth for "does the final pass run". v883
         # emptied the stages on a joint model but the ONLY carrier of
         # final_upscale_by outside the stages is the 'model final' block --
@@ -2057,7 +2786,14 @@ class ULSPowerUpscale:
         # the existing final pass, whatever the pixel_stage dial says; the
         # v571 law ("one condition, two places, same spelling") collapses to
         # one NAME read in both places.
-        _final_runs = (str(pixel_stage) == "model final") or (_joint is not None)
+        # v1008: refine_order='off' on an ordinary model is the same shape --
+        # no stage runs, so the final pass IS the delivery. _final_delivers
+        # names those runs: there the pass also runs as a plain FIT when no
+        # pixel model is wired (or pixel_stage='fit only'), so the canvas the
+        # user dialled (final_upscale_by) is still the canvas he gets.
+        _tile_off = (_joint is None and _order == "off")
+        _final_delivers = (_joint is not None) or _tile_off
+        _final_runs = (str(pixel_stage) == "model final") or (_joint is not None) or _tile_off
         frames, audio, frame_rate = _resolve_input(image, video)
         # ── v851: per-stage sigma shift. The LOW value resolves through the
         #    Sampler's own _resolve_low_shift (-1 sentinel = "same as high", 0 =
@@ -2078,6 +2814,18 @@ class ULSPowerUpscale:
         #        for stage L there is paid for and never touched. The gate is on
         #        _dual, not on the dial, and the HIGH shift stays unconditional -
         #        it is the one that reaches the single stage.
+        if _joint is not None and (float(sigma_shift or 0.0) > 0
+                                   or float(sigma_shift_low or -1.0) > 0):
+            # v1004: a sigma shift is NEVER laid on a joint model. The patch
+            # would replace ModelSamplingAV -- the sampling object that carries
+            # the audio clock (witness C of the joint probe) -- with a plain
+            # flow sampler. The dials are zeroed HERE, before the shift block,
+            # so that block stays the closed, guard-driven unit it is (v851).
+            print(f"[PLS] Power Upscale: sigma_shift={float(sigma_shift or 0):g} "
+                  f"is NOT applied to a joint (video+audio) model -- it would "
+                  f"replace the AV sampling and its audio clock. The model's own "
+                  f"sampling (or the wired curve) sets the schedule.")
+            sigma_shift, sigma_shift_low = 0.0, -1.0
         _dual = bool(dual_moe)
         _hi_shift = float(sigma_shift or 0.0)
         _low_raw = float(sigma_shift_low if sigma_shift_low is not None else -1.0)
@@ -2111,7 +2859,43 @@ class ULSPowerUpscale:
         stages = uls_tile_math.plan_stages(bool(dual_moe), upscale_by, denoise,
                                            steps, cfg, upscale_by_low,
                                            denoise_low, steps_low, cfg_low)
-        stages = uls_tile_math.drop_refine_stages(stages, _joint is not None)
+        stages = uls_tile_math.drop_refine_stages(stages, (_joint is not None) or _tile_off)
+        if _tile_off:
+            print("[PLS] Power Upscale: refine_order='off' -- NO model pass this run: the "
+                  "pixel path (ESRGAN + fit, or a plain fit under pixel_stage='fit only') "
+                  "delivers the canvas at final_upscale_by. upscale_by, denoise, steps, "
+                  "cfg and the tile dials reach nothing.")
+        # ── v1008: a wired curve reaches the TILE refine too. Each stage cuts
+        #    its OWN run from it at its own denoise (_sigma_run: exact start on
+        #    a flow curve, step slicing on any other); the stage's step count
+        #    becomes the run's length, so the clock is posted with the truth. ──
+        _curve = None
+        if sigmas is not None and _joint is None and stages:
+            _curve = [float(v) for v in sigmas.flatten().tolist()]
+            for st in stages:
+                run, how = _sigma_run(_curve, st["denoise"])
+                st["sig_run"], st["sig_how"] = run, how
+                st["steps"] = max(0, len(run) - 1)
+                print(f"[PLS] Power Upscale: stage={st['tag']}: curve {len(_curve) - 1} steps, "
+                      f"denoise {float(st['denoise']):.2f} -> {st['steps']} step(s)"
+                      + (f" from \u03c3 {run[0]:.3f} ({', '.join('%.3f' % v for v in run)})"
+                         if run else " (nothing to sample -- a VAE round trip)")
+                      + {"exact": ("" if _sigma_on_grid(_curve, st["denoise"]) else
+                                   " -- the start is NOT a point of the curve; a distilled "
+                                   "LoRA was trained on its grid, judge by eye"),
+                         "slice": " -- step slicing (not a flow curve: sigma is not a noise fraction)",
+                         "whole": " -- the whole curve",
+                         "none": ""}[how])
+            print("[PLS] Power Upscale: 'sigmas' is wired -> the tile refine runs the "
+                  "curve's run; 'steps'/'steps_low' and 'scheduler'/'scheduler_low' are "
+                  "NOT read this run (the sampler dials still are).")
+            if float(sigma_shift or 0.0) > 0 or (bool(dual_moe) and float(sigma_shift_low or -1.0) > 0):
+                print("[PLS] Power Upscale: NOTE - sigma_shift is set AND a curve is wired: "
+                      "the curve IS the schedule (it carries its own shift); the shift only "
+                      "re-labels the model's sampling and does not move a single sigma.")
+        elif sigmas is not None and _joint is None and _tile_off:
+            print("[PLS] Power Upscale: 'sigmas' is wired but refine_order='off' -- no "
+                  "refine reads it this run.")
         # v566: 'model only' - the canvas IS the model factor (Frank's law: the
         # model and the filter are alternatives for GROWING; the fit stays only
         # as the /8 snap corrective). The factor swap happens HERE, before the
@@ -2227,6 +3011,8 @@ class ULSPowerUpscale:
         # stage passes until its own first chunk measures (rung 2, declared ~).
         if _final_runs:
             _um_fin = upscale_model_low if bool(dual_moe) else upscale_model
+            if _final_delivers and str(pixel_stage) == "fit only":
+                _um_fin = None   # v1008: 'fit only' means no pixel model, on every path
             # v571: the gate mirrors the final-pass block EXACTLY (wired or
             # not) - v570 gated the post on scale > 0, so a scale-less model
             # would have run the pass and then KeyError'd the clock on its
@@ -2236,6 +3022,56 @@ class ULSPowerUpscale:
             # 16x into the rung-3 blend.
             if _um_fin is not None:
                 clock.post("pix:final", pix_chunks, float(w * h))
+            elif _final_delivers and str(resize_method) != _NO_RESIZE:
+                clock.post("fit:final", pix_chunks, float(w * h))   # v1008: the plain-fit delivery
+        # ── v1004: the JOINT refine is a run phase like any other -- posted up
+        #    front so the ETA covers it. Its step count is known now (the
+        #    curve's run, or 'steps' under Core's slicing); its weight is the
+        #    canvas it runs on times the frames (one latent, all frames). ──
+        _jr_info = None
+        _jr_frames_in = n_frames
+        _jr_key = None
+        _jr_hit = None
+        _jr_snap = _vae_spatial(vae, _JOINT_SNAP_DEFAULT) if _joint_on else _JOINT_SNAP_DEFAULT
+        if _joint_on:
+            if sigmas is not None:
+                _jr_steps = max(1, len(_sigma_run(
+                    [float(v) for v in sigmas.flatten().tolist()], denoise)[0]) - 1)
+            else:
+                _jr_steps = max(1, int(steps))
+            if _order == "before pixel":
+                _hw, _hh = _snap_to(int(frames.shape[2]), int(frames.shape[1]), _jr_snap)
+            else:
+                _hw, _hh = w, h   # the last planned canvas (final pass may grow it)
+                if _final_runs:
+                    try:
+                        _fby0 = float(final_upscale_by)
+                    except (TypeError, ValueError):
+                        _fby0 = 1.0
+                    if 0.25 <= _fby0 <= 8.0 and str(resize_method) != _NO_RESIZE:
+                        _hw, _hh = int(round(w * _fby0)), int(round(h * _fby0))
+                _hw, _hh = _snap_to(_hw, _hh, _jr_snap)
+            # v1006: the cache is asked NOW, so a hit posts neither the pixel
+            # pass nor the encode to the clock (they will not run).
+            _um_key = _um_fin if _final_runs else None
+            if _order == "after pixel":
+                _jr_key = _cache_key(frames, vae, _um_key, (_hw, _hh), resize_method)
+            else:
+                _jr_key = _cache_key(frames, vae, None, (_hw, _hh), "input")
+            _jr_hit = _latent_cache_get(_jr_key)
+            if _jr_hit is not None:
+                print(f"[PLS] Power Upscale: joint cache HIT -- the video latent of this exact "
+                      f"input{' + pixel pass' if _order == 'after pixel' else ''} is "
+                      f"still in memory; skipping "
+                      f"{'the pixel pass and ' if _order == 'after pixel' else ''}the "
+                      f"encode. Only the sampling and the decode run.")
+                if _order == "after pixel":
+                    clock.resize("pix:final" if _um_key is not None else "fit:final", 0)
+            _jr_px = float(_hw * _hh) * float(n_frames)
+            if _jr_hit is None:
+                clock.post("enc:joint", 1, _jr_px)
+            clock.post("step:joint", _jr_steps, _jr_px)
+            clock.post("dec:joint", 1, _jr_px)
         clock.push()
         # v550: built ONCE - latent_rgb factors are a property of the latent
         # FAMILY, identical across a Wan expert pair. Off -> None -> zero cost.
@@ -2262,6 +3098,25 @@ class ULSPowerUpscale:
             _emit_input_preview(frames, clock=clock)
 
         cur = frames
+        if _joint_on and _order == "before pixel":
+            # v1004: refine at the INPUT size, then the pixel path grows it.
+            _c = None
+            if _jr_hit is not None:
+                _c = (_jr_hit, int(cur.shape[0])) + _snap_to(int(cur.shape[2]), int(cur.shape[1]), _jr_snap)
+            cur, _jr_info = _joint_refine(model, positive, negative, vae, cur, latent,
+                                          sigmas, seed, steps, cfg, sampler_name,
+                                          scheduler, denoise, audio_stream, clock,
+                                          probe=probe, mute=mute_staging_logs, cached=_c,
+                                          vae_tiling=vae_tiling)
+            if _jr_hit is None:
+                _latent_cache_put(_jr_key, _jr_info["vid_lat"], "before pixel")
+            n_frames = int(cur.shape[0])
+        # v1008: the tile path's books -- rates section, per-stage VRAM peaks,
+        # and what the verdict will say about the run
+        _tile_rsec = _rates_section("tile", model) if (_joint is None and plans) else None
+        _tile_tiles = 0
+        _tile_steps = 0
+        _tile_start = None
         for st, sw, sh, grid in plans:
             is_low = (st["tag"] == "low")
             m = (model_low if (is_low and model_low is not None) else model)
@@ -2289,6 +3144,8 @@ class ULSPowerUpscale:
             # continued across them.
             samp = _low_or(sampler_low, sampler_name) if is_low else sampler_name
             sched = _low_or(scheduler_low, scheduler) if is_low else scheduler
+            if st.get("sig_how") is not None:
+                sched = "curve"   # v1008: the wired curve IS the schedule (never read below)
             # v553: the plan line moved to BEGIN (all fields are known up
             # front), a per-tile line lives in _refine_tiles, and DONE carries
             # the MEASURED stage duration - a 300 s run now narrates itself.
@@ -2356,15 +3213,61 @@ class ULSPowerUpscale:
                     pixel_probe(_tag, _p["k"], _p["n"], j, _n, part,
                                 clock.elapsed(), clock.eta())
 
+            # ── v1008: the PIXEL cache -- the first stage's model pass depends on
+            #    nothing but the input, the wire, the canvas and the fit, so a
+            #    denoise/cfg/seed experiment on the same clip does not pay for
+            #    ESRGAN again. Full precision or not at all (RAM-budgeted). ──
+            _pc_key = None
+            _pc_hit = None
+            if um is not None and st is plans[0][0]:
+                _pc_key = _pixel_cache_key(frames, um, (sw, sh), resize_method,
+                                           str(pixel_stage))
+                _pc_hit = _pixel_cache_get(_pc_key)
+            st_peaks = {}
+            if _tile_rsec is not None:
+                _pm = float(grid["tile_w"] * grid["tile_h"] * int(cur.shape[0])) / 1e6
+                _rr = _rates_load(_tile_rsec)
+                _pl, _pe = _phase_plan(_pm, int(st["steps"]), False, _rr)
+                print(f"[PLS] Power Upscale: stage={st['tag']} plan per tile "
+                      f"({grid['tile_w']}x{grid['tile_h']} x {int(cur.shape[0])} frames, "
+                      f"{_pm:.0f} megapixel-frames, {_tile_rsec}):")
+                for _ln in _pl:
+                    print(f"[PLS] Power Upscale:   {_ln}")
+                _mn = _memory_note(_rr, _pm, _vram_total_gb(),
+                                   "a smaller tile_size, vae_tiling 512, fewer frames per clip")
+                if _mn:
+                    print(f"[PLS] Power Upscale: {_mn}")
             with _MuteInfoLogs(mute_staging_logs, label="Power Upscale"):
-                cur = _esrgan_pass(cur, um, sw, sh, resize_method, per_batch,
-                                   on_chunk=_on_chunk)
+                if _pc_hit is not None:
+                    cur = _pc_hit
+                    clock.resize(f"{st['pix_kind']}:{st['tag']}", 0)
+                    print(f"[PLS] Power Upscale: stage={st['tag']} pixel cache HIT -- the "
+                          f"model pass of this exact input, wire, canvas and fit is still in "
+                          f"RAM; the ESRGAN pass is skipped ({sw}x{sh} x{int(cur.shape[0])} frames)")
+                else:
+                    cur = _esrgan_pass(cur, um, sw, sh, resize_method, per_batch,
+                                       on_chunk=_on_chunk)
+                    if _pc_key is not None:
+                        _ok, _why = _pixel_cache_put(_pc_key, cur, st["tag"])
+                        print(f"[PLS] Power Upscale: stage={st['tag']} pixel cache: "
+                              f"{'stored' if _ok else 'skipped'} ({_why})")
                 t_pix = time.monotonic()
                 cur = _refine_tiles(m, positive, negative, vae, cur, grid, seed,
                                     st["steps"], st["cfg"], samp, sched,
                                     st["denoise"], clock, st["tag"],
                                     tile_probe=probe,
-                                    vae_encode=v_enc, vae_decode=v_dec)
+                                    vae_encode=v_enc, vae_decode=v_dec,
+                                    sig_run=st.get("sig_run"), rsec=_tile_rsec,
+                                    peaks=st_peaks)
+            _tile_tiles += len(grid["tiles"])
+            _tile_steps += int(st["steps"])
+            if _tile_start is None and st.get("sig_run"):
+                _tile_start = float(st["sig_run"][0])
+            _pkl = _peak_line(f"stage={st['tag']}",
+                              [(k, st_peaks.get(k)) for k in ("encode", "sample", "decode")],
+                              _vram_total_gb())
+            if _pkl:
+                print(_pkl)
             dur = time.monotonic() - t0
             _free()   # v561: between stages, hand the blocks back
             # v565: the old line divided the WHOLE stage by the tile count, which
@@ -2389,10 +3292,57 @@ class ULSPowerUpscale:
         # chunked + interruptible (v565/v566). The wires are the truth (v568):
         # in High + Low the pass belongs to the LAST stage and takes its wire
         # (upscale_model_low); in Single it takes upscale_model.
-        if _final_runs:
+        if _final_runs and _jr_hit is not None and _order == "after pixel":
+            print("[PLS] Power Upscale: final pass SKIPPED (joint cache hit -- its "
+                  "result is the cached latent's source)")
+        elif _final_runs:
             um_fin = upscale_model_low if bool(dual_moe) else upscale_model
             wire = "upscale_model_low" if bool(dual_moe) else "upscale_model"
-            if um_fin is None:
+            if _final_delivers and str(pixel_stage) == "fit only":
+                um_fin = None   # v1008: mirrors the clock post exactly
+            if um_fin is None and _final_delivers:
+                # v1008: the final pass IS the delivery here (a joint model, or
+                # refine_order='off') -- without a pixel model it is a plain fit
+                # onto the dialled canvas, never a silent input-size file.
+                fw, fh = int(cur.shape[2]), int(cur.shape[1])
+                try:
+                    fby = float(final_upscale_by)
+                except (TypeError, ValueError):
+                    fby = float("nan")
+                if not (0.25 <= fby <= 8.0):
+                    fby = 1.0
+                tw, th = int(round(fw * fby)), int(round(fh * fby))
+                if _joint_on and _order == "after pixel":
+                    tw, th = _snap_to(tw, th, _jr_snap)
+                if str(resize_method) == _NO_RESIZE or (tw, th) == (fw, fh):
+                    print(f"[PLS] Power Upscale: final pass: no pixel model "
+                          f"({'pixel_stage=fit only' if str(pixel_stage) == 'fit only' else wire + ' not wired'})"
+                          f" and nothing to fit ({'resize_method=none' if str(resize_method) == _NO_RESIZE else 'canvas unchanged'})"
+                          f" -> the frames pass as they are ({fw}x{fh}).")
+                else:
+                    print(f"[PLS] Power Upscale: final pass begin -> plain fit "
+                          f"({'pixel_stage=fit only' if str(pixel_stage) == 'fit only' else wire + ' not wired'}) "
+                          f"{fw}x{fh} -> {tw}x{th} (final_upscale_by={fby:.2f}, {resize_method})")
+                    t_ff = time.monotonic()
+                    ffin = {"last": t_ff, "n": pix_chunks, "k": 0}
+
+                    def _on_fitfin(i, j, part, chunks, _p=ffin):
+                        if _p["k"] == 0 and int(chunks) != _p["n"]:
+                            clock.resize("fit:final", int(chunks))
+                            _p["n"] = int(chunks)
+                        now3 = time.monotonic()
+                        clock.measure("fit:final", now3 - _p["last"])
+                        _p["last"] = now3
+                        _p["k"] += 1
+                        if pixel_probe is not None:
+                            pixel_probe("final", _p["k"], _p["n"], j, n_frames, part,
+                                        clock.elapsed(), clock.eta())
+
+                    cur = _esrgan_pass(cur, None, tw, th, resize_method, per_batch,
+                                       on_chunk=_on_fitfin)
+                    print(f"[PLS] Power Upscale: final fit done in "
+                          f"{time.monotonic() - t_ff:.1f}s -> {tw}x{th}")
+            elif um_fin is None:
                 print(f"[PLS] Power Upscale: pixel_stage='model final' but "
                       f"{wire} is not wired -> NO final pass (the wires are "
                       f"the truth). This run behaved exactly like 'fit only'.")
@@ -2424,6 +3374,14 @@ class ULSPowerUpscale:
                           f"the raw model result IS the file (x{fsc:.2f} here). "
                           f"Pick a kernel to put the canvas in your hand.")
                 tw, th, grows = _final_canvas(fw, fh, fsc, resize_method, fby)
+                if _joint_on and _order == "after pixel" and str(resize_method) != _NO_RESIZE:
+                    # v1004: the joint VAE's grid (H3: /16) -- land the canvas
+                    # there NOW so the refine's encode never centre-crops it.
+                    _sw, _sh = _snap_to(tw, th, _jr_snap)
+                    if (_sw, _sh) != (tw, th):
+                        print(f"[PLS] Power Upscale: final canvas {tw}x{th} snapped to "
+                              f"{_sw}x{_sh} (/{_jr_snap}) for the joint refine that follows")
+                        tw, th = _sw, _sh
                 if (str(resize_method) != _NO_RESIZE and fsc > 0.0
                         and fby > fsc + 1e-9):
                     # v582: the canvas asks for MORE pixels than the model
@@ -2516,6 +3474,49 @@ class ULSPowerUpscale:
                       f"{int(cur.shape[2])}x{int(cur.shape[1])} "
                       f"(this detail never meets a VAE)")
 
+        if _joint_on and _order == "after pixel":
+            # v1004: the hires-fix -- the refine on the finished canvas.
+            _c = None
+            if _jr_hit is not None:
+                _c = (_jr_hit, n_frames, int(_hw), int(_hh))
+            cur, _jr_info = _joint_refine(model, positive, negative, vae, cur, latent,
+                                          sigmas, seed, steps, cfg, sampler_name,
+                                          scheduler, denoise, audio_stream, clock,
+                                          probe=probe, mute=mute_staging_logs, cached=_c,
+                                          vae_tiling=vae_tiling)
+            if _jr_hit is None:
+                _latent_cache_put(_jr_key, _jr_info["vid_lat"], "after pixel")
+        # v1008: WHERE the pixel model sat this run -- the one fact behind
+        # Frank's 25.09. question ("arbeiten wir doppelt?"), on the node.
+        _fin_wire = upscale_model_low if bool(dual_moe) else upscale_model
+        if str(pixel_stage) == "fit only":
+            _where = "none"
+        elif _joint is not None:
+            _where = ("none" if _fin_wire is None else
+                      ("front" if (_joint_on and _order == "after pixel") else "behind"))
+        elif _final_runs:   # the tile path: 'model final' (or 'before pixel') or 'off'
+            _where = "behind" if _fin_wire is not None else "none"
+        else:
+            _where = ("front" if (upscale_model is not None or
+                                  (bool(dual_moe) and upscale_model_low is not None))
+                      else "none")
+        if _joint is not None:
+            _verdict = _joint_verdict(_order, _joint_on,
+                                      (_jr_info or {}).get("sigmas_n", 0),
+                                      (_jr_info or {}).get("steps_run", 0),
+                                      (_jr_info or {}).get("start_sigma", 0.0),
+                                      str(audio_stream), _patch_count(model),
+                                      _jr_frames_in, int(cur.shape[0]), why=_joint_why,
+                                      where=_where)
+            if _jr_info and _jr_info.get("cached"):
+                _verdict += " \u00b7 latent from cache"
+        else:
+            _verdict = _tile_verdict(_order, 0 if _tile_off else len(plans), _tile_tiles,
+                                     _tile_steps, _tile_start or 0.0,
+                                     (len(_curve) - 1) if _curve else 0, _where,
+                                     why="refine_order=off" if _tile_off else "")
+        if _verdict:
+            print(f"[PLS] Power Upscale: {_verdict}")
         video_out = _build_video(cur, audio, frame_rate) if video is not None else None
         preview = _emit_result_preview(cur, frame_rate if video is not None else None,
                                        bool(result_preview))
@@ -2527,5 +3528,10 @@ class ULSPowerUpscale:
               f"total={time.monotonic() - t_all:.1f}s"
               f" (node wall clock; the ComfyUI badge adds executor overhead "
               f"outside this function)")
-        return {"ui": {"pls_pu_preview": preview},
+        return {"ui": {"pls_pu_preview": preview,
+                       # v1004: ONE line the frontend shows -- the node says
+                       # what it did. v1008: for EVERY model, plus the path
+                       # ('joint' / 'tile') the frontend hides unread dials by.
+                       "pls_pu_verdict": [_verdict],
+                       "pls_pu_path": ["joint" if _joint is not None else "tile"]},
                 "result": (cur, video_out)}

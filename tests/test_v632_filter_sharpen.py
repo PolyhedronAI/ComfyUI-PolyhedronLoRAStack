@@ -199,9 +199,15 @@ if mut == js_kernel:
 if float(np.max(np.abs(_js_sharpen(mut, js_sharp, AMOUNT) - py_out))) <= TOL:
     _fail("MUTATION NOT CAUGHT: js kernel-width wound survived the parity check")
 
-mut_py = _lift_pyfunc(PY_SRC, "_sharpen_np").replace(
-    "np.float32(float(amount)) * (x - blur)",
-    "np.float32(float(amount) * 0.9) * (x - blur)")
+# RE-GROUNDED v1000: the detail layer is named d since the threshold (F3)
+# cores it; the old anchor "(x - blur)" no longer existed and the replace
+# silently did nothing -- so the anchor is now required to be present.
+_py_sharp = _lift_pyfunc(PY_SRC, "_sharpen_np")
+if "np.float32(float(amount)) * d" not in _py_sharp:
+    _fail("py amount mutation anchor missing -- the wound would not apply")
+mut_py = _py_sharp.replace(
+    "np.float32(float(amount)) * d",
+    "np.float32(float(amount) * 0.9) * d")
 env2 = {"np": np, "_gauss_kernel": env["_gauss_kernel"]}
 exec(mut_py, env2)
 if float(np.max(np.abs(np.asarray(env2["_sharpen_np"](img, AMOUNT, RADIUS), dtype=np.float64)

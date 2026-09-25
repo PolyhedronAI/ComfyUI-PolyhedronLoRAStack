@@ -18,6 +18,10 @@ try:  # v577: ONE door to the versioned API (nodes/ph_comfyapi.py).
     from .ph_comfyapi import io
 except ImportError:  # pragma: no cover - direct module load (tools)
     from ph_comfyapi import io
+try:  # v980: pure module (no comfy) -- the depth list has one home
+    from . import uls_overlap_math as _OV
+except ImportError:  # pragma: no cover - direct module load (tools)
+    import uls_overlap_math as _OV
 
 
 class ULSResolveInspectorV3(io.ComfyNode):
@@ -30,17 +34,16 @@ class ULSResolveInspectorV3(io.ComfyNode):
             description=(
                 "Analyzes the Stack's CONCAT/DARE/Resolve merge (no "
                 "re-implementation). Overview = instant; Deep analysis measures "
-                "Resolve fidelity via per-layer SVD."
+                "Resolve fidelity via per-layer SVD; Overlap & energy measures "
+                "what each LoRA adds and which pull together or apart."
             ),
             inputs=[
                 io.String.Input("uls_config_out", default='{"rows":[]}',
                                 multiline=False, force_input=True),
                 io.Combo.Input("analysis_depth",
-                               options=["Overview", "Deep analysis"],
+                               options=list(_OV.DEPTHS),
                                default="Overview",
-                               tooltip=("Overview = instant (selection/modes only). "
-                                        "Deep analysis = loads the LoRAs + SVD per layer "
-                                        "(slower), measures Resolve fidelity.")),
+                               tooltip=_OV.DEPTH_TIP),
                 io.Int.Input("max_layers", default=24, min=1, max=200, step=1,
                              optional=True,
                              tooltip=("Deep analysis: how many of the largest conflict "
@@ -49,6 +52,8 @@ class ULSResolveInspectorV3(io.ComfyNode):
                                optional=True,
                                tooltip=("auto = GPU if free (like the real Resolve path), "
                                         "else CPU. 'cpu' forces CPU.")),
+                # v980: socket, appended last -- no widget slot moves.
+                io.Model.Input("model", optional=True, tooltip=_OV.MODEL_TIP),
             ],
             outputs=[
                 io.String.Output(display_name="report"),
@@ -59,12 +64,14 @@ class ULSResolveInspectorV3(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, uls_config_out, analysis_depth, max_layers=24, device="auto") -> io.NodeOutput:
+    def execute(cls, uls_config_out, analysis_depth, max_layers=24, device="auto",
+                model=None) -> io.NodeOutput:
         from .uls_resolve_inspector import ULSResolveInspector
         out = ULSResolveInspector().analyze(
             uls_config_out=uls_config_out,
             analysis_depth=analysis_depth,
             max_layers=max_layers,
             device=device,
+            model=model,
         )
         return io.NodeOutput(*out)

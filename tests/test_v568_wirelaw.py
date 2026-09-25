@@ -205,7 +205,7 @@ def main():
 
     # ---- serialisation: no new widget -------------------------------------------
     canon = re.search(r"const ORDER_CANON = \[(.*?)\];", js, re.S).group(1)
-    names = re.findall(r'"([a-z_ +()]+)"', canon)
+    names = re.findall(r'"([a-z_0-9 +()]+)"', canon)
     # AMENDED IN v582 (1st amendment): the absolute count len==25 was a TEXT
     # pin on a moving structure (lesson 1). v582 tail-appends a widget and
     # five sibling guards broke on the same line at once. The claim owned
@@ -228,7 +228,7 @@ def main():
     # and it still fires on the real crime: a widget inserted anywhere but the
     # end, or a canon left un-updated.
     _tail_py = re.findall(r'"([a-z_0-9]+)":\s*\(', req)[-1]
-    _tail_js = re.findall(r'"([a-z_ +()]+)"',
+    _tail_js = re.findall(r'"([a-z_0-9 +()]+)"',   # v1004: a widget name may carry a digit (h3_*)
                           re.search(r"const ORDER_CANON = \[(.*?)\];", js,
                                     re.S).group(1))[-1]
     if _tail_py != _tail_js:

@@ -546,6 +546,7 @@ function _taeToast(title, text, goLabel, onGo) {
     } else {
         setTimeout(close, 12000);
     }
+    box.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
     document.body.appendChild(box);
     return { box: box, p: p, close: close };
 }

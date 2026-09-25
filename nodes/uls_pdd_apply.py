@@ -156,6 +156,26 @@ def _head_cls():
         def out_features(self):
             return int(self._fused[0].shape[1])
 
+        # v965: Core master (commit 2504e68d, 28.08.2026) grew its own PDD head
+        # bank and FinalLayer.forward now opens with
+        #     n = self.video_out.weight.shape[0] // self.video_out.out_features
+        # before it decides which path to take. A stand-in without `weight`
+        # dies there with AttributeError. Handing back ONE block's weight
+        # ([out, in]) makes n == 1, Core takes its ordinary path
+        # `self.video_out(...)`, and that call lands in forward() below with
+        # our block selection -- the documented 4..8-step schedule stays ours
+        # on both Cores. Core's own bank (dt-weighted mean of the heads a step
+        # spans, any step count) is a different doctrine and expects a LoRA
+        # already in ComfyUI keys; it is NOT delegated to.
+        @property
+        def weight(self):
+            return self._fused[0][0]
+
+        @property
+        def bias(self):
+            b = self._fused[1]
+            return None if b is None else b[0]
+
         def extra_repr(self):
             return "PDD %s head, %d blocks, %d -> %d" % (
                 self.which, int(self._fused[0].shape[0]),
