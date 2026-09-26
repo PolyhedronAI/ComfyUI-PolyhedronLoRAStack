@@ -20,6 +20,7 @@ import { app } from "../../scripts/app.js";
 // v952: under Nodes 2.0 the classic textarea is not mounted; the auto-fit measures
 // the Vue field standing in for it (the bridge copies the height back onto it).
 import { vueFieldFor } from "./uls_vue_parity.js";
+import { saveInCanon } from "./ph_save_compat.js";
 
 console.info("[PLS] ph_clip_encode.js v560 loaded");
 
@@ -662,6 +663,17 @@ app.registerExtension({
             const r = _created ? _created.apply(this, arguments) : undefined;
             const self = this;
             self._cteTokens = null;
+            // v1021: the canon save on frontends that no longer call
+            // serialize() (1.53.6) -- see ph_save_compat.js. The field heights
+            // ride along the same way (v623).
+            saveInCanon(self, (n) => !!n._plsDisplayed, (n, fn) => {
+                _canonOrder(n);
+                try { return fn(); } finally { _reorderWidgetsToDisplay(n); }
+            }, (n, o) => {
+                if (o.pls_field_heights) return;
+                const h = _captureFieldHeights(n);
+                if (Object.keys(h).length) o.pls_field_heights = h;
+            });
 
             // Wire every prompt field for auto-fit BEFORE the first _applyVisibility --
             // _hide() snapshots computeSize by hasOwnProperty, so ours must exist first.

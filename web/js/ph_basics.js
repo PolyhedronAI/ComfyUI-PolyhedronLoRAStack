@@ -39,6 +39,7 @@
 
 import { app } from "../../scripts/app.js";
 import { refit } from "./ph_widget_vis.js";
+import { saveInCanon } from "./ph_save_compat.js";
 
 console.info("[PLS] ph_basics.js v542 loaded");
 
@@ -544,6 +545,14 @@ app.registerExtension({
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             onNodeCreated?.apply(this, arguments);
+            // v1021: the canon save on frontends that no longer call
+            // serialize() (1.53.6) -- see ph_save_compat.js
+            if (spec && spec.canon) {
+                saveInCanon(this, (n) => !!n._plsDisplayed, (n, fn) => {
+                    _toCanon(n, spec);
+                    try { return fn(); } finally { _toDisplay(n, spec); }
+                });
+            }
             const baseCS = this.computeSize.bind(this);
             this.computeSize = (out) => {
                 const s = baseCS(out);

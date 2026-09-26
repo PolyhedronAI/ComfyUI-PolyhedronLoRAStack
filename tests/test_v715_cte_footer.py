@@ -256,6 +256,7 @@ HARNESS_TAIL = r"""
 def _build(src):
     body = src.replace('import { app } from "../../scripts/app.js";', "")
     body = body.replace('import { vueFieldFor } from "./uls_vue_parity.js";', 'const vueFieldFor = () => null;')   # v952
+    body = body.replace('import { saveInCanon } from "./ph_save_compat.js";', 'const saveInCanon = () => {};')   # v1021: the save path has its own guard
     return HARNESS_HEAD + "\n" + body + "\n" + HARNESS_TAIL
 
 

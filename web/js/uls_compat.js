@@ -89,7 +89,7 @@ const VUE_USABLE = new Set([
 
 // v921: hand-kept -- it had drifted to v609 while the carrier was at
 // v920, and this string is what the About page shows the user.
-const PLUGIN_VERSION = "v381";
+const PLUGIN_VERSION = "v382";
 // v303: 8s — 3s false-positived on large workflows / slow first draws.
 // LiteGraph culls offscreen nodes (onDrawForeground never runs for them), so
 // the notice can still appear for an offscreen-but-healthy node; the draw

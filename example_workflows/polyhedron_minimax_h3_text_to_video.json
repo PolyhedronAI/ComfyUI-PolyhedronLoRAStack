@@ -626,108 +626,6 @@
       }
     },
     {
-      "id": 7,
-      "type": "ULSNag",
-      "pos": [
-        1161.9,
-        954
-      ],
-      "size": [
-        270,
-        174
-      ],
-      "flags": {},
-      "order": 6,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "model",
-          "name": "model",
-          "type": "MODEL",
-          "link": 6
-        },
-        {
-          "localized_name": "conditioning",
-          "name": "conditioning",
-          "type": "CONDITIONING",
-          "link": 11
-        },
-        {
-          "localized_name": "nag_scale",
-          "name": "nag_scale",
-          "type": "FLOAT",
-          "widget": {
-            "name": "nag_scale"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "nag_alpha",
-          "name": "nag_alpha",
-          "type": "FLOAT",
-          "widget": {
-            "name": "nag_alpha"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "nag_tau",
-          "name": "nag_tau",
-          "type": "FLOAT",
-          "widget": {
-            "name": "nag_tau"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "start_percent",
-          "name": "start_percent",
-          "type": "FLOAT",
-          "widget": {
-            "name": "start_percent"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "end_percent",
-          "name": "end_percent",
-          "type": "FLOAT",
-          "widget": {
-            "name": "end_percent"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "localized_name": "model",
-          "name": "model",
-          "type": "MODEL",
-          "links": [
-            7
-          ]
-        }
-      ],
-      "title": "⬡ NAG",
-      "properties": {
-        "Node name for S&R": "ULSNag"
-      },
-      "widgets_values": [
-        11,
-        0.25,
-        2.5,
-        0,
-        1
-      ],
-      "widgets_values_named": {
-        "nag_scale": 11,
-        "nag_alpha": 0.25,
-        "nag_tau": 2.5,
-        "start_percent": 0,
-        "end_percent": 1
-      }
-    },
-    {
       "id": 8,
       "type": "ULSCLIPTextEncode",
       "pos": [
@@ -903,9 +801,7 @@
           "localized_name": "negative",
           "name": "negative",
           "type": "CONDITIONING",
-          "links": [
-            11
-          ]
+          "links": null
         },
         {
           "localized_name": "positive_text",
@@ -1319,7 +1215,7 @@
           "localized_name": "model",
           "name": "model",
           "type": "MODEL",
-          "link": 7
+          "link": 6
         },
         {
           "localized_name": "positive",
@@ -1575,7 +1471,7 @@
         0,
         10000,
         false,
-        "Still · ComfyUI",
+        "◈ Video · TAE (taeh3) · 22 MB",
         0,
         "Continuous",
         "same as high",
@@ -1602,7 +1498,7 @@
         "start_at_step": 0,
         "end_at_step": 10000,
         "return_with_leftover_noise": false,
-        "preview_mode": "Still · ComfyUI"
+        "preview_mode": "◈ Video · TAE (taeh3) · 22 MB"
       }
     },
     {
@@ -2022,11 +1918,11 @@
       },
       "widgets_values": [
         "",
-        "MiniMax H3 -- text to video (with audio)\n\n1  Load Model: pick your H3 fl2v checkpoint (this template ships the\n   fl2va int8 name). ref2va is the image-to-video sibling -- for that\n   variant add a Polyhedron MiniMax Reference between the prompt and\n   the sampler and feed it your reference pictures.\n\n2  Load CLIP: the qwen3vl text encoder, type = minimax.\n\n3  Two VAEs: H3 is an AV model -- video VAE decodes the picture,\n   audio VAE the sound. Both read the model input for their settings.\n\n4  LoRA Engine: the H3 accelerator LoRAs ship here as DISABLED example\n   rows. Enable the one that matches your checkpoint (8-step or\n   4-step) and drop the sampler to 8 or 4 steps. Apply = Baked.\n\n5  Prompt: one positive segment, one negative. The negative does NOT\n   go to the sampler -- at CFG 1 it feeds NAG (see the note there).\n\n6  Seed node: drag inside the noise field to scrub the seed, click to\n   re-roll. It feeds the sampler's seed AND its noise input.\n\nNo other node pack is needed -- everything here is Polyhedron Suite."
+        "MiniMax H3 -- text to video (with audio)\n\n1  Load Model: pick your H3 fl2v checkpoint (this template ships the\n   fl2va int8 name). ref2va is the image-to-video sibling -- for that\n   variant add a Polyhedron MiniMax Reference between the prompt and\n   the sampler and feed it your reference pictures.\n\n2  Load CLIP: the qwen3vl text encoder, type = minimax.\n\n3  Two VAEs: H3 is an AV model -- video VAE decodes the picture,\n   audio VAE the sound. Both read the model input for their settings.\n\n4  LoRA Engine: the H3 accelerator LoRAs ship here as DISABLED example\n   rows. Enable the one that matches your checkpoint (8-step or\n   4-step) and drop the sampler to 8 or 4 steps. Apply = Baked.\n\n5  Prompt: one positive segment. H3 runs at CFG 1 -- a negative has\n   nothing to push against (see the note there). Describe what you DO\n   want.\n\n6  Seed node: drag inside the noise field to scrub the seed, click to\n   re-roll. It feeds the sampler's seed AND its noise input.\n\nNo other node pack is needed -- everything here is Polyhedron Suite."
       ],
       "widgets_values_named": {
         "title": "",
-        "text": "MiniMax H3 -- text to video (with audio)\n\n1  Load Model: pick your H3 fl2v checkpoint (this template ships the\n   fl2va int8 name). ref2va is the image-to-video sibling -- for that\n   variant add a Polyhedron MiniMax Reference between the prompt and\n   the sampler and feed it your reference pictures.\n\n2  Load CLIP: the qwen3vl text encoder, type = minimax.\n\n3  Two VAEs: H3 is an AV model -- video VAE decodes the picture,\n   audio VAE the sound. Both read the model input for their settings.\n\n4  LoRA Engine: the H3 accelerator LoRAs ship here as DISABLED example\n   rows. Enable the one that matches your checkpoint (8-step or\n   4-step) and drop the sampler to 8 or 4 steps. Apply = Baked.\n\n5  Prompt: one positive segment, one negative. The negative does NOT\n   go to the sampler -- at CFG 1 it feeds NAG (see the note there).\n\n6  Seed node: drag inside the noise field to scrub the seed, click to\n   re-roll. It feeds the sampler's seed AND its noise input.\n\nNo other node pack is needed -- everything here is Polyhedron Suite."
+        "text": "MiniMax H3 -- text to video (with audio)\n\n1  Load Model: pick your H3 fl2v checkpoint (this template ships the\n   fl2va int8 name). ref2va is the image-to-video sibling -- for that\n   variant add a Polyhedron MiniMax Reference between the prompt and\n   the sampler and feed it your reference pictures.\n\n2  Load CLIP: the qwen3vl text encoder, type = minimax.\n\n3  Two VAEs: H3 is an AV model -- video VAE decodes the picture,\n   audio VAE the sound. Both read the model input for their settings.\n\n4  LoRA Engine: the H3 accelerator LoRAs ship here as DISABLED example\n   rows. Enable the one that matches your checkpoint (8-step or\n   4-step) and drop the sampler to 8 or 4 steps. Apply = Baked.\n\n5  Prompt: one positive segment. H3 runs at CFG 1 -- a negative has\n   nothing to push against (see the note there). Describe what you DO\n   want.\n\n6  Seed node: drag inside the noise field to scrub the seed, click to\n   re-roll. It feeds the sampler's seed AND its noise input.\n\nNo other node pack is needed -- everything here is Polyhedron Suite."
       }
     },
     {
@@ -2064,17 +1960,17 @@
         }
       ],
       "outputs": [],
-      "title": "⬡ Why the negative goes here",
+      "title": "⬡ No negative on H3",
       "properties": {
         "Node name for S&R": "ULSNote"
       },
       "widgets_values": [
         "",
-        "NAG -- Normalized Attention Guidance\n\nH3 runs at CFG 1, so a classic negative prompt has nothing to push\nagainst. NAG takes the negative conditioning and steers the attention\naway from it instead. That is why the sampler gets the POSITIVE\nconditioning on both of its inputs.\n\nnag_scale 11 / alpha 0.25 / tau 2.5 is a calm starting point.\nBypass this node (Ctrl+B) to see the difference."
+        "No negative prompt on H3\n\nH3 runs at CFG 1: the sampler reads the positive only, a negative\nhas nothing to push against. That is why the sampler gets the\nPOSITIVE conditioning on both of its inputs.\n\nNAG cannot help either. It guides inside a CROSS-attention, and H3\nhas none -- text, video and audio run as one joint sequence. The\nPolyhedron NAG node refuses H3 and says so in the console, so this\ntemplate has no NAG node.\n\nTo keep something out of the picture, describe what you DO want."
       ],
       "widgets_values_named": {
         "title": "",
-        "text": "NAG -- Normalized Attention Guidance\n\nH3 runs at CFG 1, so a classic negative prompt has nothing to push\nagainst. NAG takes the negative conditioning and steers the attention\naway from it instead. That is why the sampler gets the POSITIVE\nconditioning on both of its inputs.\n\nnag_scale 11 / alpha 0.25 / tau 2.5 is a calm starting point.\nBypass this node (Ctrl+B) to see the difference."
+        "text": "No negative prompt on H3\n\nH3 runs at CFG 1: the sampler reads the positive only, a negative\nhas nothing to push against. That is why the sampler gets the\nPOSITIVE conditioning on both of its inputs.\n\nNAG cannot help either. It guides inside a CROSS-attention, and H3\nhas none -- text, video and audio run as one joint sequence. The\nPolyhedron NAG node refuses H3 and says so in the console, so this\ntemplate has no NAG node.\n\nTo keep something out of the picture, describe what you DO want."
       }
     },
     {
@@ -2219,14 +2115,6 @@
       6,
       6,
       0,
-      7,
-      0,
-      "MODEL"
-    ],
-    [
-      7,
-      7,
-      0,
       11,
       0,
       "MODEL"
@@ -2253,14 +2141,6 @@
       0,
       11,
       2,
-      "CONDITIONING"
-    ],
-    [
-      11,
-      8,
-      1,
-      7,
-      1,
       "CONDITIONING"
     ],
     [
