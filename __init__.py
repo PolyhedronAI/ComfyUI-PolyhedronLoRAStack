@@ -478,7 +478,7 @@ _node_count = len(NODE_CLASS_MAPPINGS)
 _bridge_str = "✅" if _BRIDGE_OK else "⚠ unavailable"
 print(f"""
 ⚡ ============================================================
-   Polyhedron Suite  v384
+   Polyhedron Suite  v385
    {_node_count} Nodes  |  Bridge: {_bridge_str}
 ⚡ ============================================================
 """)

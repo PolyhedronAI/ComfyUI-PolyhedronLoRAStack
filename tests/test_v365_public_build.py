@@ -302,6 +302,22 @@ for _js in ("ph_sigma_list.js", "ph_sigma_curves.js"):
 if not open(os.path.join(ROOT, "nodes", "ph_sigma_routes.py"), "rb").read().isascii():
     _fail("ph_sigma_routes.py is not pure ASCII")
 
+# --- v385: the V3 registry imports only what this build ships ---------------
+# Until v384 nodes/uls_v3_extension.py imported three V3 modules of nodes that
+# are not public (Mesh Render, Mesh to File 3D, Camera). The import failed
+# silently inside __init__'s try/except, _V3_OK stayed False and every migrated
+# node ran as its legacy class -- nothing showed it. Pinned now: every module
+# the registry imports exists, and every key it maps is a registered node.
+V3X = _read("nodes", "uls_v3_extension.py")
+for _mod in re.findall(r"^from \.(\w+) import", V3X, re.M):
+    if not os.path.isfile(os.path.join(ROOT, "nodes", _mod + ".py")):
+        _fail("uls_v3_extension.py imports %s, which this build does not ship -- "
+              "the whole V3 registry would fail to load and fall back to V1 "
+              "without a word" % _mod)
+for _key in re.findall(r'^\s+"(\w+)":\s+\w+V3,', V3X, re.M):
+    if 'NODE_CLASS_MAPPINGS["%s"]' % _key not in INIT:
+        _fail("uls_v3_extension.py maps %s, which __init__.py never registers" % _key)
+
 
 print("[test_v365_public_build] OK -- uls_routes.py untouched (%s), the sampler "
       "owns its 3 routes lazily, the Filter owns its 3 in a fourth module, "
