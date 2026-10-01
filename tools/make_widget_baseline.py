@@ -12,7 +12,10 @@ Usage (from the pack root):
     python3 tools/make_widget_baseline.py 368
 
 Writes WIDGET_ORDER_baseline_v368.txt. Delete the previous baseline in the
-same cut -- the guard refuses to run when it finds two, on purpose.
+same cut -- the guard refuses to run when it finds two, on purpose. Delete
+it AFTER this script ran, never before: the CANON lines are carried forward
+FROM it (v1020: deleting first turned ULSCutout into a bare DYNAMIC line;
+test_v838 B4b caught it).
 """
 import glob
 import importlib.util

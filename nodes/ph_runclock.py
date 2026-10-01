@@ -98,10 +98,28 @@ class _RunClock:
         self._cursor = t
         return dt
 
+    def skip(self):
+        """v1028: the seconds since the last tick were NOT the run's -- the
+        Rough Cut Gate waited for a human. Move the cursor past them and take
+        them out of elapsed(), so the next step's dt, the eta and the bar
+        report the render, not the coffee break. Returns the seconds skipped."""
+        dt = self.tick()
+        self.t0 += dt
+        return dt
+
     def post(self, key, units, weight):
         self.posts[key] = {"kind": key.split(":", 1)[0], "units": int(units),
                            "done": 0, "weight": float(max(1e-9, weight)),
                            "rate": None, "spent": 0.0}
+
+    def prior(self, key, seconds):
+        """v1050: a LEARNED estimate (seconds per unit) for a post that has not
+        measured itself yet -- used before the rung-2/3 guesses. Measured
+        Frank 01.10.: with only the encode and the steps measured, the joint
+        decode was extrapolated from them ("stage left ~6:23"), while the
+        learned decode estimate (2:15) sat unused; it took 2:28."""
+        if key in self.posts and seconds:
+            self.posts[key]["prior"] = float(seconds)
 
     def resize(self, key, units):
         """The pixel pass may clamp its own chunk count for VRAM (v565); the
@@ -148,6 +166,8 @@ class _RunClock:
         p = self.posts[key]
         if p["rate"] is not None:
             return p["rate"]
+        if p.get("prior"):                        # v1050: the learned estimate
+            return p["prior"]
         for q in self.posts.values():             # rung 2: same kind, scaled
             if q["kind"] == p["kind"] and q["rate"] is not None:
                 return q["rate"] * (p["weight"] / q["weight"])

@@ -9,7 +9,7 @@
 | [CLIP Text Encode](#-polyhedron-clip-text-encode) | ⬡ Polyhedron CLIP Text Encode |
 | [Sampler](#-polyhedron-sampler) | ⬡ Polyhedron Sampler |
 | [Upscale & Interpolate](#-polyhedron-power-upscale) | ⬡ Polyhedron Power Upscale · ⬡ Polyhedron Fast Upscale · ⬡ Polyhedron Interpolate |
-| [Workflow essentials](#-workflow-essentials) | ⬡ Load Model · ⬡ Load CLIP · ⬡ Load VAE · ⬡ Load Upscale Model · ⬡ VAE Codec · ⬡ Seed · ⬡ Int · ⬡ Empty Latent · ⬡ Switch · ⬡ Switch Inverse · ⬡ Media Info · ⬡ MiniMax Reference · ⬡ Note |
+| [Workflow essentials](#-workflow-essentials) | ⬡ Load Model · ⬡ Load CLIP · ⬡ Load VAE · ⬡ Load Upscale Model · ⬡ VAE Codec · ⬡ Seed · ⬡ Int · ⬡ Empty Latent · ⬡ Switch · ⬡ Switch Inverse · ⬡ Media Info · ⬡ MiniMax Reference · ⬡ Reference Board · ⬡ Note |
 | [Attention & grading](#-polyhedron-attention) | ⬡ Polyhedron Attention · ⬡ Polyhedron NAG · ⬡ Polyhedron Filter · ⬡ Polyhedron Audio Stretch |
 
 Installed as one custom-node pack — the node names, the package id
@@ -1234,7 +1234,7 @@ into the usual ComfyUI model folders on first use.
 
 # ⬡ Workflow essentials
 
-Thirteen small nodes that the rest of the suite is wired *from*. None of them
+Fourteen small nodes that the rest of the suite is wired *from*. None of them
 opens a server route, none needs a model download of its own, and each one is
 registered behind its own guard flag, so a changed ComfyUI Core API can take
 one of them out without touching the others.
@@ -1258,7 +1258,8 @@ one of them out without touching the others.
 | **⬡ Polyhedron Empty Latent** | Empty latent for whichever model family you are on, rather than one node per family. |
 | **⬡ Polyhedron Switch** and **Switch Inverse** | One input picked from several, or one input steered to one of several outputs. Unused branches are blocked rather than run. |
 | **⬡ Polyhedron Media Info** | Reads the numbers out of whatever media is passing through. |
-| **⬡ Polyhedron MiniMax Reference** | Builds the reference latent a MiniMax ref2v graph expects. |
+| **⬡ Polyhedron MiniMax Reference** | Builds the reference conditioning a MiniMax H3 ref2v graph expects: up to 9 images (`<Picture i>`), 3 videos (`<Video k>`, with their soundtracks) and 3 audios (`<Audio j>`), each image with its own megapixel budget. Name references in the prompt as `@fox` instead of numbers (`tags` line: `fox = image_2`); the node writes the live `<Picture n>` in before the encode and checks the prompt (unknown tags stop the run by name). Optional `first_frame` pins frame 0. Pins grow with what is wired. |
+| **⬡ Polyhedron Reference Board** | Up to 9 images, 3 videos and 3 audios as cards in one node -- tag, role, retention, budget -- instead of loose wires. Its `refs` output fills MiniMax Reference's free slots; `definitions` drafts the official subject/retention lines. Files go through ComfyUI's own upload. |
 
 ## Notes
 

@@ -165,6 +165,18 @@ def _video_latent(latent):
     return latent
 
 
+def _is_music_latent(samples, latent, vae):
+    """v1041: a MUSIC latent (MiniMax-Music3): a plain 1-D audio latent
+    [B, C, t] flagged type "audio", and a VAE that decodes 1-D audio. Measured
+    before this existed: the image lane "decoded" it into an IMAGE of shape
+    [1, 158720, 2] and left the audio output None -- silently wrong."""
+    if latent is None or _is_joint_latent(latent) or not isinstance(samples, dict):
+        return False
+    if samples.get("type") != "audio" or getattr(latent, "ndim", 0) != 3:
+        return False
+    return getattr(vae, "latent_dim", None) == 1
+
+
 def _audio_latent(latent):
     """DECLARED MIRROR of Core nodes_audio.vae_decode_audio: the AUDIO half of a
     joint latent, or None. None matters -- a plain video latent must NEVER be
@@ -651,6 +663,20 @@ class ULSVAE:
                     print(f"[PLS] VAE: sharpness meter failed ({exc}) - "
                           f"the roundtrip itself is unaffected")
 
+            elif want_dec and _is_music_latent(samples, lat_in, vae):
+                # v1041: music goes to the AUDIO output through Core's own
+                # vae_decode_audio (the same waveform as every other path),
+                # tiled by the same budget verdict; the IMAGE output says why
+                # it stays empty.
+                from comfy_extras.nodes_audio import vae_decode_audio
+                need = self._decode_need(vae, lat_in)
+                dec_verdict = _vae_budget_verdict(need, free, tiling)
+                tiled = dec_verdict == "tiled"
+                print(f"[PLS] VAE: a MUSIC latent {tuple(lat_in.shape)} -> the AUDIO output "
+                      f"(verdict={dec_verdict}, need ~{_gb(need):.1f} GB vs {_gb(free):.1f} GB free); "
+                      f"no image comes out of music. The Music Save decodes and files it in one node.")
+                out_audio = vae_decode_audio(vae, samples, 512 if tiled else None, 64 if tiled else None)
+                out_image = None
             elif want_dec:
                 need = self._decode_need(vae, lat_dec)
                 dec_verdict = _vae_budget_verdict(need, free, tiling)

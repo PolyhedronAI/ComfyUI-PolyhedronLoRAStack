@@ -246,6 +246,8 @@ _VAE_FAMILIES = {
     32: ("MiniMax H3 audio (32ch)",
          "the AUDIO half; an H3 model reports 32 as the MAX over both "
          "streams, so 32 alone does not tell the two apart"),
+    128: ("MiniMax-Music3 music (128ch, 1-D)",
+          "minimax_music3_dav -- decodes music (44.1 kHz stereo), never pictures"),
 }
 
 
@@ -283,6 +285,7 @@ def _model_latent_channels(model):
 _CLIP_AUTO_PATTERNS = (
     ("umt5", "wan"),
     ("qwen_2.5_vl", "qwen_image"),
+    ("minimax_music3", "minimax"),      # v1041: core loads the Music3 encoder as type "minimax"
 )
 
 
@@ -365,6 +368,7 @@ _MODEL_CLASS_CLIP_TYPE = {
     "Ideogram4": "ideogram4",
     "Boogu": "boogu",
     "Krea2": "krea2",
+    "MiniMaxMusic3": "minimax",           # v1041: comfy/sd.py -- CLIPType.MINIMAX + the audio_decoder key
 }
 
 # Families that need TWO text encoders (core's DualCLIPLoader).

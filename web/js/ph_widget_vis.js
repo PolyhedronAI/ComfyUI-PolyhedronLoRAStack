@@ -70,3 +70,59 @@ export function refit(node) {
         node.setDirtyCanvas?.(true, true);
     } catch (e) { /* never break the canvas over a layout nicety */ }
 }
+
+/*
+ * v1022: a floor for text fields, the same on both renderers.
+ *
+ * Nodes 2.0 gives every textarea 64 px. Classic sizes a multiline DOM field
+ * from the node's computed minimum, and with two text fields on one node
+ * (MiniMax Keyframes, MiniMax Reference: prompt + tags since v1017) each got
+ * 38 px -- one line, and P1 class F5 ("64 px in Nodes 2.0 vs 38 px classic").
+ * The floor goes through the DOM widget's own layout hook (getMinHeight, the
+ * ph_show_text.js way), so computeSize and arrangeWidgets both see it.
+ * Measured on 1.49.6: the element is drawn DOM_FIELD_MARGIN px smaller than
+ * its layout height, so the hook asks for px + margin.
+ */
+export const FIELD_MIN_PX = 64;
+export const DOM_FIELD_MARGIN = 12;
+
+/* While a field's input is WIRED (1.49.6: the widget stays in the layout,
+ * only its element is hidden) it keeps one narrow row for its socket dot --
+ * no empty field-sized gap (v1021 left ~50 px, measured), and the dot does
+ * not land on the next widget's row (it did at 0 px, measured). */
+export const WIRED_ROW_PX = 24;
+
+export function fieldWired(node, name) {
+    return (node && node.inputs || []).some((i) => i && i.link != null
+        && (i.name === name || (i.widget && i.widget.name === name)));
+}
+
+export function fieldFloor(node, names, px = FIELD_MIN_PX) {
+    for (const name of names || []) {
+        const w = (node && node.widgets || []).find((x) => x && x.name === name);
+        if (!w || !w.element || w.element.tagName !== "TEXTAREA") continue;
+        w.options = w.options || {};
+        if (w.options._plsFloor) continue;
+        const prevMin = w.options.getMinHeight;
+        const prevMax = w.options.getMaxHeight;
+        w.options.getMinHeight = () => (fieldWired(node, name) ? WIRED_ROW_PX
+            : Math.max(px + DOM_FIELD_MARGIN, typeof prevMin === "function" ? (prevMin() || 0) : 0));
+        w.options.getMaxHeight = () => (fieldWired(node, name) ? WIRED_ROW_PX
+            : (typeof prevMax === "function" ? prevMax() : undefined));
+        w.options._plsFloor = true;
+    }
+}
+
+/* Grow-only height fit: a node smaller than its computed minimum (a save from
+ * before the floor) grows to it; a node the user made taller keeps its size.
+ * Width is never touched (v531). */
+export function growToFloor(node) {
+    if (!node || !node.setSize || !node.computeSize) return;
+    try {
+        const h = node.computeSize()[1];
+        if (node.size[1] < h) {
+            node.setSize([node.size[0], h]);
+            node.setDirtyCanvas?.(true, true);
+        }
+    } catch (e) { /* never break the canvas over a layout nicety */ }
+}

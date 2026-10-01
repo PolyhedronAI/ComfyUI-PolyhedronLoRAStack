@@ -254,6 +254,17 @@ def _memory_note(rates, mpf, total_gb, levers):
     return head
 
 
+def _left_tail(el, est):
+    """v1050: what a heartbeat says about the estimate. Past the plan it says
+    so ("+1:30 over the plan of ~2:03 -- still working") instead of "~0:00
+    left" for minutes, which read as a hang (Frank's field run 01.10.)."""
+    if est is None:
+        return " (no estimate yet -- measuring)"
+    if el > est + 5.0:
+        return f" (+{_fmt_clock(el - est)} over the plan of ~{_fmt_clock(est)} -- still working)"
+    return f" (~{_fmt_clock(max(0.0, est - el))} left of ~{_fmt_clock(est)})"
+
+
 class _Phase:
     """A silent phase made audible: prints a heartbeat every period with
     elapsed / left-of-estimate, mirrors it to the node HUD (its stage, the
@@ -282,9 +293,7 @@ class _Phase:
         self._thread = None
 
     def _line(self, el):
-        left = (max(0.0, self.est - el)) if self.est is not None else None
-        tail = (f" (~{_fmt_clock(left)} left of ~{_fmt_clock(self.est)})"
-                if left is not None else " (no estimate yet -- measuring)")
+        tail = _left_tail(el, self.est)
         stp = f" step {self.step}/{self.steps}" if self.step is not None else ""
         return f"[PLS] {self.prefix}:   {self.label} {self.name}{stp} ... {_fmt_clock(el)} elapsed{tail}"
 
@@ -530,8 +539,7 @@ class blocking:
         if self.quiet:
             return
         try:
-            tail = (f" (~{_fmt_clock(max(0.0, self.est - el))} left of ~{_fmt_clock(self.est)})"
-                    if self.est else " (no estimate yet -- measuring)")
+            tail = _left_tail(el, self.est) if self.est else " (no estimate yet -- measuring)"
             print(f"[PLS] {self.label}:   {self.what} ... {_fmt_clock(el)} elapsed{tail}")
         except Exception:
             pass

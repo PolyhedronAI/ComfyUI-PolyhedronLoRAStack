@@ -106,7 +106,11 @@ harness = """
 %s
 const EXT_FIELDS = [["pls_ext_pos","pos_external","pos"],
                     ["pls_ext_neg","neg_external","neg"]];
+const EXT_H = 96, EXT_MAX_H = 640;   // v1050: the EXT field heights (_syncExternal / _fitExt)
+const EXT_LINE_H = 15, EXT_CHAR_W = 6.6;   // v1050: the unmounted estimate (Nodes 2.0)
 
+%s
+%s
 %s
 %s
 %s
@@ -178,8 +182,12 @@ console.log(JSON.stringify({ deferHeight, deferSizes, fitHeight, grew }));
        _lift("function _contentH(w, el)"),
        _lift("function _refit(node)"),
        _lift("function _refitNextFrame(node)"),
+       _lift("function _fitExt(node)"),            # v1050: _refitNextFrame fits the EXT field first
+       _lift("function _replacing(node, side)"),   # v1050
        _lift("function _extConnected(node, inputName)"),
-       _lift("function _syncExternal(node)"))
+       _lift("function _syncExternal(node)") + "\n"
+       + _lift("function _estimateExtH(node, txt)") + "\n"   # v1050
+       + _lift("function _extHeight(node, w, side, txt)"))
 
 with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False, encoding="utf-8") as fh:
     fh.write(harness)

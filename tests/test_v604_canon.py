@@ -466,6 +466,8 @@ const MAX_SEGMENTS = %d;
 %s
 %s
 %s
+%s
+%s
 
 const mkw = (name, value) => ({ name, value });
 function nodeWith(posText, posTok, negText, negTok) {
@@ -487,6 +489,8 @@ console.log(JSON.stringify({
 }));
 """ % (_MAX_SEG,
        _lift("function _w(node, name)"),
+       _lift("function _extConnected(node, inputName)"),
+       _lift("function _replacing(node, side)"),   # v1050
        _lift("function _countText(rawTxt, node)"),
        _lift("function _liveCount(node)"),
        _lift("function _counterText(node)"))

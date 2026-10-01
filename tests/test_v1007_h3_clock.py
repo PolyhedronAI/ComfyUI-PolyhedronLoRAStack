@@ -228,7 +228,7 @@ def main():
     _need(i_plan < i_banner < i_encph < i_enc, "%s: H2 plan, banner, then the encode inside its phase" % NAME)
     _need(i_decph < i_dec, "%s: H2 the decode runs inside its phase" % NAME)
     _need(i_dec < i_learn, "%s: H2 the rates are learned after the decode" % NAME)
-    _need('ph = _Phase("sample", est["step"], clock, node_id, (sw, sh),' in ref
+    _need('ph = _Phase("sample", stw.get("last_dt") or est["step"], clock, node_id, (sw, sh),' in ref   # v1050: from step 2 the measured step plans
           and "_open_step(step + 2)" in ref and "_open_step(1)" in ref
           and "_open_step(steps_run + 99)" in ref,
           "%s: H2 every sampling step has its own phase: opened before the sampler, rolled over in the callback, closed in finally" % NAME)

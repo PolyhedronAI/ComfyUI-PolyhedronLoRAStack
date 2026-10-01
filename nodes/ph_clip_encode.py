@@ -353,6 +353,12 @@ class ULSCLIPTextEncode:
             "pos_tokens": int(pt), "neg_tokens": int(nt), "method": method,
             "pos_len": len(pos_text), "neg_len": len(neg_text),
             "pos_ext": pos_ext_clean, "neg_ext": neg_ext_clean,
+            # v1050 (Frank 01.10.: "I want my // separators back in the CTE, to see
+            # what runs here"): the wired text AS IT CAME, rubrics and line breaks
+            # intact -- for the display only; the encoder saw the clean form above
+            "pos_ext_raw": str(pos_external or ""),
+            "neg_ext_raw": str(neg_external or "") if bool(use_negative) else "",
+            "external_mode": str(external_mode),
         }]
         return {"ui": {"pls_cte": ui},
                 "result": (pos_cond, neg_cond, pos_text, neg_text, full_text)}

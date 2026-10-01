@@ -2236,6 +2236,14 @@ def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
     rsec = _rates_section("joint", model)
     rates = _rates_load(rsec)
     plan_lines, est = _phase_plan(mpf, steps_run, vid_lat_c is not None, rates)
+    # v1050: the learned phase estimates feed the run clock too (stage / run left)
+    if clock is not None:
+        try:
+            for _k, _e in (("enc:joint", est.get("enc")), ("step:joint", est.get("step")),
+                           ("dec:joint", est.get("dec"))):
+                clock.prior(_k, _e)
+        except Exception:
+            pass
     print(f"[PLS] Power Upscale: === JOINT REFINE (video+audio model) === {n_in} frames "
           f"{sw}x{sh} ({mpf:.0f} megapixel-frames) -> ONE video latent, cfg={float(cfg):.2f} "
           f"sampler={sampler_name} audio={audio_mode} model patches={_patch_count(model)}")
@@ -2293,7 +2301,9 @@ def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
                 stw["peak"] = pk if stw["peak"] is None else max(stw["peak"], pk)
             stw["phase"] = None
         if i <= steps_run:
-            ph = _Phase("sample", est["step"], clock, node_id, (sw, sh),
+            # v1050 (Frank 01.10., step 2/2 stood at "~0:00 left of ~2:03" for
+            # 2.5 min): from step 2 on, the plan is the step just MEASURED
+            ph = _Phase("sample", stw.get("last_dt") or est["step"], clock, node_id, (sw, sh),
                         step=i, steps=steps_run)
             ph.__enter__()
             stw["phase"] = ph
@@ -2303,9 +2313,11 @@ def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
         dt = now - stw["last"]
         clock.measure("step:joint", dt)
         stw["last"] = now
+        stw["last_dt"] = dt
+        _pl = stw["phase"].est if stw.get("phase") is not None else est["step"]
         print(f"[PLS] Power Upscale:   joint sample step {step + 1}/{steps_run} done in "
               f"{_fmt_clock(dt)}"
-              + (f" (planned ~{_fmt_clock(est['step'])})" if est["step"] else "")
+              + (f" (planned ~{_fmt_clock(_pl)})" if _pl else "")
               + f" -- stage left ~{_fmt_clock(clock.eta('joint') or 0)}, run left "
               f"~{_fmt_clock(clock.eta() or 0)}")
         if probe is not None:

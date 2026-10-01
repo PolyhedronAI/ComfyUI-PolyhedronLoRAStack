@@ -180,11 +180,28 @@ function _applyTints(node) {
     _tint(_w(node, "neg_1"), NEG_TINT, NEG_EDGE);
 }
 
+/* v1050 (Frank 01.10.: "with replace the old prompt parts fold away and grey
+ * out, the active area unfolds as the text flows in"): is the wired text the
+ * ONLY one the encoder sees on this side? */
+function _replacing(node, side) {
+    return String(_w(node, "external_mode")?.value || "") === "replace"
+        && _extConnected(node, side === "neg" ? "neg_external" : "pos_external");
+}
+function _unfolded(node, side) { return !!(node._plsUnfold && node._plsUnfold[side]); }
+const DIM = "0.45";
 function _applyVisibility(node) {
     const n = Math.max(1, Math.min(Number(_w(node, "segments")?.value) || 1,
                                    MAX_SEGMENTS));
-    for (let i = 1; i <= MAX_SEGMENTS; i++) _hide(_w(node, `pos_${i}`), i > n);
-    _hide(_w(node, "neg_1"), !_w(node, "use_negative")?.value);
+    const rp = _replacing(node, "pos"), rn = _replacing(node, "neg");
+    const fp = rp && !_unfolded(node, "pos"), fn = rn && !_unfolded(node, "neg");
+    for (let i = 1; i <= MAX_SEGMENTS; i++) _hide(_w(node, `pos_${i}`), i > n || fp);
+    _hide(_w(node, "neg_1"), !_w(node, "use_negative")?.value || fn);
+    // unfolded under replace: shown, but greyed -- they are not encoded
+    for (let i = 1; i <= MAX_SEGMENTS; i++) { const el = _w(node, `pos_${i}`)?.element; if (el) el.style.opacity = rp ? DIM : ""; }
+    { const el = _w(node, "neg_1")?.element; if (el) el.style.opacity = rn ? DIM : ""; }
+    _syncFold(node, "pos", rp, n);
+    _syncFold(node, "neg", rn && !!_w(node, "use_negative")?.value, 1);
+    try { _fitExt(node); } catch (e) { /* a mode switch resets the green field (v1050) */ }
     // Let the DOM settle BEFORE measuring - a textarea reports its height only
     // after the browser laid it out; measuring too early is what produced the
     // squeezed node. Height only (v531): a re-layout must never shrink the width.
@@ -415,7 +432,14 @@ function _refit(node) {
     node._plsRefitting = true;
     try {
         const fields = _visibleFields(node);
-        if (!fields.length) return;
+        if (!fields.length) {
+            // v1050: every own field folded (replace) -- the node is the frame
+            // and the shown widgets, nothing to measure
+            const want = node.computeSize()[1];
+            if (Math.abs(node.size[1] - want) > 1) node.setSize([node.size[0], want]);
+            node.setDirtyCanvas(true, true);
+            return;
+        }
         // the LAST visible positive field carries a little air below it (NEG_GAP), so the
         // use_negative toggle does not butt against the prompt box. It rides on the field's
         // reserved height -- provably honoured (v613 auto-fit) -- so the air lands above the
@@ -481,7 +505,44 @@ function _refitNextFrame(node) {
     const raf = (typeof requestAnimationFrame === "function")
         ? requestAnimationFrame
         : (fn) => setTimeout(fn, 0);
-    raf(() => { try { _refit(node); } catch (e) { /* never break the ui */ } });
+    raf(() => { try { _fitExt(node); _refit(node); } catch (e) { /* never break the ui */ } });
+}
+
+/* v1050: under replace the EXT field grows with its text -- measured once the
+ * browser laid it out (a just-shown textarea reports 0 before that) */
+/* The text's height without the DOM: Nodes 2.0 does not mount the widget's
+ * own textarea (it draws a stand-in), so scrollHeight is 0 there -- count the
+ * wrapped lines at the node's width instead (11 px mono-ish, 15 px a line). */
+const EXT_LINE_H = 15, EXT_CHAR_W = 6.6;
+function _estimateExtH(node, txt) {
+    const width = Math.max(120, ((node.size && node.size[0]) || 400) - 28);
+    const per = Math.max(10, Math.floor(width / EXT_CHAR_W));
+    let lines = 0;
+    for (const ln of String(txt).split("\n")) lines += Math.max(1, Math.ceil(ln.length / per));
+    return lines * EXT_LINE_H + 10;
+}
+function _extHeight(node, w, side, txt) {
+    if (!_replacing(node, side) || !txt) return EXT_H;
+    const el = w.element;
+    let raw = 0;
+    if (el && el.isConnected) {
+        const prev = el.style.height;
+        el.style.height = "auto";
+        raw = Math.ceil(el.scrollHeight || 0);
+        el.style.height = prev;
+    }
+    if (raw <= 0) raw = _estimateExtH(node, txt);       // not mounted / not laid out
+    return Math.max(EXT_H, Math.min(EXT_MAX_H, raw + 6));
+}
+function _fitExt(node) {
+    for (const ef of EXT_FIELDS) {
+        const w = _w(node, ef[0]);
+        if (!w || !w.element) continue;
+        const h = w.hidden ? EXT_H : _extHeight(node, w, ef[2], w.element.value);
+        w._plsExtH = h;
+        w.element.style.height = h + "px";
+        w.element.style.minHeight = h + "px";   // v1050: Nodes 2.0 lays the mounted field out by flex -- hold its height
+    }
 }
 
 // give a field its computeSize so LiteGraph reserves exactly the fitted height. Set
@@ -534,6 +595,52 @@ function _wireField(w) {
 // all resolve on the backend, which sends the text back over pls_cte.
 // ---------------------------------------------------------------------------
 const EXT_H = 96;   // fixed height of an external display field (~5 lines, scroll past)
+const EXT_MAX_H = 640;   // v1050: under replace the field grows with its text up to here
+const FOLD_H = 22;       // v1050: the folded own fields, one grey bar per side
+const FOLD_FIELDS = [["pls_fold_pos", "pos"], ["pls_fold_neg", "neg"]];
+
+function _makeFoldBar(node, name, side) {
+    if (_w(node, name) || typeof node.addDOMWidget !== "function") return;
+    try {
+        const el = document.createElement("div");
+        el.style.cssText = "box-sizing:border-box;width:100%;height:" + (FOLD_H - 4) + "px;line-height:" + (FOLD_H - 4) + "px;"
+            + "font:11px sans-serif;color:#9a9a9a;background:#262626;border:1px dashed #4a4a4a;border-radius:4px;"
+            + "padding:0 8px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;user-select:none;";
+        el.dataset.pls = "fold-" + side;
+        el.addEventListener("pointerdown", (e) => e.stopPropagation());
+        el.addEventListener("click", (e) => {
+            e.stopPropagation();
+            node._plsUnfold = node._plsUnfold || {};
+            node._plsUnfold[side] = !node._plsUnfold[side];
+            _applyVisibility(node);
+            _refitNextFrame(node);
+        });
+        // v1050: its own type -- Nodes 2.0 maps "customtext" to its stand-in textarea
+        // (bound to .value, the bar's click lost); an unknown type mounts THIS element
+        const w = node.addDOMWidget(name, "pls_fold", el, { serialize: false });
+        w.serialize = false;
+        w._plsFold = side;
+        w.hidden = true;
+        el.style.display = "none";
+        w.computeSize = (width) => (w.hidden ? [0, -4] : [width, FOLD_H]);
+    } catch (e) { /* a view must never break node creation */ }
+}
+
+function _syncFold(node, side, on, n) {
+    const w = _w(node, side === "neg" ? "pls_fold_neg" : "pls_fold_pos");
+    if (!w) return;
+    w.hidden = !on;
+    if (w.element) {
+        w.element.style.display = on ? "" : "none";
+        if (on) {
+            const what = side === "neg" ? "the own negative" : (n + " own segment" + (n === 1 ? "" : "s"));
+            w.element.textContent = (_unfolded(node, side) ? "\u25b4 " : "\u25be ") + what
+                + " -- not encoded while external_mode is replace" + (_unfolded(node, side) ? " (click: fold)" : " (click: show)");
+            w.element.title = "external_mode = replace: the wired " + side + "_external text is the ONLY " + side
+                + " text the encoder sees. Your own fields are kept as they are (saved with the workflow) -- pull the cable or switch the mode and they are back.";
+        }
+    }
+}
 const EXT_FIELDS = [["pls_ext_pos", "pos_external", "pos", POS_TINT, POS_EDGE],
                     ["pls_ext_neg", "neg_external", "neg", NEG_TINT, NEG_EDGE]];
 
@@ -550,12 +657,15 @@ function _makeExtField(node, name, bg, edge) {
         el.style.height = EXT_H + "px";             // FIXED height, not auto-fit
         el.style.overflowY = "auto";                // a long caption scrolls, does not grow
         el.value = "";
-        w = node.addDOMWidget(name, "customtext", el, { serialize: false });
+        // v1050: "pls_ext", not "customtext" -- Nodes 2.0 replaces a customtext with
+        // its own textarea (empty, untinted, fixed); an unknown type mounts THIS one
+        w = node.addDOMWidget(name, "pls_ext", el, { serialize: false,
+                                                   getValue: () => el.value, setValue: () => {} });
         w.serialize = false;                        // never part of the saved workflow
         w._plsExt = true;
         w.hidden = true;                            // hidden until its PIN is wired
         el.style.display = "none";
-        w.computeSize = (width) => (w.hidden ? [0, -4] : [width, EXT_H]);
+        w.computeSize = (width) => (w.hidden ? [0, -4] : [width, w._plsExtH || EXT_H]);
         _tint(w, bg, edge);                         // green = positive, brown = negative
     } catch (e) { /* a display field must never break node creation */ }
     return w;
@@ -577,9 +687,19 @@ function _syncExternal(node) {
         if (w.element) {
             w.element.style.display = on ? "" : "none";
             if (on) {
-                const txt = (node._cteExt && node._cteExt[ef[2]]) || "";
+                // v1050: the text AS IT CAME -- its // rubrics and line breaks shown
+                // (the encoder saw the clean form; the counter counts that one)
+                const ex = node._cteExt || {};
+                const txt = ex[ef[2] + "Raw"] || ex[ef[2]] || "";
                 w.element.value = txt;
                 w.element.placeholder = txt ? "" : ("external " + ef[2] + " \u2014 run to load");
+                w.element.title = "what " + ef[1] + " delivered in the last run, with its // rubrics -- the encoder saw it with the rubrics and line breaks stripped";
+                // under replace this IS the prompt: the field grows with its text
+                const h = _extHeight(node, w, ef[2], txt);
+                w._plsExtH = h;
+                w.element.style.height = h + "px";
+                w.element.style.minHeight = h + "px";   // v1050: Nodes 2.0 lays the mounted field out by flex -- hold its height
+                w.element.style.overflowY = "auto";
             }
         }
     }
@@ -625,9 +745,11 @@ function _counterText(node) {
     const ex = node._cteExt || { pos: "", neg: "" };
     const ep = _countText(ex.pos || "", node);
     const en = _countText(ex.neg || "", node);
-    const posWords = c.words + ep.words;
-    const negWords = c.negWords + en.words;
-    const chars = c.chars + ep.chars;
+    // v1050: under replace the own fields are NOT encoded -- they do not count
+    const rp = _replacing(node, "pos") && !!(ex.pos || ""), rn = _replacing(node, "neg") && !!(ex.neg || "");
+    const posWords = (rp ? 0 : c.words) + ep.words;
+    const negWords = (rn ? 0 : c.negWords) + en.words;
+    const chars = (rp ? 0 : c.chars) + ep.chars;
     const kb = chars > 999 ? (chars / 1000).toFixed(1) + "k" : String(chars);
     let txt = `pos ${posWords} words \u00b7 neg ${negWords} words \u00b7 ${kb} chars`;
     if (t) {
@@ -683,13 +805,14 @@ app.registerExtension({
             // v619: create the read-only external display fields (hidden until their PIN is
             // wired). They ride last (not in DISPLAY) and never serialize.
             for (const ef of EXT_FIELDS) _makeExtField(self, ef[0], ef[3], ef[4]);
+            for (const ff of FOLD_FIELDS) _makeFoldBar(self, ff[0], ff[1]);   // v1050
 
             // v992: what the search row (ph_cte_search.js, its own extension) needs
             // from this node -- the visible prompt fields and the textarea on screen.
             self._plsCteApi = { fields: () => _visibleFields(self),
                                 textareaFor: (w) => _visibleTextarea(self, w) };
 
-            for (const name of ["segments", "use_negative"]) {
+            for (const name of ["segments", "use_negative", "external_mode"]) {   // v1050: + external_mode
                 const w = _w(self, name);
                 if (!w) continue;
                 const cb = w.callback;
@@ -866,7 +989,8 @@ app.registerExtension({
                                         method: d.method,
                                         posLen: d.pos_len, negLen: d.neg_len };
                     // v619: the resolved external text, for the read-only EXT fields.
-                    this._cteExt = { pos: d.pos_ext || "", neg: d.neg_ext || "" };
+                    this._cteExt = { pos: d.pos_ext || "", neg: d.neg_ext || "",
+                                     posRaw: d.pos_ext_raw || "", negRaw: d.neg_ext_raw || "" };   // v1050
                     _syncExternal(this);               // fill + resize the EXT fields (redraws)
                 }
             } catch (e) { /* a preview must never break a run */ }
@@ -899,7 +1023,7 @@ app.registerExtension({
         const _connChange = nodeType.prototype.onConnectionsChange;
         nodeType.prototype.onConnectionsChange = function () {
             const r = _connChange ? _connChange.apply(this, arguments) : undefined;
-            try { _syncExternal(this); } catch (e) { /* never break on a wiring change */ }
+            try { _applyVisibility(this); _syncExternal(this); } catch (e) { /* never break on a wiring change */ }
             // v715: _syncExternal refits on the NEXT frame. Grow immediately as
             // well (the ph_reference.js line 209ff pattern), so the frame in
             // between never shows the band under the field that just appeared.

@@ -146,12 +146,12 @@ if res_maj is not None:
     check("majority sign wins (>0.85)", agree_maj > 0.85)
 
 # ── [8] version triple (maintenance) ─────────────────────────────────────────
-print("[8] version triple v382")
+print("[8] version triple v383")
 def _read(*p):
     with open(os.path.join(HERE, "..", *p), encoding="utf-8") as f:
         return f.read()
-check("__init__ banner v382", "Polyhedron Suite  v382" in _read("__init__.py"))
-check("uls_compat PLUGIN_VERSION v382", 'PLUGIN_VERSION = "v382"' in _read("web", "js", "uls_compat.js"))
+check("__init__ banner v383", "Polyhedron Suite  v383" in _read("__init__.py"))
+check("uls_compat PLUGIN_VERSION v383", 'PLUGIN_VERSION = "v383"' in _read("web", "js", "uls_compat.js"))
 
 print("=" * 56)
 if failures:

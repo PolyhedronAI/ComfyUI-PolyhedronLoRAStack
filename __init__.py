@@ -186,6 +186,10 @@ except Exception as e:
 # ph_sampler_routes.py all stay shut and the console keeps reporting the
 # same 28 media paths and 6 sampler paths as v370.
 #
+# v383: + the Reference Board (the producer of MiniMax Reference's refs
+# input). Still no own route: its frontend uploads through Core's own
+# /upload/image, the way the stock Load Image does.
+#
 # ph_basics carries four of the thirteen (Load Model / Load CLIP / Load VAE /
 # Seed) and pulls in ph_te_detect and uls_noise; ph_empty_latent pulls in
 # uls_latent_math and uls_noise; ph_upscale_loader borrows the model card
@@ -193,6 +197,7 @@ except Exception as e:
 # a changed Core API must not abort the pack.
 _BASICS_OK = _SWITCH_OK = _INT_OK = _ELAT_OK = False
 _MINFO_OK = _MMREF_OK = _NOTE_OK = _VAE_OK = _UPLOAD_OK = False
+_RBOARD_OK = False   # v383
 try:
     from .nodes.ph_basics import ULSLoadModel, ULSLoadCLIP, ULSLoadVAE, ULSSeed
     _BASICS_OK = True
@@ -224,6 +229,11 @@ try:
     _MMREF_OK = True
 except Exception as e:
     print(f"[PLS] ✗ Polyhedron MiniMax Reference unavailable — import failed: {e!r}")
+try:
+    from .nodes.ph_reference_board import ULSReferenceBoard   # v383: the producer of MiniMax Reference's refs input
+    _RBOARD_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron Reference Board unavailable — import failed: {e!r}")
 try:
     from .nodes.ph_note import ULSNote
     _NOTE_OK = True
@@ -402,6 +412,9 @@ if _MINFO_OK:
 if _MMREF_OK:
     NODE_CLASS_MAPPINGS["ULSMiniMaxReference"] = ULSMiniMaxReference
     NODE_DISPLAY_NAME_MAPPINGS["ULSMiniMaxReference"] = "⬡ Polyhedron MiniMax Reference"
+if _RBOARD_OK:
+    NODE_CLASS_MAPPINGS["ULSReferenceBoard"] = ULSReferenceBoard
+    NODE_DISPLAY_NAME_MAPPINGS["ULSReferenceBoard"] = "⬡ Polyhedron Reference Board"
 if _NOTE_OK:
     NODE_CLASS_MAPPINGS["ULSNote"] = ULSNote
     NODE_DISPLAY_NAME_MAPPINGS["ULSNote"] = "⬡ Polyhedron Note"
@@ -446,7 +459,7 @@ _node_count = len(NODE_CLASS_MAPPINGS)
 _bridge_str = "✅" if _BRIDGE_OK else "⚠ unavailable"
 print(f"""
 ⚡ ============================================================
-   Polyhedron Suite  v382
+   Polyhedron Suite  v383
    {_node_count} Nodes  |  Bridge: {_bridge_str}
 ⚡ ============================================================
 """)

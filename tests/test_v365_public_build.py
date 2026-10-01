@@ -170,7 +170,10 @@ for flag, cls, disp in (("_SAMPLER_OK", "ULSSampler", "Polyhedron Sampler"),
                         ("_MINFO_OK", "ULSMediaInfo", "Polyhedron Media Info"),
                         ("_MMREF_OK", "ULSMiniMaxReference",
                          "Polyhedron MiniMax Reference"),
-                        ("_NOTE_OK", "ULSNote", "Polyhedron Note")):
+                        ("_NOTE_OK", "ULSNote", "Polyhedron Note"),
+                        # v383 -- the producer of MiniMax Reference's refs input
+                        ("_RBOARD_OK", "ULSReferenceBoard",
+                         "Polyhedron Reference Board")):
     if ("if %s:" % flag) not in INIT:
         _fail("__init__.py does not guard %s behind %s" % (cls, flag))
     if 'NODE_CLASS_MAPPINGS["%s"]' % cls not in INIT:
@@ -183,9 +186,10 @@ if "register_sampler_routes()" not in INIT:
 
 n_nodes = len(set(re.findall(r'NODE_CLASS_MAPPINGS\["(\w+)"\]', INIT))
               | set(re.findall(r'"(\w+)":\s+\w+,', INIT)))
-if n_nodes != 37:
-    _fail("the pack registers %d nodes, expected 37 (the 33 of v371 plus "
-          "Attention, NAG, Filter and Audio Stretch added in v372)" % n_nodes)
+if n_nodes != 38:
+    _fail("the pack registers %d nodes, expected 38 (the 33 of v371 plus "
+          "Attention, NAG, Filter and Audio Stretch added in v372, plus the "
+          "Reference Board added in v383)" % n_nodes)
 
 # v368: the three new nodes open NO server route. Power Upscale reports tile
 # progress through PromptServer.send_sync, which needs no endpoint. This is a
@@ -209,7 +213,11 @@ if n_nodes != 37:
 for fname in ("ph_power_upscale.py", "ph_fast_upscale.py", "ph_interpolate.py",
               "ph_basics.py", "ph_switch.py", "ph_int.py",
               "ph_empty_latent.py", "ph_media_info.py", "ph_minimax_ref.py",
-              "ph_note.py", "ph_vae.py", "ph_upscale_loader.py"):
+              "ph_note.py", "ph_vae.py", "ph_upscale_loader.py",
+              # v383: the Reference Board and its carriers -- its frontend
+              # uploads through Core's own /upload/image, no route of ours
+              "ph_reference_board.py", "cine_clip.py", "h3_prompt.py",
+              "h3_kf_refs.py"):
     src = _read("nodes", fname)
     for needle in ("routes.get(", "routes.post(", "@server.PromptServer",
                    "add_routes("):
@@ -266,5 +274,5 @@ for _hit in re.findall(r'fetchApi\("([^"?]+)', _FJS):
 
 print("[test_v365_public_build] OK -- uls_routes.py untouched (%s), the sampler "
       "owns its 3 routes lazily, the Filter owns its 3 in a fourth module, "
-      "/uls/media/dims served, 37 nodes, at %s"
+      "/uls/media/dims served, 38 nodes, at %s"
       % (ULS_ROUTES_MD5[:8], triple))
