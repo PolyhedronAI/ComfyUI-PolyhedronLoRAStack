@@ -18,6 +18,7 @@ nodes/
   ph_media_routes.py      its own routes ──┘
   ph_sampler_routes.py    Sampler routes — same pattern, own module
   ph_filter_routes.py     Filter routes — same pattern, own module (v372)
+  ph_sigma_routes.py      Sigma List / Sigma Curve previews — own module (v384)
 web/js/
   uls_*.js                Stack frontend
   ph_media_loader.js      Media I/O frontend

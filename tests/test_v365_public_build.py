@@ -173,7 +173,12 @@ for flag, cls, disp in (("_SAMPLER_OK", "ULSSampler", "Polyhedron Sampler"),
                         ("_NOTE_OK", "ULSNote", "Polyhedron Note"),
                         # v383 -- the producer of MiniMax Reference's refs input
                         ("_RBOARD_OK", "ULSReferenceBoard",
-                         "Polyhedron Reference Board")):
+                         "Polyhedron Reference Board"),
+                        # v384 -- the two nodes of Frank's H3 workflow that
+                        # were missing online
+                        ("_SIGMA_OK", "ULSSigmaList", "Polyhedron Sigma List"),
+                        ("_SHOWTEXT_OK", "ULSShowText",
+                         "Polyhedron Show Text")):
     if ("if %s:" % flag) not in INIT:
         _fail("__init__.py does not guard %s behind %s" % (cls, flag))
     if 'NODE_CLASS_MAPPINGS["%s"]' % cls not in INIT:
@@ -186,10 +191,11 @@ if "register_sampler_routes()" not in INIT:
 
 n_nodes = len(set(re.findall(r'NODE_CLASS_MAPPINGS\["(\w+)"\]', INIT))
               | set(re.findall(r'"(\w+)":\s+\w+,', INIT)))
-if n_nodes != 38:
-    _fail("the pack registers %d nodes, expected 38 (the 33 of v371 plus "
+if n_nodes != 40:
+    _fail("the pack registers %d nodes, expected 40 (the 33 of v371 plus "
           "Attention, NAG, Filter and Audio Stretch added in v372, plus the "
-          "Reference Board added in v383)" % n_nodes)
+          "Reference Board added in v383, plus Sigma List and Show Text added "
+          "in v384)" % n_nodes)
 
 # v368: the three new nodes open NO server route. Power Upscale reports tile
 # progress through PromptServer.send_sync, which needs no endpoint. This is a
@@ -217,7 +223,9 @@ for fname in ("ph_power_upscale.py", "ph_fast_upscale.py", "ph_interpolate.py",
               # v383: the Reference Board and its carriers -- its frontend
               # uploads through Core's own /upload/image, no route of ours
               "ph_reference_board.py", "cine_clip.py", "h3_prompt.py",
-              "h3_kf_refs.py"):
+              "h3_kf_refs.py",
+              # v384: Show Text opens no route either
+              "ph_show_text.py"):
     src = _read("nodes", fname)
     for needle in ("routes.get(", "routes.post(", "@server.PromptServer",
                    "add_routes("):
@@ -271,8 +279,31 @@ for _hit in re.findall(r'fetchApi\("([^"?]+)', _FJS):
         _fail("ph_filter.js calls %s, which ph_filter_routes.py does not serve"
               % _hit)
 
+# --- v384: the sigma nodes' routes live in their OWN module (the fifth) ------
+# Same rule as the Filter: endpoints are allowed, re-opening a shared file is
+# not. The Sigma List and the two curve nodes draw what the RUN computes, so
+# they ask the backend -- three routes, one module, one call in __init__.py.
+SR = _read("nodes", "ph_sigma_routes.py")
+for _path in ("/pls/sigma_presets", "/pls/sigma_preview", "/pls/sigma_curve_preview"):
+    if _path not in SR:
+        _fail("ph_sigma_routes.py does not serve %s" % _path)
+if "register_sigma_routes()" not in INIT:
+    _fail("__init__.py never calls register_sigma_routes() -- the Sigma List "
+          "and the curve plots would 404")
+for _shared in ("uls_routes", "ph_media_routes", "ph_sampler_routes", "ph_filter_routes"):
+    if re.search(r"(?:^|\n)\s*(?:from\s+\.?%s\s+import|import\s+\.?%s)\b"
+                 % (_shared, _shared), SR):
+        _fail("ph_sigma_routes.py imports %s.py -- the shared modules stay shut" % _shared)
+for _js in ("ph_sigma_list.js", "ph_sigma_curves.js"):
+    _src = _read("web", "js", _js)
+    for _hit in re.findall(r'"(/pls/[a-z_]+)"', _src):
+        if _hit not in SR:
+            _fail("%s calls %s, which ph_sigma_routes.py does not serve" % (_js, _hit))
+if not open(os.path.join(ROOT, "nodes", "ph_sigma_routes.py"), "rb").read().isascii():
+    _fail("ph_sigma_routes.py is not pure ASCII")
+
 
 print("[test_v365_public_build] OK -- uls_routes.py untouched (%s), the sampler "
       "owns its 3 routes lazily, the Filter owns its 3 in a fourth module, "
-      "/uls/media/dims served, 38 nodes, at %s"
+      "the sigma nodes own theirs in a fifth, /uls/media/dims served, 40 nodes, at %s"
       % (ULS_ROUTES_MD5[:8], triple))

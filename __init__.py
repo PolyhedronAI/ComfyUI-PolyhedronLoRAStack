@@ -49,7 +49,7 @@ except Exception as e:
     print(f"[PLS] ✗ Frame Inflate / Pick Frame unavailable — import failed: {e!r}")
 try:
     from .nodes.wan_sigma_schedule import (ULSWanSigmaSchedule, ULSWanSplitNoiseSchedule,
-                                            ULSUniversalSigmaCurve)
+                                            ULSUniversalSigmaCurve, ULSSigmaList)   # v384: + Sigma List
     _SIGMA_OK = True
 except Exception as e:
     print(f"[PLS] ✗ Sigma Schedule nodes unavailable — import failed: {e!r}")
@@ -198,6 +198,7 @@ except Exception as e:
 _BASICS_OK = _SWITCH_OK = _INT_OK = _ELAT_OK = False
 _MINFO_OK = _MMREF_OK = _NOTE_OK = _VAE_OK = _UPLOAD_OK = False
 _RBOARD_OK = False   # v383
+_SHOWTEXT_OK = False  # v384
 try:
     from .nodes.ph_basics import ULSLoadModel, ULSLoadCLIP, ULSLoadVAE, ULSSeed
     _BASICS_OK = True
@@ -229,6 +230,11 @@ try:
     _MMREF_OK = True
 except Exception as e:
     print(f"[PLS] ✗ Polyhedron MiniMax Reference unavailable — import failed: {e!r}")
+try:
+    from .nodes.ph_show_text import ULSShowText   # v384: shows any text on the canvas, the Note's colour row
+    _SHOWTEXT_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron Show Text unavailable — import failed: {e!r}")
 try:
     from .nodes.ph_reference_board import ULSReferenceBoard   # v383: the producer of MiniMax Reference's refs input
     _RBOARD_OK = True
@@ -328,6 +334,9 @@ if _SIGMA_OK:
     NODE_DISPLAY_NAME_MAPPINGS["ULSWanSplitNoiseSchedule"] = "⬡ Polyhedron Dual Sigma Curve"
     NODE_CLASS_MAPPINGS["ULSUniversalSigmaCurve"] = V3_NODE_CLASSES["ULSUniversalSigmaCurve"] if _V3_OK else ULSUniversalSigmaCurve
     NODE_DISPLAY_NAME_MAPPINGS["ULSUniversalSigmaCurve"] = "⬡ Polyhedron Sigma Curve"
+    # v384: Sigma List -- an explicit trained grid, not a computed curve.
+    NODE_CLASS_MAPPINGS["ULSSigmaList"] = V3_NODE_CLASSES["ULSSigmaList"] if (_V3_OK and "ULSSigmaList" in V3_NODE_CLASSES) else ULSSigmaList
+    NODE_DISPLAY_NAME_MAPPINGS["ULSSigmaList"] = "⬡ Polyhedron Sigma List"
 
 if _BRIDGE_OK:
     NODE_CLASS_MAPPINGS["ULSWanBridge"]        = ULSWanBridge
@@ -412,6 +421,9 @@ if _MINFO_OK:
 if _MMREF_OK:
     NODE_CLASS_MAPPINGS["ULSMiniMaxReference"] = ULSMiniMaxReference
     NODE_DISPLAY_NAME_MAPPINGS["ULSMiniMaxReference"] = "⬡ Polyhedron MiniMax Reference"
+if _SHOWTEXT_OK:
+    NODE_CLASS_MAPPINGS["ULSShowText"] = ULSShowText
+    NODE_DISPLAY_NAME_MAPPINGS["ULSShowText"] = "⬡ Polyhedron Show Text"
 if _RBOARD_OK:
     NODE_CLASS_MAPPINGS["ULSReferenceBoard"] = ULSReferenceBoard
     NODE_DISPLAY_NAME_MAPPINGS["ULSReferenceBoard"] = "⬡ Polyhedron Reference Board"
@@ -455,11 +467,18 @@ if _FILTER_OK:
     except Exception as e:
         print(f"[PLS] \u26a0 Filter routes not registered: {e}")
 
+if _SIGMA_OK:
+    try:  # v384: the Sigma List / Sigma Curve previews -- their own module
+        from .nodes.ph_sigma_routes import register_sigma_routes
+        register_sigma_routes()
+    except Exception as e:
+        print(f"[PLS] \u26a0 Sigma routes not registered: {e}")
+
 _node_count = len(NODE_CLASS_MAPPINGS)
 _bridge_str = "✅" if _BRIDGE_OK else "⚠ unavailable"
 print(f"""
 ⚡ ============================================================
-   Polyhedron Suite  v383
+   Polyhedron Suite  v384
    {_node_count} Nodes  |  Bridge: {_bridge_str}
 ⚡ ============================================================
 """)

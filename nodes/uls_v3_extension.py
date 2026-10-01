@@ -33,6 +33,7 @@ Migrated so far:
   • ULSMeshToFile3D          (v353)  — nodes/ph_mesh3d_v3.py
   • ULSWanSplitNoiseSchedule (v353)  — nodes/wan_split_sigma_v3.py
   • ULSUniversalSigmaCurve   (v353)  — nodes/wan_universal_sigma_v3.py
+  • ULSSigmaList             (v384)  — nodes/wan_sigma_list_v3.py
   • ULSCamera                (v355)  — nodes/ph_camera_v3.py  (frontend-node pilot;
                                        gizmo rebuilt as a Vue component)
 """
@@ -45,6 +46,7 @@ from .ph_mesh_render_v3 import ULSMeshRenderV3
 from .ph_mesh3d_v3 import ULSMeshToFile3DV3
 from .wan_split_sigma_v3 import ULSWanSplitNoiseScheduleV3
 from .wan_universal_sigma_v3 import ULSUniversalSigmaCurveV3
+from .wan_sigma_list_v3 import ULSSigmaListV3
 from .ph_camera_v3 import ULSCameraV3
 
 
@@ -60,5 +62,6 @@ V3_NODE_CLASSES = {
     "ULSMeshToFile3D":          ULSMeshToFile3DV3,
     "ULSWanSplitNoiseSchedule": ULSWanSplitNoiseScheduleV3,
     "ULSUniversalSigmaCurve":   ULSUniversalSigmaCurveV3,
+    "ULSSigmaList":             ULSSigmaListV3,
     "ULSCamera":                ULSCameraV3,
 }
