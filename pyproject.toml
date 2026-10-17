@@ -1,14 +1,11 @@
 [project]
 name = "polyhedron-lora-stack"
-version = "3.85.0"
-description = "The Polyhedron Suite for ComfyUI. Group-aware LoRA management: stack 10-25 LoRAs with per-group merge modes (SEQ/CONCAT/DARE), per-row decoupled CLIP strength, Trim & Resolve cleanup switches against multi-LoRA interference, thumbnails, trigger words, Civitai fetch, a dedicated Accelerator engine and a passive Merge Analyzer. Plus media I/O: a pinned-folder Media Loader (images, video, audio, batch modes) and a unified Save node for stills, video and audio. Plus sampling: a classic-wiring Sampler with a live preview decoder and a CLIP Text Encode that shares the Token Counter's count."
+version = "3.89.0"
+description = "The Polyhedron Suite for ComfyUI. Group-aware LoRA management: stack 10-25 LoRAs with per-group merge modes (SEQ/CONCAT/DARE), per-row decoupled CLIP strength, Trim & Resolve cleanup switches against multi-LoRA interference, thumbnails, trigger words, Civitai fetch, a dedicated Accelerator engine and a passive Merge Analyzer. Plus media I/O: a pinned-folder Media Loader (images, video, audio, batch modes) and a unified Save node for stills, video and audio. Plus sampling: a classic-wiring Sampler with a live preview decoder and a CLIP Text Encode that shares the Token Counter's count. Plus the Cine Timeline: a whole MiniMax H3 film as shots on a time axis, rendered clips as editable tracks."
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 
-# The loaded ComfyUI nodes need NEITHER Pillow NOR requests — they degrade
-# gracefully (the runtime Civitai fetch uses aiohttp, which ComfyUI already
-# ships). Both are needed only by the optional standalone CLI
-# `uls_preview_gen.py`, so they are an optional extra, not hard runtime deps.
+# No required dependencies: the nodes run on what ComfyUI ships.
 dependencies = []
 
 classifiers = [
@@ -16,10 +13,6 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-cli = [
-    "Pillow>=9.0.0",
-    "requests>=2.28.0",
-]
 # Media Loader / Save extras. Both nodes run without these: OpenCV only adds
 # video thumbnails and the dimension probe, and PyAV is already shipped by
 # recent ComfyUI builds (it is listed for older ones). Imported lazily, so a
