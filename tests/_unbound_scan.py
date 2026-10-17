@@ -182,13 +182,19 @@ class _Scan(object):
                     got = self.block(h.body, safe)
                     if not _terminates(h.body, self.exits):
                         paths.append(got)
-                if not st.handlers:
-                    paths.append(set(safe))     # bare try/finally: no cover
+                # v1129: a try WITHOUT handlers (try/finally) covers nothing --
+                # an exception in the body propagates after the finally block,
+                # so no path continues past the statement with the body's
+                # bindings missing: after it, the body's bindings hold.
                 after = set.intersection(*[set(p) for p in paths])
                 if st.orelse:
                     after = self.block(st.orelse, after)
                 if st.finalbody:
-                    after = self.block(st.finalbody, after)
+                    # the finally block also runs when the body failed early:
+                    # its READS are checked against what held before the try
+                    # (plus what every surviving path bound), its BINDINGS add.
+                    entry = set(safe) & after if st.handlers else set(safe)
+                    after = after | self.block(st.finalbody, entry)
                 safe = after
                 continue
             if isinstance(st, (ast.For, ast.AsyncFor, ast.While)):

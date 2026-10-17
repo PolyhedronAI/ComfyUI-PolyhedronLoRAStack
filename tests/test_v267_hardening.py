@@ -35,7 +35,6 @@ ROOT = os.path.join(HERE, "..")
 ROUTES = os.path.join(ROOT, "nodes", "uls_routes.py")
 STACK = os.path.join(ROOT, "nodes", "uls_stack_node.py")
 SIGMA = os.path.join(ROOT, "nodes", "wan_sigma_schedule.py")
-PREVGEN = os.path.join(ROOT, "uls_preview_gen.py")
 ULSJS = os.path.join(ROOT, "web", "js", "uls_node.js")
 README = os.path.join(ROOT, "README.md")
 
@@ -56,7 +55,6 @@ def main():
     if os.path.exists(_MM):
         stack += "\n" + open(_MM, encoding="utf-8").read()
     sigma = open(SIGMA, encoding="utf-8").read()
-    prevgen = open(PREVGEN, encoding="utf-8").read()
     ulsjs = open(ULSJS, encoding="utf-8").read()
     readme = open(README, encoding="utf-8").read()
 
@@ -72,10 +70,6 @@ def main():
           "preview_url = _pick_preview_url(images)" in routes)
     check(1, "A-2 old fallback bypass gone",
           "preview_url = images[0].get" not in routes)
-    check(1, "A-3 download cap param present",
-          "max_bytes: int = 32 * 1024 * 1024" in prevgen)
-    check(1, "A-3 mid-stream enforcement present",
-          "total > max_bytes" in prevgen)
     check(1, "A-4 two-stage tokenizer load present",
           "local_files_only=_local_only" in stack)
     check(1, "A-5 stale JSDoc corrected",
@@ -84,14 +78,13 @@ def main():
           "_VALID_GROUPS" in routes and "Unknown group:" in routes)
     check(1, "A-8 exact handoff pin present",
           "sigmas_low_np[split_step] = handoff" in sigma)
-    check(1, "N-1 CLI NSFW threshold unified (>2)",
-          "if nsfq > 2:" in prevgen and "if nsfq > 3:" not in prevgen)
     check(1, "N-2 overlay group buttons sync the widget",
           'console.warn("[ULS] Gruppe speichern:"' in ulsjs
           and ulsjs.find("node?._ulsSync?.();",
                          ulsjs.find('Gruppe speichern')) - ulsjs.find('Gruppe speichern') < 700)
-    check(1, "N-5 suffix-range branch present",
-          "file_size - n_suffix" in routes)
+    # v388: the preview video is served by aiohttp's FileResponse, which answers suffix ranges itself
+    check(1, "N-5 suffix ranges answered (FileResponse)",
+          "web.FileResponse(vid_path" in routes)
     check(1, "N-7 CUDA RNG state condition widened",
           "torch.cuda.is_initialized()" in stack)
     check(1, "N-9 stale [ULS v052] tags gone",

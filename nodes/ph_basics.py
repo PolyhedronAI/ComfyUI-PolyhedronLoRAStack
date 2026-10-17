@@ -298,15 +298,16 @@ def _clip_auto_type(filename):
     return None
 
 
-# Frozen snapshot of core CLIPLoader's type list (measured 2026-07-11). Only a
-# FALLBACK -- _clip_type_list() pulls the live list first, so new encoder types
-# appear automatically after a ComfyUI update.
+# Snapshot of core CLIPLoader's type list (measured 2026-07-11, + joyimage /
+# mage / minimax 2026-10-07). It fixes the ORDER; _clip_type_list() appends
+# every newer comfy.sd.CLIPType member, so new encoder types still appear
+# automatically after a ComfyUI update (v1061: from the enum, not the node).
 _CLIP_TYPE_FALLBACK = [
     "stable_diffusion", "stable_cascade", "sd3", "stable_audio", "mochi",
     "ltxv", "pixart", "cosmos", "lumina2", "wan", "hidream", "chroma",
     "ace", "omnigen2", "qwen_image", "hunyuan_image", "flux2", "ovis",
     "longcat_image", "cogvideox", "lens", "pixeldit", "ideogram4", "boogu",
-    "krea2",
+    "krea2", "joyimage", "mage", "minimax",
 ]
 
 # v716: the SAME fallback role for core DualCLIPLoader's list -- the families
@@ -358,6 +359,7 @@ _MODEL_CLASS_CLIP_TYPE = {
     "ACEStep": "ace", "ACEStep15": "ace",
     "Omnigen2": "omnigen2",
     "QwenImage": "qwen_image",
+    "QwenImage21": "qwen_image",          # v1078: core master comfy/sd.py -- CLIPType.QWEN_IMAGE + TEModel.QWEN3VL_8B
     "StableCascade_C": "stable_cascade", "StableCascade_B": "stable_cascade",
     "StableAudio1": "stable_audio", "StableAudio3": "stable_audio",
     "HunyuanImage21": "hunyuan_image",
@@ -427,29 +429,46 @@ def _model_class_name(model):
         return "unknown"
 
 
-def _core_type_list(loader_name, fallback):
-    """Live `type` list of a core loader class; frozen snapshot as fallback."""
+# v1061: the live list comes from comfy.sd.CLIPType (the model library's own
+# enum -- what load_clip actually accepts) instead of the CLIPLoader /
+# DualCLIPLoader node classes. The enum does not say which families need two
+# files and lists one no loader offers, so those two small sets are named here;
+# test_v1061 compares the result with the core loaders' lists on both cores.
+_CLIP_TYPE_TWO_FILES = ("flux", "hunyuan_video", "hunyuan_video_15", "kandinsky5",
+                        "kandinsky5_image", "newbie")
+_CLIP_TYPE_NOT_OFFERED = ("hunyuan_dit",)
+
+
+def _clip_type_enum_names():
+    """Lower-case member names of comfy.sd.CLIPType, in enum order ([] if absent)."""
     try:
-        import nodes as _core_nodes  # ComfyUI core
-        cls = getattr(_core_nodes, loader_name, None)
-        if cls is None:
-            cls = _core_nodes.NODE_CLASS_MAPPINGS.get(loader_name)
-        types = cls.INPUT_TYPES()["required"]["type"][0]
-        if isinstance(types, (list, tuple)) and types:
-            return list(types)
+        import comfy.sd
+        return [m.name.lower() for m in comfy.sd.CLIPType]
     except Exception:
-        pass
-    return list(fallback)
+        return []
+
+
+def _merge_live(fallback, live):
+    """The snapshot's order first, then whatever the live list adds, in its order."""
+    out = list(fallback)
+    for name in live:
+        if name not in out:
+            out.append(name)
+    return out
 
 
 def _clip_type_list():
-    """Live single-encoder type list from core CLIPLoader; snapshot fallback."""
-    return _core_type_list("CLIPLoader", _CLIP_TYPE_FALLBACK)
+    """Single-encoder types: the snapshot + every newer CLIPType member that is
+    neither a two-file family nor unoffered."""
+    live = [n for n in _clip_type_enum_names()
+            if n not in _CLIP_TYPE_TWO_FILES and n not in _CLIP_TYPE_NOT_OFFERED]
+    return _merge_live(_CLIP_TYPE_FALLBACK, live)
 
 
 def _clip_type_list_dual():
-    """Live two-encoder type list from core DualCLIPLoader; snapshot fallback."""
-    return _core_type_list("DualCLIPLoader", _CLIP_TYPE_DUAL_FALLBACK)
+    """Two-encoder families: the snapshot + the named two-file CLIPType members."""
+    live = [n for n in _clip_type_enum_names() if n in _CLIP_TYPE_TWO_FILES]
+    return _merge_live(_CLIP_TYPE_DUAL_FALLBACK, live)
 
 
 def _clip_type_choices():
@@ -470,6 +489,26 @@ def _clip_type_choices():
 # ---------------------------------------------------------------------------
 # ⬡ Polyhedron Load CLIP (v539)
 # ---------------------------------------------------------------------------
+
+def _held_dtypes(clip):
+    """v1078: the dtypes the loaded encoder object really holds, as short
+    words ('float8_e4m3fn' -> 'fp8_e4m3fn', 'bfloat16' -> 'bf16'), read from
+    core's cond_stage_model.dtypes. '' when the object does not say."""
+    try:
+        dts = getattr(getattr(clip, "cond_stage_model", None), "dtypes", None)
+        if not dts:
+            return ""
+        words = []
+        for d in dts:
+            w = str(d).replace("torch.", "")
+            w = {"float8_e4m3fn": "fp8_e4m3fn", "float8_e5m2": "fp8_e5m2",
+                 "bfloat16": "bf16", "float16": "fp16", "float32": "fp32"}.get(w, w)
+            if w not in words:
+                words.append(w)
+        return "+".join(sorted(words))
+    except Exception:
+        return ""
+
 
 class ULSLoadCLIP:
     """⬡ Polyhedron Load CLIP -- multi-encoder loader with live type list."""
@@ -540,9 +579,57 @@ class ULSLoadCLIP:
                 "clip_name_2": slot_2,
                 "clip_name_3": slot_3,
                 "clip_name_4": slot_4,
+                # v1077, APPENDED LAST (#577 canon law, same as the slots above):
+                # the in-memory dtype of the loaded encoder. Core's CLIPLoader
+                # has no such field; it only knows the process-wide launch flag
+                # --fp8_e4m3fn-text-enc, which recasts EVERY encoder of the
+                # session. A per-node cast keeps the choice on the node that
+                # pays for it. Same option names and the same torch mapping as
+                # Load Model's weight_dtype, so one word means one thing.
+                # v1078: an encoder class may pin its own dtype and discard
+                # the request (core does that for some families); the readout
+                # reports what the loaded encoder actually HOLDS, measured on
+                # the object, next to what was asked.
+                "weight_dtype": (cls._DTYPES, {
+                    "default": "default",
+                    "tooltip": "In-memory dtype of the loaded encoder(s). "
+                               "default = ComfyUI's choice (fp16 on GPU, or the "
+                               "--*-text-enc launch flag). fp8_e4m3fn halves a "
+                               "bf16/fp16 file in VRAM so a large encoder can stay "
+                               "resident instead of being streamed from RAM on "
+                               "every step; fp8_e5m2 = wider range, coarser steps. "
+                               "Weights already stored as int8/fp8 ignore this, "
+                               "and an encoder class that pins its own dtype "
+                               "discards it -- the readout shows what the loaded "
+                               "encoder holds next to what was asked. Applies to "
+                               "every encoder of this node.",
+                }),
             },
         }
 
+    # v1077: one table for both loaders -- Load Model has used these names
+    # since v716; Load CLIP speaks the same words and maps them the same way.
+    _DTYPES = ["default", "fp8_e4m3fn", "fp8_e5m2"]
+
+    @staticmethod
+    def dtype_options(weight_dtype):
+        """weight_dtype word -> the model_options entry core's text-encoder
+        loader honours (comfy/sd.py load_text_encoder_state_dicts reads
+        model_options["dtype"]; None -> model_management.text_encoder_dtype).
+        Pure, so a guard can drive it without comfy. Unknown words raise:
+        a silent fall-through to 'default' would hand a user who asked for
+        fp8 a full-size encoder and the 25-minute run he wanted to end."""
+        word = str(weight_dtype or "default")
+        if word == "default":
+            return {}
+        if word == "fp8_e4m3fn":
+            return {"dtype": torch.float8_e4m3fn}
+        if word == "fp8_e5m2":
+            return {"dtype": torch.float8_e5m2}
+        raise ValueError(
+            f"[PLS] Load CLIP: weight_dtype '{word}' is not one of "
+            f"{', '.join(ULSLoadCLIP._DTYPES)}."
+        )
 
     @classmethod
     def VALIDATE_INPUTS(cls, **_kw):
@@ -571,7 +658,7 @@ class ULSLoadCLIP:
                    "instead of surfacing as bad conditioning much further downstream.")
 
     def load(self, clip_name, type="auto", device="default", model=None,  # noqa: A002
-             **kwargs):
+             weight_dtype="default", **kwargs):
         # --- 1. which slots are actually filled, in order -------------------
         # Gaps are tolerated rather than rejected: the frontend keeps the slots
         # dense, but a hand-edited or older workflow must not fail over a hole.
@@ -580,7 +667,13 @@ class ULSLoadCLIP:
         clip_name = _strip_size(clip_name)
         names = [clip_name] if _is_filled(clip_name) else []
         for i in range(2, _MAX_CLIP_SLOTS + 1):
-            value = _strip_size(kwargs.get(f"clip_name_{i}"))
+            value = kwargs.get(f"clip_name_{i}")
+            # v1077: strip only what IS there. _strip_size(None) is the string
+            # "None", which _is_filled counts as a file -- a graph missing the
+            # slot keys (hand-edited, older) grew three phantom encoders and
+            # was forced into the four-encoder recipe (found driving #1077).
+            if value is not None:
+                value = _strip_size(value)
             if _is_filled(value):
                 names.append(str(value))
         if not names:
@@ -657,12 +750,14 @@ class ULSLoadCLIP:
         slate = ", ".join(ph_te_detect.describe(i, os.path.basename(n))
                           for i, n in zip(idents, names))
 
-        model_options = {}
+        # v1077: the dtype word goes FIRST so the device keys below can never be
+        # shadowed by it (dtype_options only ever returns a "dtype" key).
+        model_options = dict(self.dtype_options(weight_dtype))
         if device == "cpu":
             model_options["load_device"] = torch.device("cpu")
             model_options["offload_device"] = torch.device("cpu")
 
-        with _blocking("Load CLIP", "load:clip:%s" % str(clip_type), size=_file_mb(*paths),
+        with _blocking("Load CLIP", "load:clip:%s:%s" % (str(clip_type), weight_dtype), size=_file_mb(*paths),
                        what="load %d file(s), %.0f MB" % (len(paths), _file_mb(*paths)), unit="MB"):
             clip = comfy.sd.load_clip(
                 ckpt_paths=paths,
@@ -681,7 +776,13 @@ class ULSLoadCLIP:
 
         tag = "" if how == "set" else f" ({how})"
         head = names[0] if count == 1 else f"{count} encoders"
-        info = f"{head} | type {resolved}{tag} | {device} | {size_txt}"
+        held = _held_dtypes(clip)
+        dtype_txt = weight_dtype
+        if held:
+            dtype_txt = f"{weight_dtype} -> holds {held}"
+            if weight_dtype != "default" and weight_dtype not in held:
+                dtype_txt += " (request discarded by the encoder class)"
+        info = f"{head} | type {resolved}{tag} | {device} | {dtype_txt} | {size_txt}"
         if why:
             info += f" | {why}"
         if count > 1:
@@ -753,8 +854,11 @@ class ULSLoadVAE:
         vae_path = folder_paths.get_full_path_or_raise("vae", vae_name)
         with _blocking("Load VAE", "load:vae", size=_file_mb(vae_path),
                        what="load %s (%.0f MB)" % (vae_name, _file_mb(vae_path)), unit="MB"):
-            sd = comfy.utils.load_torch_file(vae_path)
-            vae = comfy.sd.VAE(sd=sd, dtype=dtype)
+            # v1057: the file's metadata goes along, as ComfyUI's own VAE Loader
+            # passes it (some VAEs carry their config there -- LTX audio, TAE
+            # latent channels); without it such a VAE is built wrong or refused.
+            sd, metadata = comfy.utils.load_torch_file(vae_path, return_metadata=True)
+            vae = comfy.sd.VAE(sd=sd, dtype=dtype, metadata=metadata)
         if hasattr(vae, "throw_exception_if_invalid"):
             vae.throw_exception_if_invalid()
 
@@ -928,6 +1032,86 @@ def _size_mb(name, folders):
             pass
     return "size n/a"
 
+
+
+# ---------------------------------------------------------------------------
+# v1057: Polyhedron Load CLIP Vision -- ComfyUI's image-encoder loader, with
+# sizes in the list and the encoder FAMILY named (which models expect it).
+# ---------------------------------------------------------------------------
+
+def clip_vision_family(config):
+    """ClipVisionModel.config -> (family, used by). Read off the config ComfyUI
+    itself picked from the weights (comfy/clip_vision.py)."""
+    c = config or {}
+    mt = str(c.get("model_type", "clip_vision_model"))
+    layers = int(c.get("num_hidden_layers", 0) or 0)
+    hidden = int(c.get("hidden_size", 0) or 0)
+    size = int(c.get("image_size", 224) or 224)
+    if mt == "dinov3":
+        if layers >= 32:
+            return ("DINOv3 ViT-H/16+", "TripoSplat, TRELLIS.2")
+        return ("DINOv3 ViT-L", "DINOv3 feature models")
+    if mt == "dinov2":
+        return ("DINOv2 %s" % ("giant" if layers >= 40 else "large"), "TRELLIS, Hunyuan3D, Stable Zero123-style 3D")
+    if mt == "siglip2_vision_model":
+        return ("SigLIP 2 (NaFlex)", "Lumina / newer edit models")
+    if mt == "siglip_vision_model":
+        return ("SigLIP %d" % size, "Flux Redux, HiDream")
+    if layers >= 48:
+        return ("CLIP ViT-bigG", "SDXL unCLIP / IP-Adapter G")
+    if layers >= 32:
+        return ("CLIP ViT-H/14", "IP-Adapter, SD unCLIP, Wan I2V")
+    if hidden >= 1024:
+        return ("CLIP ViT-L/14%s" % ("-336" if size >= 336 else ""), "LLaVA-style, SD1 unCLIP")
+    return ("%s (%d layers)" % (mt, layers), "")
+
+
+class ULSLoadCLIPVision:
+    """Polyhedron Load CLIP Vision -- image encoder with family readout."""
+
+    DESCRIPTION = ("Loads an image encoder from models/clip_vision (CLIP, SigLIP, DINOv2 / v3) and says which "
+                   "family it is and which models expect it -- TripoSplat needs DINOv3 ViT-H, Redux SigLIP, "
+                   "IP-Adapter CLIP-H. A wrong encoder otherwise gives a quietly wrong result, not an error. "
+                   "expect: refuse a different family before anything runs.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "clip_name": (_sized_list(folder_paths.get_filename_list("clip_vision"), ("clip_vision",)), {
+                    "tooltip": "Image encoder file (models/clip_vision)."}),
+                "expect": (["any", "DINOv3", "DINOv2", "SigLIP", "CLIP"], {
+                    "default": "any",
+                    "tooltip": "Refuse a different encoder family right here (any = just report it)."}),
+            },
+        }
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, **_kw):
+        """The list carries sizes (v828 form); a bare filename from a hand-made
+        or older workflow must still pass. load() strips and resolves."""
+        return True
+
+    RETURN_TYPES = ("CLIP_VISION", "STRING")
+    RETURN_NAMES = ("clip_vision", "info")
+    FUNCTION = "load"
+    CATEGORY = "Polyhedron/Loaders"
+
+    def load(self, clip_name, expect="any"):
+        import comfy.clip_vision
+        name = _strip_size(clip_name)
+        path = folder_paths.get_full_path_or_raise("clip_vision", name)
+        with _blocking("Load CLIP Vision", "load:clip_vision", size=_file_mb(path),
+                       what="load %s (%.0f MB)" % (name, _file_mb(path)), unit="MB"):
+            cv = comfy.clip_vision.load(path)
+        if cv is None:
+            raise RuntimeError("[PLS] Load CLIP Vision: %s holds no image encoder ComfyUI knows." % name)
+        family, users = clip_vision_family(getattr(cv, "config", {}))
+        if expect != "any" and not family.upper().startswith(expect.upper()):
+            raise ValueError("[PLS] Load CLIP Vision: %s is %s, but %s is expected here." % (name, family, expect))
+        info = "Load CLIP Vision: %s -- %s%s" % (name, family, (" (used by %s)" % users) if users else "")
+        print("[PLS] " + info)
+        return (cv, info)
 
 class ULSLoadModel:
     """⬡ Polyhedron Load Model -- 6-slot switch that loads the pick itself."""

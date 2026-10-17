@@ -319,7 +319,7 @@ function _canonOrder(node) {
  * values say what they are:
  *
  *   `separator` must be one of four words. `strip_comments` must be a boolean.
- *   `external_mode` must be one of three words. A prompt is none of those things.
+ *   `external_mode` must be one of four words (v1150: + fill). A prompt is none of those things.
  *
  * If the filters are holding prose, the array came in shifted, and the shift is
  * exactly the canon->display permutation. Undo it. If they are holding what they
@@ -327,7 +327,7 @@ function _canonOrder(node) {
  * just a second wound.
  */
 const SEPARATORS = ["comma", "newline", "space", "none"];
-const MODES = ["append", "prepend", "replace"];
+const MODES = ["append", "prepend", "replace", "fill {pos_N}"];   // v1150: + fill (appended in Python too)
 
 function _looksScrambled(node) {
     const v = (n) => _w(node, n)?.value;

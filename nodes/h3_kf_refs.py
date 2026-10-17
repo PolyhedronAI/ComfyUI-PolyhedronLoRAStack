@@ -9,7 +9,11 @@ the refs -- while PackedLayout still lays out BOTH (keyframe rows right after
 the text, then the reference rows). The keyframe's rows would be filled with
 the wrong latents.
 
-THE FIX: a wrapper around MiniMaxH3.extra_conds that, ONLY for keyframes we
+CORE CAUGHT UP (seen in Core 5c460d8, 2026-10-04): extra_conds now appends
+the refs' latents to the keyframes' itself -> owner() says "core-native" and
+nothing is wrapped; mark() stays harmless.
+
+THE FIX (older Cores): a wrapper around MiniMaxH3.extra_conds that, ONLY for keyframes we
 mark (PLS_KEY), writes cond_video_latents = keyframe latents + reference
 latents -- the order PackedLayout lays them out in. Everything else passes
 through untouched; nothing is patched until a conditioning actually carries a
@@ -60,6 +64,22 @@ def _wrap(orig):
     return _pls_extra_conds
 
 
+# Core master (seen 5c460d8, 2026-10-04) merges by itself: the refs' latents
+# are APPENDED to the keyframes' ("payload.get(...) + [...]"). Then no wrapper
+# is needed and none is installed.
+_NATIVE_MERGE = 'payload["cond_video_latents"] = payload.get("cond_video_latents", []) +'
+
+
+def core_merges(fn):
+    """Does Core's own extra_conds already put keyframe + reference latents
+    side by side? Read from its source; unreadable source -> False (wrap)."""
+    try:
+        import inspect
+        return _NATIVE_MERGE in inspect.getsource(fn)
+    except Exception:
+        return False
+
+
 def owner(cls):
     fn = getattr(cls, "extra_conds", None)
     if fn is None:
@@ -68,6 +88,8 @@ def owner(cls):
         return "ours"
     if any(getattr(fn, m, False) for m in FOREIGN):
         return "director"
+    if core_merges(fn):
+        return "core-native"
     return "core"
 
 

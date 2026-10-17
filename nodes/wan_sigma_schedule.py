@@ -86,7 +86,7 @@ def _raw_beta57(n, smin, smax):
     except ImportError:
         raise ImportError(
             "[PolyhedronSigma] scipy required for beta57.\n"
-            "  Fix: .\\python_embeded\\python.exe -m pip install scipy"
+            "  Fix: add the scipy package to ComfyUI's Python"
         ) from None
     timesteps = 1.0 - np.linspace(0.0, 1.0, n)
     sigs = smin + (smax - smin) * _sb.ppf(timesteps, 0.5, 0.7)

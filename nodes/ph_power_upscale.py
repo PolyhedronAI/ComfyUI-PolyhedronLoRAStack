@@ -43,10 +43,8 @@ VIDEO out is None, mirroring the Media Loader's convention.
 import base64
 import inspect
 import io
-import json
 import math
 import os
-import threading
 import time
 import uuid
 
@@ -91,12 +89,14 @@ except Exception:  # pragma: no cover
     VideoFromComponents = VideoComponents = None
     _HAS_VIDEO_API = False
 
-# Model-based pixel upscaling: delegated to core (tiled + OOM-backoff there).
+# Model-based pixel upscaling: tiled + OOM backoff. v1062: our own
+# (ph_model_upscale, the comfy.* model library) instead of the core's
+# ImageUpscaleWithModel node class; measured equal in test_v1062.
 try:
-    from comfy_extras.nodes_upscale_model import ImageUpscaleWithModel
-    _MODEL_UPSCALER = ImageUpscaleWithModel()
-except Exception:  # pragma: no cover
-    _MODEL_UPSCALER = None
+    from .ph_model_upscale import ModelUpscaler
+except ImportError:
+    from ph_model_upscale import ModelUpscaler
+_MODEL_UPSCALER = ModelUpscaler()
 
 
 def _lanczos_to(image, width, height):
@@ -804,8 +804,8 @@ def _esrgan_pass(image, upscale_model, width, height,
                                                        fit_s=fit_s)
     except Exception as exc:
         print(f"[PLS] Power Upscale: resident ESRGAN path unavailable "
-              f"({exc!r}) - falling back to the core node per chunk")
-        path = "core/chunk (buffers on the CPU - the slow road)"
+              f"({exc!r}) - falling back to the tiled model upscale per chunk")
+        path = "tiled/chunk (buffers on the CPU - the slow road)"
         chunks = (n + per_batch - 1) // per_batch
         out, mid = [], None
         for i, j in _chunks(n, per_batch):
@@ -1778,9 +1778,14 @@ def _build_video(frames, audio, frame_rate):
         return None
     rate = frame_rate if frame_rate else Fraction(16)
     if not isinstance(rate, Fraction):
-        rate = Fraction(rate)
-    return VideoFromComponents(VideoComponents(images=frames, frame_rate=rate,
-                                               audio=audio))
+        rate = Fraction(rate).limit_denominator(1000000)   # v1156 (audit): as Interpolate's twin (a float rate)
+    try:
+        return VideoFromComponents(VideoComponents(images=frames, frame_rate=rate,
+                                                   audio=audio))
+    except Exception as exc:      # v1156 (audit): never cost a finished upscale -- the IMAGE output still stands
+        print("[PLS] Power Upscale: the VIDEO output could not be built (%s: %s) -- the frames are on the IMAGE "
+              "output" % (type(exc).__name__, exc))
+        return None
 
 
 def _reject_none_conditioning(positive, negative):

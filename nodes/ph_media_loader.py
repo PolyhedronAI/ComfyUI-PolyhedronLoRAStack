@@ -345,10 +345,6 @@ def _proc_pick(node_id, total, pcfg):
     return idx, is_last, loop
 
 
-def _clear_proc_cursor(node_id):
-    _PROC_CURSOR.pop(str(node_id), None)
-
-
 def _kind_for(name: str) -> str:
     ext = os.path.splitext(name)[1].lower()
     if ext in _VIDEO_EXTS and ext != ".gif":
@@ -356,12 +352,6 @@ def _kind_for(name: str) -> str:
     if ext in _AUDIO_EXTS:
         return "audio"
     return "image"
-
-
-def _to_image_tensor(rgb_uint8: np.ndarray) -> torch.Tensor:
-    """HxWx3 uint8 -> 1xHxWx3 float32 in [0,1]."""
-    arr = rgb_uint8.astype(np.float32) / 255.0
-    return torch.from_numpy(np.ascontiguousarray(arr[None]))
 
 
 def _decode_image_rgba(path: str):
@@ -372,7 +362,7 @@ def _decode_image_rgba(path: str):
     and the image-batch path so both decode identically."""
     if not _HAS_PIL:
         raise RuntimeError("[PLS] MediaLoader: Pillow is required to load images "
-                           "(pip install pillow).")
+                           "(the pillow package).")
     # v968: listing a format and DECODING it are two questions. The grid lists
     # .avif because the extension law says it is an image; whether THIS Pillow
     # can open it depends on the install (native from 11.3, otherwise the
@@ -471,6 +461,70 @@ def _slice_frames(stack, native_fps, trim_start, trim_end):
     return stack[s:e]
 
 
+# v1112 (Frank, 12.10.: a 1080p MP4 into a music workflow asked for 46.3 GiB): the outputs that
+# need no frames. The frontend writes the wired output slots into the PROMPT's media_ref as
+# "outs" (never into the saved workflow); wiring changes media_ref, so the cache follows.
+_NO_FRAME_OUTS = frozenset((3, 9, 10, 11))      # audio, filename, batch_info, video_path
+
+
+def _audio_only(ref):
+    """True when the prompt says only frame-free outputs are wired and `audio` is one of them.
+    No "outs" (an old frontend, an API prompt) -> False: decode as before."""
+    outs = ref.get("outs") if isinstance(ref, dict) else None
+    if not isinstance(outs, list):
+        return False
+    try:
+        s = set(int(x) for x in outs)
+    except (TypeError, ValueError):
+        return False
+    return 3 in s and s <= _NO_FRAME_OUTS
+
+
+def _free_ram():
+    """Free system RAM in bytes, or 0 when unreadable (then no check)."""
+    try:
+        import psutil
+        return int(psutil.virtual_memory().available)
+    except Exception:
+        return 0
+
+
+def _check_frame_budget(n, h, w, floats_per_px, path):
+    """v1112: refuse BEFORE decoding when the frames cannot fit -- not after 14 s of decode.
+    floats_per_px: what the decoder holds at its peak per pixel (float32)."""
+    need = int(n) * int(h) * int(w) * int(floats_per_px) * 4
+    free = _free_ram()
+    if need <= 0 or free <= 0 or need <= 0.85 * free:
+        return need
+    raise RuntimeError(
+        "[PLS] MediaLoader: '%s' needs %.1f GB RAM as frames (%d x %dx%d), %.1f GB are free -- "
+        "set frame_load_cap or frame_skip, trim the video, or wire only the audio output "
+        "(unwired frame outputs are not decoded)."
+        % (os.path.basename(path), need / 1e9, int(n), int(w), int(h), free / 1e9))
+
+
+def _video_audio_only(path, media_ref, ref, file):
+    """v1112: the video's sound without one decoded frame -- the paired audio (the split track
+    or a picked file) with its trim, else the video's own track in the video-trim window.
+    The frame outputs are unwired here, so they carry the placeholder."""
+    aud = _decode_paired_audio(media_ref)
+    src = "the paired audio"
+    if aud is None:
+        try:
+            aud = _slice_audio(_load_audio(path), float(ref.get("vtrimStart") or 0.0),
+                               float(ref.get("vtrimEnd") or 0.0))
+            src = "its own track"
+        except Exception as e:
+            print(f"[PLS] MediaLoader: '{file}' has no readable audio ({e}); AUDIO output is None.")
+            aud = None
+    image_t, mask_t, n, fps = _audio_placeholder()
+    if aud is not None:
+        print(f"[PLS] MediaLoader: video '{file}' -> audio only ({src}, "
+              f"{_audio_duration(aud):.1f} s) -- no frame output is wired, no frame decoded")
+    return (image_t, mask_t, None, aud, None, int(n), float(fps), 64, 64, file,
+            f"Single: {file}", os.path.realpath(path) if path else "")
+
+
 def _load_video(path: str, frame_load_cap: int, frame_skip: int, force_fps: float,
                 vtrim_start: float = 0.0, vtrim_end: float = 0.0):
     """Decode a video to an IMAGE batch [N,H,W,3] + a MASK batch [N,H,W].
@@ -488,7 +542,7 @@ def _load_video(path: str, frame_load_cap: int, frame_skip: int, force_fps: floa
         return _load_video_av(path, frame_load_cap, frame_skip, force_fps, vtrim_start, vtrim_end)
     raise RuntimeError(
         "[PLS] MediaLoader: this file is a video and neither OpenCV nor PyAV is "
-        "installed. Install one:  pip install opencv-python   (or  pip install av  "
+        "installed. Install one:  the opencv-python package   (or  the av package  "
         "for alpha-aware decoding) — or pick an image instead."
     )
 
@@ -542,6 +596,11 @@ def _load_video_av(path: str, frame_load_cap: int, frame_skip: int, force_fps: f
             _mp = float(vstream.codec_context.width * vstream.codec_context.height) / 1e6
         except Exception:
             _mp = 1.0
+        try:   # v1112: RGBA float + RGB + mask copies = 8 floats per pixel at the peak
+            _check_frame_budget(_total or want, vstream.codec_context.height,
+                                vstream.codec_context.width, 8, path)
+        except AttributeError:
+            pass
         with _NodeProgress("MediaLoader", "load:video:av", total=_total, unit="frame",
                            size=max(1e-3, _mp)) as _prog:
             for frame in container.decode(vstream):
@@ -558,7 +617,9 @@ def _load_video_av(path: str, frame_load_cap: int, frame_skip: int, force_fps: f
         raise RuntimeError(f"[PLS] MediaLoader: video '{os.path.basename(path)}' yielded no frames "
                            f"(frame_skip={skip} too large?).")
 
-    stack = np.stack(frames, axis=0).astype(np.float32) / 255.0          # [N,H,W,4]
+    stack = np.stack(frames, axis=0).astype(np.float32)                  # [N,H,W,4]
+    frames.clear()                                                       # v1112: drop the uint8 copy
+    stack /= 255.0                                                       # in place, no third copy
     stack = _slice_frames(stack, native_fps, vtrim_start, vtrim_end)     # v484: video trim window
     rgb, mask = rgb_and_mask_from_rgba(stack)                            # [N,H,W,3], [N,H,W]
     image_t = torch.from_numpy(np.ascontiguousarray(rgb))
@@ -590,27 +651,50 @@ def _load_video_cv2(path: str, frame_load_cap: int, frame_skip: int, force_fps: 
     idx = 0
     try:
         _known = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        _mp = float(cap.get(cv2.CAP_PROP_FRAME_WIDTH) * cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) / 1e6
+        _w_px = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        _h_px = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        _mp = float(_w_px * _h_px) / 1e6 if _w_px and _h_px else 1.0
     except Exception:
-        _known, _mp = 0, 1.0
+        _known, _mp, _w_px, _h_px = 0, 1.0, 0, 0
     _total = max(0, min(want, _known - skip)) if _known > 0 else 0
+    # v1112: refuse before decoding when the frames cannot fit; then decode straight into one
+    # float32 block (the old uint8 list + astype + /255 held the frames three times at the peak).
+    try:
+        _check_frame_budget(_total or want, _h_px, _w_px, 3, path)
+    except RuntimeError:
+        cap.release()
+        raise
+    buf = (np.empty((_total, _h_px, _w_px, 3), dtype=np.float32)
+           if (_total > 0 and _h_px > 0 and _w_px > 0) else None)
+    n_buf = 0
     with _NodeProgress("MediaLoader", "load:video:cv2", total=_total, unit="frame",
                        size=max(1e-3, _mp)) as _prog:
-        while len(frames) < want:
+        while n_buf + len(frames) < want:
             ok, frame = cap.read()
             if not ok:
                 break
             if idx >= skip:
-                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                if (buf is not None and not frames and n_buf < buf.shape[0]
+                        and rgb.shape == buf.shape[1:]):
+                    np.divide(rgb, np.float32(255.0), out=buf[n_buf])
+                    n_buf += 1
+                else:
+                    frames.append(rgb)          # count under-reported, or a padded size
                 _prog.tick()
             idx += 1
     cap.release()
 
-    if not frames:
+    if not n_buf and not frames:
         raise RuntimeError(f"[PLS] MediaLoader: video '{os.path.basename(path)}' yielded no frames "
                            f"(frame_skip={skip} too large?).")
 
-    stack = np.stack(frames, axis=0).astype(np.float32) / 255.0          # [N,H,W,3]
+    stack = buf[:n_buf] if n_buf else None                                # [N,H,W,3]
+    if frames:
+        rest = np.stack(frames, axis=0).astype(np.float32)
+        frames.clear()
+        rest /= 255.0
+        stack = rest if stack is None else np.concatenate([stack, rest], axis=0)
     stack = _slice_frames(stack, native_fps, vtrim_start, vtrim_end)     # v484: video trim window
     image_t = torch.from_numpy(np.ascontiguousarray(stack))
     n, h, w = stack.shape[0], stack.shape[1], stack.shape[2]
@@ -672,7 +756,7 @@ def _load_image_batch(folder, sort_mode, name_filter, frame_skip, every_nth,
     fps = force_fps if set, else 0.0 (a still sequence)."""
     if not _HAS_PIL:
         raise RuntimeError("[PLS] MediaLoader: Pillow is required for image-batch "
-                           "loading (pip install pillow).")
+                           "loading (the pillow package).")
     if selection:
         base = _selection_names(folder, selection, sort_mode, _is_batch_image)
         names = select_slice(base, frame_skip, every_nth, frame_load_cap,
@@ -1424,6 +1508,8 @@ class ULSMediaLoader:
             raise _NothingToLoad(f"[PLS] MediaLoader: the selected file vanished from disk: {path}")
 
         kind = str(ref.get("kind", "")) or _kind_for(file)
+        if kind == "video" and _audio_only(ref):
+            return _video_audio_only(path, media_ref, ref, file)       # v1112: no frame decoded
         if kind == "video":
             image_t, mask_t, n, fps = _load_video(
                 path, frame_load_cap, frame_skip, eff_force_fps,

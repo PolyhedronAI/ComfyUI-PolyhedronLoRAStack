@@ -15,7 +15,7 @@ Design notes:
   - Universal: no model-type assumptions, works for FLUX / WAN / SDXL / SD1.5.
   - One node = one path. Two stacks side-by-side for dual-noise (HIGH+LOW).
   - Merge modes per group:
-      SEQ      sequential native LoraLoader (cached) — default, always works
+      SEQ      sequential LoRA loader (own, cached; v1063) — default, always works
       CONCAT   rank-concatenation, mathematically identical to SEQ but
                travels through a different float path (potentially slightly
                different float-rounding behaviour worth comparing empirically)
@@ -45,16 +45,9 @@ import threading
 
 import folder_paths
 
-# Native ComfyUI LoraLoader — has built-in caching via self.loaded_lora.
-# Going through this loader is what makes SEQ as efficient as Power LoRA Loader.
-try:
-    from nodes import LoraLoader as _NativeLoraLoader
-except ImportError as e:
-    raise ImportError(
-        "[PLS] Could not import ComfyUI's native LoraLoader from `nodes`. "
-        "This usually means ComfyUI is not on the Python path or the install "
-        "is broken. Ensure this addon lives under ComfyUI/custom_nodes/."
-    ) from e
+# v1063: the SEQ path's loader is the pack's own (_StackLoraLoader below:
+# comfy.utils.load_torch_file + comfy.sd.load_lora_for_models, cached in the
+# LRU) -- the core's LoraLoader node class is no longer imported.
 
 import comfy.lora
 
@@ -81,6 +74,8 @@ try:
                                     safetensors_header_names,                 # noqa: F401
                                     safetensors_metadata)                     # noqa: F401
     from .uls_lora_convert import convert_foreign_lora                        # noqa: F401
+    from .uls_lora_convert import (fit_lora_to_target, SEQ_CONVERTERS,  # noqa: F401  v1108
+                                   _split_key as _lc_split_key)
 except ImportError:  # pragma: no cover - direct-run fallback, as elsewhere
     from uls_merge_policy import (_joint_merge_downgrade, JOINT_MERGE_REASON,   # noqa: F401
                                    _apply_decision, BYPASS_KEY, APPLY_MODES,   # noqa: F401
@@ -90,6 +85,8 @@ except ImportError:  # pragma: no cover - direct-run fallback, as elsewhere
                                    safetensors_header_names,                  # noqa: F401
                                    safetensors_metadata)                      # noqa: F401
     from uls_lora_convert import convert_foreign_lora                          # noqa: F401
+    from uls_lora_convert import (fit_lora_to_target, SEQ_CONVERTERS,  # noqa: F401  v1108
+                                   _split_key as _lc_split_key)
 
 # v983: the overlap measurement (pure) for the energy cap.
 try:
@@ -155,8 +152,8 @@ def _timing_bar(frac: float, width: int = 32) -> str:
 
 
 # ─── CONCAT/DARE tensor-dict cache ─────────────────────────────────────────
-# IS_CHANGED returns NaN (always re-execute), which is fine for SEQ because
-# the native LoraLoader caches the file internally. CONCAT/DARE, however, read
+# IS_CHANGED returns NaN (always re-execute). Since v1063 SEQ reads through
+# this cache too (_StackLoraLoader); CONCAT/DARE, before it existed, read
 # every safetensors file from disk via comfy.utils.load_torch_file on every
 # queue run — expensive for the typical 5–8 LoRA DARE group. This bounded LRU
 # caches the raw tensor dicts keyed by (path, mtime, size) so repeated runs
@@ -224,12 +221,14 @@ def _convert_lora_like_core(td, path=None):
     return td
 
 
-def _cached_load_torch_file(path: str):
-    """Load a LoRA safetensors tensor dict with a small LRU cache keyed on
-    (path, mtime, size). Falls back to a direct load on any stat/IO hiccup.
+def _cached_lora(path: str):
+    """Load a LoRA file -> (tensor dict, metadata) with a small LRU cache keyed
+    on (path, mtime, size). Falls back to a direct load on any stat/IO hiccup.
     Eviction is bounded by entry count and a byte budget (see note above).
     Cache mutations are guarded by _TD_CACHE_LOCK (v254); the disk load runs
-    outside the lock so concurrent loads don't serialise behind it."""
+    outside the lock so concurrent loads don't serialise behind it.
+    v1063: the metadata travels with the dict (the SEQ path hands it to
+    load_lora_for_models, as the core's LoraLoader does)."""
     import comfy.utils
     global _TD_CACHE_BYTES
     try:
@@ -243,10 +242,11 @@ def _cached_load_torch_file(path: str):
         with _TD_CACHE_LOCK:
             if key in _TD_CACHE:
                 _TD_CACHE.move_to_end(key)
-                return _TD_CACHE[key][0]
+                td, _nb, meta = _TD_CACHE[key]
+                return td, meta
 
     # Slow path: load OUTSIDE the lock (disk I/O must not serialise behind it).
-    td = comfy.utils.load_torch_file(path, safe_load=True)
+    td, meta = comfy.utils.load_torch_file(path, safe_load=True, return_metadata=True)
 
     if key is not None and td:
         nb = _td_nbytes(td)
@@ -255,17 +255,181 @@ def _cached_load_torch_file(path: str):
             # prefer the existing entry and drop our duplicate.
             if key in _TD_CACHE:
                 _TD_CACHE.move_to_end(key)
-                return _TD_CACHE[key][0]
-            _TD_CACHE[key] = (td, nb)
+                td, _nb, meta = _TD_CACHE[key]
+                return td, meta
+            _TD_CACHE[key] = (td, nb, meta)
             _TD_CACHE_BYTES += nb
             _TD_CACHE.move_to_end(key)
-            # Evict oldest-first by entry count AND byte budget; always keep ≥1 entry
+            # Evict oldest-first by entry count AND byte budget; always keep >= 1 entry
             # so a single oversized LoRA can still be served from cache.
             while len(_TD_CACHE) > _TD_CACHE_MAX or (
                     _TD_CACHE_BYTES > _TD_CACHE_MAX_BYTES and len(_TD_CACHE) > 1):
-                _, (_ev_td, ev_nb) = _TD_CACHE.popitem(last=False)
+                _, (_ev_td, ev_nb, _ev_meta) = _TD_CACHE.popitem(last=False)
                 _TD_CACHE_BYTES -= ev_nb
-    return td
+    return td, meta
+
+
+def _cached_load_torch_file(path: str):
+    """The tensor dict alone (CONCAT / DARE / the merge paths)."""
+    return _cached_lora(path)[0]
+
+
+class _StackLoraLoader:
+    """v1063: the SEQ path's LoRA loader, written here instead of the core's
+    LoraLoader node class (Frank: no Core node classes). The same two steps --
+    read the file (with its metadata), comfy.sd.load_lora_for_models -- and
+    the same "both strengths 0 -> untouched" rule; the file comes from the
+    pack's LRU cache above, so a stack of several LoRAs keeps all of them
+    between runs (the core's loader keeps only the last one it read).
+    test_v1063 compares the patched weights with the core's loader."""
+
+    def __init__(self):
+        # v1108: what each LoRA of the last run really hit -- name -> report
+        # (see _landing). Read by the stack's debug_info and the landing toast.
+        self.last_landing = {}
+
+    def load_lora(self, model, clip, lora_name, strength_model, strength_clip):
+        import comfy.sd
+        if strength_model == 0 and strength_clip == 0:
+            return (model, clip)
+        path = folder_paths.get_full_path_or_raise("loras", lora_name)
+        lora, meta = _cached_lora(path)
+        # v1108: schemas core has no table for (SEQ_CONVERTERS only) and the fit
+        # to a merged checkpoint. A dict core understands and that needs no fit
+        # stays the SAME object -- parity with core's loader (test_v1063).
+        lora, notes = _seq_prepare(lora, path, model, clip)
+        try:
+            self.last_landing[lora_name] = _landing(lora, model, clip, strength_model,
+                                                    strength_clip, notes)
+        except Exception as ex:                      # a diagnostic never blocks a run
+            print(f"[PLS] \u26a0 landing count failed ({type(ex).__name__}: {ex})")
+        return comfy.sd.load_lora_for_models(model, clip, lora, strength_model, strength_clip,
+                                             lora_metadata=meta)
+
+
+def _reset_landing(loader):
+    """v1110 -- start a run's landing record. Tolerant: a loader without the
+    record (the guards' stand-ins pass None) is simply skipped -- the count is
+    a diagnostic and must never stop a stack."""
+    try:
+        loader.last_landing = {}
+    except Exception:
+        pass
+
+
+def _landing_block(loader, lines, source):
+    """v1108 -- append each SEQ LoRA's landing to debug_info; toast the unclean
+    ones. Returns nothing; never raises."""
+    try:
+        rep = dict(getattr(loader, "last_landing", {}) or {})
+    except Exception:
+        return
+    if not rep:
+        return
+    lines.append("  Landing (what really matched, core's own key maps):")
+    toast = []
+    for name, r in rep.items():
+        short = _short_name(name, 38)
+        lines.append(f"    {short}: {_landing_line(r)}")
+        for n in r.get("notes") or []:
+            lines.append(f"      {n}")
+        why = _landing_problem(r)
+        if why:
+            lines.append(f"      \u26a0 {why}")
+            toast.append({"node": source, "lora": short, "why": why,
+                          "landed": r["landed"], "modules": r["modules"]})
+    _send_landing_toast(toast)
+
+
+def _target_modules(model, clip):
+    """Core's own key maps for this model and text encoder: {lora_name: target}
+    for the model side and the clip side, as load_lora_for_models builds them."""
+    import comfy.lora
+    km_model, km_clip = {}, {}
+    if model is not None:
+        km_model = comfy.lora.model_lora_keys_unet(model.model, {})
+    if clip is not None:
+        km_clip = comfy.lora.model_lora_keys_clip(clip.cond_stage_model, {})
+    return km_model, km_clip
+
+
+def _seq_prepare(lora, path, model, clip):
+    """v1108 -- the SEQ path's conversion: the SEQ-safe foreign schemas, then the
+    fit to a merged checkpoint. Returns (dict, notes); never raises."""
+    notes = []
+    try:
+        meta = safetensors_metadata(path) if path else {}
+        lora2, schema = convert_foreign_lora(lora, metadata=meta, only=SEQ_CONVERTERS,
+                                             log=notes.append)
+        if schema:
+            notes.insert(0, f"converted: {schema}")
+        km_model, km_clip = _target_modules(model, clip)
+        lora2, fit_notes = fit_lora_to_target(lora2, set(km_model) | set(km_clip),
+                                              log=notes.append)
+        return lora2, notes
+    except Exception as ex:
+        print(f"[PLS] \u26a0 SEQ conversion raised ({type(ex).__name__}: {ex}); "
+              f"using the dict as it was")
+        return lora, notes
+
+
+def _landing(lora, model, clip, strength_model, strength_clip, notes=()):
+    """v1108 -- how many of a LoRA's modules really land, and where.
+
+    The same matching core runs in load_lora_for_models (its key maps, its
+    comfy.lora.load_lora), read-only. A LoRA that matches nothing used to say so
+    only as console lines; this count goes to debug_info and, when something is
+    off, to a toast. Returns a dict: modules (in the file), landed, on_model,
+    on_clip, dead (landed on a side whose strength is 0), notes."""
+    import comfy.lora
+    mods = set()
+    for k in lora:
+        m, _s = _lc_split_key(k)
+        if m is not None:
+            mods.add(m)
+    km_model, km_clip = _target_modules(model, clip)
+    on_model = len(comfy.lora.load_lora(lora, km_model, log_missing=False)) if km_model else 0
+    on_clip = len(comfy.lora.load_lora(lora, km_clip, log_missing=False)) if km_clip else 0
+    landed = on_model + on_clip
+    dead = []
+    if on_model and abs(float(strength_model)) < 1e-6:
+        dead.append("model")
+    if on_clip and abs(float(strength_clip)) < 1e-6:
+        dead.append("text encoder")
+    return {"modules": len(mods), "landed": landed, "on_model": on_model,
+            "on_clip": on_clip, "dead": dead, "notes": list(notes)}
+
+
+def _landing_line(rep):
+    """One line for debug_info (ASCII-safe apart from the pack's usual marks)."""
+    s = (f"landed {rep['landed']}/{rep['modules']} modules "
+         f"(model {rep['on_model']}, text encoder {rep['on_clip']})")
+    if rep["dead"]:
+        s += " -- strength 0 on " + " and ".join(rep["dead"])
+    return s
+
+
+def _landing_problem(rep):
+    """A short reason when the landing is not clean, else None."""
+    if rep["modules"] and rep["landed"] == 0:
+        return "matched nothing -- this LoRA is not applied"
+    if rep["landed"] < rep["modules"]:
+        return f"only {rep['landed']} of {rep['modules']} modules matched"
+    if rep["dead"]:
+        return "lands on the " + " and the ".join(rep["dead"]) + ", whose strength is 0"
+    return None
+
+
+def _send_landing_toast(items):
+    """Tell the frontend (web/js/ph_lora_landing.js) about LoRAs whose landing
+    is not clean. Best effort: without a server (tests) it does nothing."""
+    if not items:
+        return
+    try:
+        from server import PromptServer
+        PromptServer.instance.send_sync("pls.lora_landing", {"items": items})
+    except Exception:
+        pass
 
 
 # ─── Group Configuration ──────────────────────────────────────────────────
@@ -742,7 +906,7 @@ def _short_name(lora_name: str, n: int = 38) -> str:
 #
 # A group with 2+ LoRAs can be applied in three different ways:
 #
-#   SEQ      — sequentially patch each LoRA via the cached native loader.
+#   SEQ      — sequentially patch each LoRA via the cached stack loader (v1063: own).
 #              Always correct. Default.
 #
 #   CONCAT   — concatenate the lora_A / lora_B factors of all LoRAs in the
@@ -790,7 +954,7 @@ def _get_clip_model(clip):
 
 def _apply_seq(loader, model, clip, names: list, weights: list,
                clip_weights: list = None) -> tuple:
-    """Sequentially apply each LoRA via the cached native loader.
+    """Sequentially apply each LoRA via the cached stack loader (_StackLoraLoader).
     v302: optional per-LoRA CLIP strength (None → CLIP follows model weight,
     the pre-v302 behaviour). Returns (model, clip, [error_strings])."""
     if clip_weights is None:
@@ -1136,7 +1300,7 @@ def _apply_concat_or_dare(loader, model, clip, names: list, weights: list,
     # two branches above did not fire; the v985 guard pins the equivalence)
     if foreign or any(_has_mid_tensor(td) for td in raw):
         print(f"[PLS] \u26a0 {mode}: {len(foreign)} LoRA(s) carry keys the merged dict "
-              f"cannot represent -- falling back to SEQ so Core's loader applies them{_fb}:")
+              f"cannot represent -- falling back to SEQ so the core's LoRA patching (load_lora_for_models) applies them{_fb}:")
         for n, f in foreign:
             print(f"[PLS]      - {_sn(n, 38)}: {', '.join(f)}")
         return _apply_seq(loader, model, clip, valid_names, valid_weights, valid_clip_weights)
@@ -2073,9 +2237,9 @@ class UltimateLoraStack:
     """
 
     def __init__(self):
-        # Per-instance native loader holds the LoRA cache (self.loaded_lora).
-        # Persisting it across executions avoids re-reading safetensors files.
-        self._loader = _NativeLoraLoader()
+        # v1063: the pack's own SEQ loader; the files live in the module's
+        # LRU cache, so several LoRAs stay read across executions.
+        self._loader = _StackLoraLoader()
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -2170,6 +2334,7 @@ class UltimateLoraStack:
         model_out = model
         clip_out  = clip
         all_errors = []
+        _reset_landing(self._loader)        # v1108: this run's landing only (v1110: tolerant)
 
         sort_mode_label = "FLAT" if flat_mode else ("CUSTOM ORDER" if custom_order else "GROUP ORDER")
         lines = [
@@ -2252,6 +2417,7 @@ class UltimateLoraStack:
                 for e in errs:
                     lines.append(f"    {e}")
 
+        _landing_block(self._loader, lines, "LoRA Stack")   # v1108
         if all_errors:
             lines.append("───────────────────────────────")
             lines.append(f"  ⚠ {len(all_errors)} LoRA(s) skipped (incompatible model)")
@@ -2320,7 +2486,7 @@ class ULSAccelerator:
     """
 
     def __init__(self):
-        self._loader = _NativeLoraLoader()
+        self._loader = _StackLoraLoader()
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -2415,6 +2581,7 @@ class ULSAccelerator:
             print(f"\n[Engine]\n{debug}\n")
             return (model, clip, debug)
 
+        _reset_landing(self._loader)        # v1108: this run's landing only (v1110: tolerant)
         model_out, clip_out, errs = apply_lora_set(
             self._loader, model, clip,
             active_names, active_weights,
@@ -2432,6 +2599,7 @@ class ULSAccelerator:
             else:
                 lines.append(f"  • {short}  ×{w}")
 
+        _landing_block(self._loader, lines, "LoRA Engine")   # v1108
         if errs:
             lines.append("──────────────────────────────")
             lines.append(f"  ⚠ {len(errs)} LoRA(s) skipped (incompatible model)")
@@ -2757,7 +2925,7 @@ def _try_load_umt5_tokenizer():
             except Exception:
                 continue
     print("[PLS Tokens] UMT5 tokenizer not in local cache — using heuristic estimator")
-    print("[PLS Tokens]   For exact counts: pip install transformers + first online run will cache it")
+    print("[PLS Tokens]   For exact counts: the transformers package + first online run will cache it")
     return None
 
 
@@ -3566,7 +3734,7 @@ class ULSTokenCounter:
         if method == "heuristic":
             hints.append("ℹ For exact counts: wire the `clip` input — no download, no")
             hints.append("  `transformers`, and correct for whichever encoder you run.")
-            hints.append("  (The old route still works: `pip install transformers` plus a")
+            hints.append("  (The old route still works: the transformers package plus a")
             hints.append("  cached UMT5-XXL, but that is only right for WAN.)")
 
         if hints:

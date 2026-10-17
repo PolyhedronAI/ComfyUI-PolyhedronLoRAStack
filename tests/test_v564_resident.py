@@ -54,7 +54,10 @@ def main():
     body = pu[pu.index("def _esrgan_pass"):pu.index("def _refine_tiles")]
     if "_esrgan_resident(image, upscale_model" not in body:
         _fail("the pass no longer uses the resident path")
-    if "falling back to the core node per chunk" not in body:
+    # re-grounded v1062: the fallback is the pack's own tiled model upscale
+    # (ph_model_upscale, == the core's ImageUpscaleWithModel, test_v1062 C2);
+    # the promise -- loud, never an abort -- is unchanged.
+    if "falling back to the tiled model upscale per chunk" not in body:
         _fail("API drift must fall back LOUDLY, never abort the run")
     if "model {path}" not in body:
         _fail("the telemetry must say WHICH path ran (measure > believe)")

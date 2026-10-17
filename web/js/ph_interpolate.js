@@ -12,6 +12,22 @@
  * v828 rule (filenames may legitimately contain dashes and middots).
  */
 import { app } from "../../../scripts/app.js";
+import { modelStatus, noticeMissing, stripModelLabel } from "./ph_model_door.js";
+
+/*
+ * v1059: a run no longer downloads a RIFE checkpoint. When the picked one is
+ * not on disk, the house notice offers it (ph_model_door.js) -- once per file
+ * and session, on load and on every pick.
+ */
+async function checkCkpt(node) {
+    const w = (node.widgets || []).find((x) => x && x.name === "ckpt_name");
+    if (!w) return;
+    const name = stripModelLabel(w.value);
+    let models = [];
+    try { models = await modelStatus("rife"); } catch (e) { return; }
+    const m = models.find((x) => x.name === name);
+    if (m && !m.installed) noticeMissing(m, node.title || "Polyhedron Interpolate");
+}
 
 const SIZE_SUFFIX = /\s\u00b7\s[\d.,]+\s?(KB|MB|GB|TB)$/;
 
@@ -45,9 +61,23 @@ app.registerExtension({
             // widgets_values in -- the ph_basics.js v828 timing.
             setTimeout(() => {
                 try { normalize(this); } catch (e) { /* never break the ui */ }
+                try {
+                    const w = (this.widgets || []).find((x) => x && x.name === "ckpt_name");
+                    if (w && !w._plsDoorBound) {
+                        const orig = w.callback;
+                        const node = this;
+                        w.callback = function () {
+                            const r = orig ? orig.apply(this, arguments) : undefined;
+                            checkCkpt(node);
+                            return r;
+                        };
+                        w._plsDoorBound = true;
+                    }
+                    checkCkpt(this);
+                } catch (e) { /* never break the ui */ }
             }, 0);
         };
     },
 });
 
-console.log("[PLS] ph_interpolate.js v829 loaded");
+console.log("[PLS] ph_interpolate.js v1059 loaded");

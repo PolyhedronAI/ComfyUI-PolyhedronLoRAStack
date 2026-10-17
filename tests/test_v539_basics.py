@@ -17,15 +17,16 @@ def main():
     if "_model_latent_channels" not in py or "latent_format" not in py: _fail("model cross-check missing")
     if "raise ValueError" not in py: _fail("mismatch must fail loudly before sampling")
     # CLIP: live type list + conservative auto
-    # v716 REHUNG: the pull moved into the shared _core_type_list() helper when
-    # the node learned to read DualCLIPLoader's list too, so the old literal
-    # "_core_nodes.CLIPLoader.INPUT_TYPES()" no longer appears. The INVARIANT is
-    # unchanged and is what gets pinned here: the list comes from the RUNNING
-    # ComfyUI, both loaders are consulted, and a frozen snapshot backs each up.
-    if "import nodes as _core_nodes" not in py: _fail("live type list pull missing")
-    if '.INPUT_TYPES()["required"]["type"][0]' not in py: _fail("live type list pull missing")
-    if '_core_type_list("CLIPLoader"' not in py: _fail("single-encoder type list no longer pulled live")
-    if '_core_type_list("DualCLIPLoader"' not in py: _fail("dual-encoder type list no longer pulled live")
+    # v716 REHUNG: the pull moved into a shared helper for both loaders.
+    # v1061 REHUNG: the live list comes from comfy.sd.CLIPType (the model
+    # library's enum) instead of the CLIPLoader / DualCLIPLoader node classes
+    # (Frank: no Core node classes). The INVARIANT is unchanged: new encoder
+    # types appear from the RUNNING ComfyUI, both families are covered, and a
+    # snapshot backs each up. test_v1061 compares the lists with both cores.
+    if "import nodes as _core_nodes" in py: _fail("the Core loader node classes came back into the type list")
+    if "for m in comfy.sd.CLIPType" not in py: _fail("live type list pull missing")
+    if "_merge_live(_CLIP_TYPE_FALLBACK, live)" not in py: _fail("single-encoder type list no longer pulled live")
+    if "_merge_live(_CLIP_TYPE_DUAL_FALLBACK, live)" not in py: _fail("dual-encoder type list no longer pulled live")
     if "_CLIP_TYPE_FALLBACK" not in py: _fail("frozen fallback snapshot missing")
     if "_CLIP_TYPE_DUAL_FALLBACK" not in py: _fail("frozen dual fallback snapshot missing")
     if '("umt5", "wan")' not in py or '("qwen_2.5_vl", "qwen_image")' not in py: _fail("auto patterns changed")

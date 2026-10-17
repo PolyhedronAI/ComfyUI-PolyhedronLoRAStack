@@ -9,6 +9,7 @@
 | [CLIP Text Encode](#-polyhedron-clip-text-encode) | ⬡ Polyhedron CLIP Text Encode |
 | [Sampler](#-polyhedron-sampler) | ⬡ Polyhedron Sampler |
 | [Upscale & Interpolate](#-polyhedron-power-upscale) | ⬡ Polyhedron Power Upscale · ⬡ Polyhedron Fast Upscale · ⬡ Polyhedron Interpolate |
+| [Cine Timeline](#-polyhedron-cine-timeline) | ⬡ Polyhedron Cine Timeline |
 | [Workflow essentials](#-workflow-essentials) | ⬡ Load Model · ⬡ Load CLIP · ⬡ Load VAE · ⬡ Load Upscale Model · ⬡ VAE Codec · ⬡ Seed · ⬡ Int · ⬡ Empty Latent · ⬡ Switch · ⬡ Switch Inverse · ⬡ Media Info · ⬡ MiniMax Reference · ⬡ Reference Board · ⬡ Note · ⬡ Show Text |
 | [Attention & grading](#-polyhedron-attention) | ⬡ Polyhedron Attention · ⬡ Polyhedron NAG · ⬡ Polyhedron Filter · ⬡ Polyhedron Audio Stretch |
 
@@ -752,7 +753,7 @@ with live progress in the console. Use one Analyzer per Stack (HIGH + LOW).
 
 ---
 
-## Per-row CLIP strength (v302)
+## Per-row CLIP strength
 
 ![Per-row CLIP strength](assets/screenshot_clip_strength.png)
 
@@ -811,11 +812,9 @@ git clone https://github.com/PolyhedronAI/ComfyUI-PolyhedronLoRAStack.git
 # Restart ComfyUI
 ```
 
-**Dependencies: none.** The nodes run on what ComfyUI already ships. `Pillow` and `requests`
-are only needed for the optional standalone CLI preview generator (`uls_preview_gen.py`):
-```bash
-pip install Pillow requests
-```
+**Dependencies: none.** The nodes run on what ComfyUI already ships. OpenCV adds video
+thumbnails in the Media Loader where it is present; the Cine Timeline uses ffmpeg (on the
+PATH, or the one `imageio-ffmpeg` brings).
 
 ---
 
@@ -845,7 +844,7 @@ installed:
 | `polyhedron_lora_stack_ksampler_lightning` | native KSampler (Advanced), dual HIGH/LOW | Wan2.2-Lightning v1.1, 8-step preset (4/4 split, CFG 1, shift 5) |
 | `polyhedron_lora_stack_wanvideo_base` | WanVideoWrapper (kijai), dual HIGH/LOW | off |
 | `polyhedron_lora_stack_wanvideo_accelerator` | WanVideoWrapper (kijai), dual HIGH/LOW | on |
-| `polyhedron_minimax_h3_text_to_video` | Polyhedron Sampler, MiniMax H3 (video **and** audio) | H3 turbo LoRAs, shipped disabled |
+| `polyhedron_minimax_h3_text_to_video` | **Cine Timeline** → Polyhedron Sampler, MiniMax H3 (video **and** audio), upscale and interpolation branches | H3 fl2v turbo 8-step + HyperFlow 8-step on, with the matching Sigma List preset |
 
 Compact WAN 2.2 dual-noise graphs built around the Stack: a grouped canvas
 (models → HIGH/LOW LoRA lanes → prompts → sampling → output, passive
@@ -859,16 +858,39 @@ UNETLoader — GGUF users swap in their GGUF loader. The `wanvideo` variants
 point at GGUF Q8 files; the kijai #1827 single-frame workaround is
 documented in-canvas (Frame Inflate ships bypassed for the GGUF default).
 
-`polyhedron_minimax_h3_text_to_video` is the odd one out, and deliberately so:
-it is built **only** from this pack -- no other node pack at all. Load Model →
-Load CLIP → two VAEs (H3 writes picture *and* sound), LoRA Engine → Attention →
-NAG → Sampler → VAE decode → Save, with the Empty Latent in H3 AV mode and the
-Seed node feeding both the seed and the noise. The negative prompt does not go
-to the sampler: H3 runs at CFG 1, so it feeds NAG instead -- the in-canvas notes
-say why. The three H3 accelerator LoRAs sit in the Engine as **disabled**
-example rows; enable the one that matches your checkpoint and drop the sampler
-to 8 or 4 steps. For image-to-video swap the fl2v checkpoint for ref2v and put a
-Polyhedron MiniMax Reference between the prompt and the sampler.
+`polyhedron_minimax_h3_text_to_video` — **the fox** — is the odd one out, and
+deliberately so: it is built **only** from this pack, no other node pack at
+all, and it is a complete H3 film workflow rather than a minimal graph. A red
+fox in a snowy forest clearing at golden hour, three shots in 5.875 s (wide
+shot, close-up, the fox trotting off), with its soundscape. This is what the
+template renders, as it ships, in one run (click for the film, picture and
+sound; drop the `.mp4` on the canvas and the workflow loads from it):
+
+[![The fox, a frame of the template's run: the close-up, golden rim light, amber eyes](assets/fox_h3_run.jpg)](assets/fox_h3_run.mp4)
+
+
+- **⓪ Cine Timeline** holds the film. The fixed parts of the prompt sit in the
+  CLIP Text Encode (segment 1: triggers, look, scene, light; segment 2: subject,
+  mood); the timeline carries `{pos_1}` `{pos_2}` and the camera and motion of
+  each shot (`external_mode = fill {pos_N}`). Its `seconds` drive the Empty
+  Latent, its `clip_prefix` the interpolated Save — every run lands in
+  today's folder and on the timeline's tracks.
+- **① – ⑦** Load Model (three H3 slots; slot 2, the fl2va checkpoint, is the
+  text-to-video path) → Load CLIP (qwen3vl, type minimax) → two VAEs (H3 writes
+  picture *and* sound) → LoRA Engine (fl2v turbo 8-step + HyperFlow 8-step) →
+  LoRA Stack (ships **empty** — add your own) →
+  Attention → MiniMax Reference (no pictures wired = text to video; wire the
+  two bypassed Media Loaders and pick the ref2va slot for image-to-video) →
+  Sampler on the Sigma List's HyperFlow grid → VAE decode → Filter (bypassed,
+  ready for a grade) → Save.
+- **Switches** pick the branches: no upscale or a Power Upscale (two ESRGAN
+  models), an old clip from a Media Loader instead of the new render, and RIFE
+  interpolation with its own Save and Filter.
+- Token Counter and LoRA Inspector show what the run sends; the Merge Analyzer
+  sits beside them, bypassed until you want it.
+
+H3 runs at CFG 1, so the negative prompt is a kept list, not a lever — the
+in-canvas note says why, and why this template has no NAG node.
 
 ## Preview images and trigger words
 
@@ -899,6 +921,10 @@ preview image and trigger words from the Civitai API (SFW-strict filtering, capp
 | `POST /uls/triggers` | Save trigger words (writes `.uls-meta.json`) |
 | `GET/POST /uls/group_modes` | Per-group merge modes |
 | `POST /uls/civitai_fetch` | Hash-based Civitai preview + trigger download |
+| `GET  /uls/noise/preview` | The Seed node's noise field, computed by the generator the sampler uses |
+| `GET/POST /pls/latent_presets` | The Empty Latent's presets (built-in + yours, kept in the user folder) |
+| `GET  /pls/weights/status` · `POST /pls/weights/install` | Interpolate's RIFE checkpoints: what is on disk, and the one-click, sha256-checked download |
+| `/pls/cine/*` | The Cine Timeline (see its chapter) |
 
 > **Running with `--listen`?** The Media Loader's browse/upload routes are
 > locked (403) while ComfyUI is bound beyond localhost, so LAN clients cannot
@@ -1030,6 +1056,7 @@ a full prompt, or a node reading a caption sidecar.
 | `append` | Behind your segments — your wording sets the frame, the description follows. The usual choice for image-to-image and style transfer. |
 | `prepend` | In front — useful for trigger words a LoRA wants to see early. |
 | `replace` | It takes over entirely. The segments stay in the node, untouched, but the prompt is the external text alone — batch work over a folder. |
+| `fill {pos_N}` | The wired text is a **form**: every `{pos_1}` … `{pos_6}` in it is replaced by that segment as you typed it, `{prompt}` by all shown segments. The filled text is what gets encoded. This is how the **Cine Timeline** works with the encoder: the fixed parts of a prompt (triggers, look, scene, subject) stay in the segments, the timeline carries the placeholders where they belong plus everything that changes per shot. A wired text without any placeholder gets the segments first, the text after. |
 
 Wire an input and a field for it appears in the node; after the first run it
 shows the text that actually arrived, and the footer counts it. **Note:**
@@ -1238,9 +1265,83 @@ away most quickly.
 (Fannovel16), copied byte-for-byte on purpose — see
 [`nodes/vfi/NOTICE.md`](nodes/vfi/NOTICE.md). It is not ours and it is not
 modified: every correction this pack makes lives outside the engine, in
-`nodes/ph_interpolate.py`, where it can be guarded. Model weights are fetched
-into the usual ComfyUI model folders on first use.
+`nodes/ph_interpolate.py`, where it can be guarded.
 
+**The checkpoints.** A run never downloads anything. When the chosen RIFE
+checkpoint is not on disk, the node says so and offers a **Download** button;
+one click fetches the file over https into `models/vfi`, checks its size and
+its sha256 against the pinned values, and only then puts it in place (routes
+`GET /pls/weights/status`, `POST /pls/weights/install`). Files you already
+have are found in any configured model folder.
+
+
+---
+
+# ⬡ Polyhedron Cine Timeline
+
+One node that holds a whole short film for MiniMax H3: the shots on a time
+axis, the prompt they make, and — once rendered — the clips, laid out as
+tracks you can cut, heal, slow down and export. The template
+`polyhedron_minimax_h3_text_to_video` (the fox) is built around it.
+
+**The form.** At the top: the mode (**Text** = prompt only, **Keyframes** =
+first/last-frame anchors, **Reference** = pictures by tag), the length (H3's
+17k+5 frame grid, shown as frames and seconds), the project name and what the
+next run renders — the whole timeline in one run, one scene, or (from two
+scenes on) all scenes, one run each. Below it the shots: each has its start
+(`at`) and its text, written in `//` rubrics like the CLIP Text Encode;
+`overall_soundscape` and `non_diegetic_music` sit beside them. **Render**
+queues the run.
+
+**The prompt, exactly.** The timeline writes the official H3 form (`[Shot 1]`,
+`[Shot N] At MM:SS.mmm,` …). Wire its `prompt` output into a Polyhedron CLIP
+Text Encode with `external_mode = fill {pos_N}`: the parts that never change
+(triggers, look, scene, light, subject) stay in the encoder's segments, the
+timeline carries `{pos_1}` `{pos_2}` where they belong and what changes per
+shot (camera, motion). **"→ CTE"** moves the fixed parts of Shot 1 into the
+segments for you; **"prompt the run will produce"** shows the text the encoder
+will receive, byte for byte. The chip at the foot estimates the tokens.
+
+**The tracks.** After a run, its clip lands on **V1 / A1** — picture and
+sound — read from where the Save wrote it. With **new render → new track** on,
+every further run opens a track on top (V2, V3 …) at V1's height, and V1 keeps
+its clip; **takes → tracks** turns the older runs into tracks too. Each track
+shows its real frames and its waveform.
+
+| On a track | What it does |
+|---|---|
+| click a piece | select it (**delete** empties it, the tracks below show through) |
+| **cut** / **heal** | split at the playhead / join a cut again (double-click the line) |
+| drag a piece, a cut line, the end line | move it, trim the cut, play more or less of the clip |
+| the amber diamond | the piece's speed (picture and sound, pitch kept); double-click = 100 % |
+| the bracket at the left | picture and sound linked or unlinked — unlinked, the sound drags alone (J/L cuts) |
+| the head | lock, show/hide, up/down, reset, remove, height S–XL, mute, solo |
+
+**V/A by type** switches between pairs (V2 over A2) and the classic layout (all
+pictures above, all sounds below). Drop a video on the dashed row to open a
+track with it (upper half: copied into `input/cine_media`, lower half: read
+where it lies; refused while ComfyUI is bound beyond localhost, see
+`ULS_ALLOW_LAN_BROWSE`). **export** renders the film from the tracks with ffmpeg;
+**exact preview** plays that render, **live** plays the tracks directly.
+
+**Where files go.** Wire `clip_prefix` into the Save's filename prefix: the
+run then writes `output/<date>/PH_<time>_<project>_whole_*.mp4` (or `_scene_k`),
+one folder per day, never a project folder of its own. The list of a
+project's clips lives in `input/cine_media/<project>/stack/`.
+
+**Outputs.** `prompt` (to the encoder), `first_frame` / `last_frame` (the
+Keyframes mode's anchors, for a keyframe node), `anchors`, `seconds` (to the
+Empty Latent's duration), `frames`, `info`, `clip_prefix`, `scene`.
+
+Inputs: `refs` from a Reference Board (pictures by `@tag`), up to nine images
+(pins appear as you wire them), and an optional `storyboard` text.
+
+Routes: `POST /pls/cine/timeline` (the prompt preview — computed by the same
+code as the run), `GET /pls/cine/scenes`, `POST /pls/cine/register`,
+`/edit`, `/export`, `/probe`, `/to_form`, `/assemble`, `GET /pls/cine/media_dir`.
+
+Needs **ffmpeg** for the film strips, waveforms and the export — on the PATH,
+or the one `imageio-ffmpeg` brings. Clips are read with PyAV (`av`).
 
 ---
 
@@ -1360,29 +1461,6 @@ because the tempo change is done without moving the pitch.
 
 ---
 
-## Documentation
-
-The full illustrated user manual ships in this repository:
-[`docs/Polyhedron_Suite_Documentation_v372.pdf`](docs/Polyhedron_Suite_Documentation_v372.pdf)
-— 89 pages in six parts and an appendix:
-
-- **Part I — Media Loader & Save** (21 pages): the two media I/O nodes, every
-  panel, pin and switch, fully illustrated.
-- **Part II — LoRA Stack** (35 pages): every Stack node, panel and switch.
-  The per-row CLIP strength feature is section 3.13.
-- **Part III — CLIP Text Encode** (10 pages): segments, comments, the negative,
-  external text and the token footer.
-- **Part IV — Sampler** (7 pages): Single, High + Low with the Handoff, the
-  per-expert shifts and the live preview decoders.
-- **Part V — Upscale & Interpolate** (7 pages): Fast and Power Upscale, the
-  process view, Interpolate, and which of them to reach for.
-- **Part VI — Attention & grading** (6 pages): the attention backends and the
-  step split, NAG, the Filter, and Audio Stretch.
-- **Appendix** (1 page): running with `--listen` and the browse lock.
-
-The Nodes 2.0 compatibility layer is described in the Compatibility section
-above; the release history lives in `docs/changelog-archive/`.
-
 ## Links
 
 - Civitai: <https://civitai.red/user/Polyhedron_AI>
@@ -1390,4 +1468,4 @@ above; the release history lives in `docs/changelog-archive/`.
 
 ## License
 
-Code: [MIT](LICENSE). The user documentation PDF in `docs/` is © Polyhedron, all rights reserved.
+Code: [MIT](LICENSE).

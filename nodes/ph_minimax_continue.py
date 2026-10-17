@@ -1,0 +1,359 @@
+# -*- coding: ascii -*-
+"""Polyhedron MiniMax Continue (Cine C5, v1021) -- clip n -> clip n+1 on Core master.
+
+WHAT IT IS: the node the Keyframes docstring promised since v964 ("anchors at
+other frames ... get their own node once the pack runs on that Core"). It
+appends GUIDES to an existing `positive`, with the semantics of Core master's
+MiniMaxH3AddGuide (comfy_extras/nodes_minimax_h3.py, 79be670, 25.09.2026):
+
+    {"resolved_frame_index": i, "latent": <video latent>, "audio_latent": <a>}
+    appended to cond["minimax_keyframes"]
+
+Three jobs, one node:
+
+  K2  motion context   the last N frames of clip n (Chain Source `tail`) as a
+                       guide CLIP at frame 0, with their sound on the same
+                       time axis -- AddGuide parity, frame for frame.
+  K2L latent context   the same window cut out of clip n's OWN latent (Chain
+                       Source `clip_latent`, written by Clip Store) -- no VAE
+                       round trip at all. Exact because Core's video VAE
+                       encodes independent 17-frame chunks (vae.py
+                       encode_temporal, clip_length 17, token_drop 3): a clip
+                       of 17k+5 frames ends on a chunk boundary, so its last
+                       5m+2 tokens ARE the encoding of its last 17m+5 frames.
+                       The audio tail is cut from the clip's audio latent by
+                       TIME (FRAME_RESCALE = 5/3 audio latent frames per pixel
+                       frame), not re-encoded.
+  anchor               one image or clip anywhere in the new clip (frame_idx,
+                       negative = from the end) -- keyframe-to-keyframe work,
+                       the "mid anchor" of the Cine concept.
+
+WHAT IT IS NOT: K1 (last frame -> first frame) stays with MiniMax Keyframes --
+that node also shows the frame to the text encoder as <Picture n>, which a
+guide does not. K4 (previous clip as <Video 1>) stays with MiniMax Reference.
+Two nodes doing the same thing would be a second truth.
+
+THE LIMIT, DECLARED: on Core 7a131a3a (the pin) the model places keyframes
+only at frame 0 / frame_count-1, one frame each, no audio -- and a guide clip
+there would not fail loudly, it would be laid out as one frame. So this node
+REFUSES by name unless Core has MiniMaxH3AddGuide.
+
+Outputs: positive (guides appended), latent (passed through), overlap (the
+frames clip n+1 re-renders from clip n -> Seam Fix trim_head), info.
+"""
+
+
+import node_helpers
+
+from . import uls_latent_math as M
+
+FRAME_RESCALE = 5.0 / 3.0       # audio latent frames per pixel frame (Core model.py)
+CHUNK_TOKENS = 5                # 17 frames -> 5 tokens (Core vae.py)
+MODES = ["K2L latent context (no VAE)", "K2 motion context (frames)", "anchor only"]
+
+
+# --------------------------------------------------------------------------
+# pure helpers (the guard drives these without Core)
+# --------------------------------------------------------------------------
+
+def snap_guide(n):
+    """AddGuide's rule for a guide of n frames: < 5 -> 1, else down to 17k+5."""
+    n = int(n)
+    if n < 5:
+        return 1
+    while n % 17 != 5:
+        n -= 1
+    return n
+
+
+def resolve_index(frame_idx, frame_count, guide_frames):
+    """AddGuide's index rule; raises by name when the guide does not fit."""
+    i = frame_idx if frame_idx >= 0 else frame_count + frame_idx
+    if i < 0 or i + guide_frames > frame_count:
+        if guide_frames == 1:
+            raise ValueError("frame_idx %d is outside the video's %d frames"
+                             % (frame_idx, frame_count))
+        raise ValueError("a %d frame guide clip at frame_idx %d does not fit in "
+                         "the video's %d frames" % (guide_frames, frame_idx, frame_count))
+    return i
+
+
+def latent_window(latent_t, frames):
+    """(start_token, n_tokens) of the LAST `frames` (17m+5) of a clip latent
+    with latent_t tokens. Raises when the window would not start on a chunk
+    boundary -- then it would not be the encoding of those frames."""
+    n_tok = M.minimax_video_latent_t(frames)
+    if n_tok > latent_t:
+        raise ValueError("the clip latent has %d tokens, a %d frame window needs %d"
+                         % (latent_t, frames, n_tok))
+    start = latent_t - n_tok
+    if start % CHUNK_TOKENS != 0:
+        raise ValueError("a window of %d tokens from a %d-token latent starts at "
+                         "token %d, off the 17-frame chunk grid -- not a clip "
+                         "latent of 17k+5 frames" % (n_tok, latent_t, start))
+    return start, n_tok
+
+
+def audio_window(clip_frames, frames, audio_t):
+    """(start, end) audio latent frames of the last `frames` pixel frames of a
+    clip of clip_frames, by time on Core's shared axis."""
+    start = int(round((clip_frames - frames) * FRAME_RESCALE))
+    return max(0, min(start, audio_t)), audio_t
+
+
+def _parts(latent):
+    s = latent.get("samples") if isinstance(latent, dict) else latent
+    if not getattr(s, "is_nested", False):
+        return None
+    parts = s.unbind()
+    if not parts or getattr(parts[0], "ndim", 0) != 5 or parts[0].shape[1] != M.MINIMAX_VIDEO_CH:
+        return None
+    return parts
+
+
+def model_has_guides():
+    """Does ComfyUI's H3 MODEL code place keyframes anywhere? Read from the
+    library (comfy/ldm/minimax/model.py), not from a node: the pinned Core's
+    PackedLayout refuses everything but the first / last frame."""
+    try:
+        import inspect
+        import comfy.ldm.minimax.model as mm
+        src = inspect.getsource(mm.PackedLayout)
+    except Exception:
+        return None
+    return guides_in_source(src)
+
+
+def guides_in_source(src):
+    """The predicate on the model code (kept apart so a guard can feed it both kinds of Core)."""
+    return "resolved_frame_index" in src and "only first/last keyframe anchors" not in src
+
+
+def core_has_guides():
+    """True when guides can sit anywhere: the model code says so (v1057).
+    v1061: an unreadable model library counts as "no" -- the guess from Core's
+    node module is gone with the rest of the node-class calls;
+    a "no" refuses guides by name and never places them wrongly."""
+    return model_has_guides() is True
+
+
+def _resize(image, width, height):
+    """Core's _resize(..., "center"), mirrored: [B,H,W,C] -> [B,height,width,3]."""
+    import comfy.utils
+    samples = image[..., :3].movedim(-1, 1)
+    samples = comfy.utils.common_upscale(samples, width, height, "lanczos", "center")
+    return samples.movedim(1, -1)
+
+
+def _encode_audio(audio_vae, audio):
+    """Core's _encode_ref_audio, mirrored (the Reference node's copy)."""
+    from .ph_minimax_ref import encode_ref_audio
+    return encode_ref_audio(audio_vae, audio)
+
+
+def _last_seconds(audio, seconds):
+    wav = audio["waveform"]
+    sr = int(audio["sample_rate"])
+    n = int(round(seconds * sr))
+    if 0 < n < wav.shape[-1]:
+        wav = wav[..., -n:]
+    return {"waveform": wav, "sample_rate": sr}
+
+
+# --------------------------------------------------------------------------
+# the node
+# --------------------------------------------------------------------------
+
+class ULSMiniMaxContinue:
+    """Guides from clip n (frames or latent) and mid anchors, on Core master."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "positive": ("CONDITIONING", {"tooltip":
+                    "The run's positive conditioning (MiniMax Keyframes, "
+                    "MiniMax Reference or CLIP Text Encode). The guides are "
+                    "APPENDED -- references and keyframes already in it stay."}),
+                "latent": ("LATENT", {"tooltip":
+                    "The run's H3 AV latent (Polyhedron Empty Latent, 'MiniMax "
+                    "H3 AV'). Size and length come from it; it is passed on "
+                    "unchanged."}),
+                "mode": (MODES, {"default": MODES[0], "tooltip":
+                    "K2L: continue from clip n's OWN latent (Chain Source "
+                    "clip_latent) -- no VAE round trip. K2: from its decoded "
+                    "last frames (Chain Source tail + tail_audio). anchor only: "
+                    "no context, just the anchor input."}),
+                "context_frames": ("INT", {"default": 22, "min": 5, "max": 362,
+                    "tooltip": "How much of clip n's end guides the start of "
+                    "clip n+1, in frames. Snapped down to the H3 clip grid "
+                    "5, 22, 39, ... (17k+5). 22 = 0.92 s."}),
+                "with_audio": ("BOOLEAN", {"default": True, "tooltip":
+                    "Carry clip n's sound under the context on the same time "
+                    "axis, so the soundtrack continues too."}),
+                "anchor_frame": ("INT", {"default": -1, "min": -9999, "max": 9999,
+                    "tooltip": "Where the `anchor` input goes: its (first) "
+                    "frame lands here. Negative counts from the end, -1 = the "
+                    "last frame. Ignored without an anchor."}),
+            },
+            "optional": {
+                "vae": ("VAE", {"tooltip": "Video VAE -- needed for K2 and for "
+                    "an anchor image. K2L needs none."}),
+                "audio_vae": ("VAE", {"tooltip": "Audio VAE -- needed for K2 "
+                    "with audio. K2L needs none."}),
+                "clip_latent": ("LATENT", {"tooltip":
+                    "K2L: Clip Chain Source `clip_latent` -- clip n's AV "
+                    "latent as Clip Store kept it."}),
+                "tail": ("IMAGE", {"tooltip": "K2: Clip Chain Source `tail` -- "
+                    "clip n's last frames (5 or more)."}),
+                "tail_audio": ("AUDIO", {"tooltip": "K2: Clip Chain Source "
+                    "`tail_audio` -- cut to the context length here."}),
+                "anchor": ("IMAGE", {"tooltip": "An image (or a clip of 5+ "
+                    "frames, snapped to 17k+5) to pin at `anchor_frame`: a "
+                    "target pose, the end of a move, the next keyframe."}),
+                "anchors": ("PLS_ANCHORS", {"tooltip": "Cine Timeline `anchors`: "
+                    "every anchor between the first and the last frame, each at "
+                    "its own frame."}),
+            },
+        }
+
+    RETURN_TYPES = ("CONDITIONING", "LATENT", "INT", "STRING")
+    RETURN_NAMES = ("positive", "latent", "overlap", "info")
+    FUNCTION = "build"
+    CATEGORY = "Polyhedron/Cine"
+    DESCRIPTION = ("Continues clip n into clip n+1 on Core master: the end of "
+                   "clip n as a guide at frame 0 -- from its own latent (K2L, "
+                   "no VAE round trip) or its decoded frames (K2) -- with its "
+                   "sound on the same time axis, plus an optional anchor "
+                   "anywhere in the new clip. Appends to the conditioning like "
+                   "Core's Add Guide; `overlap` goes to Seam Fix trim_head. "
+                   "Refuses on the pinned Core, which anchors only first/last "
+                   "frames.")
+
+    def build(self, positive, latent, mode, context_frames, with_audio, anchor_frame,
+              vae=None, audio_vae=None, clip_latent=None, tail=None,
+              tail_audio=None, anchor=None, anchors=None):
+        tag = "[PLS] MiniMax Continue"
+        # v1051: nothing to add (anchor only, no anchor, no timeline guides) =
+        # pass through, on ANY Core -- so one workflow serves a first/last-
+        # frame run and a run with guides in between. Said, not silent.
+        if mode.startswith("anchor") and anchor is None and not (anchors or []):
+            info = ("MiniMax Continue: nothing to add -- no guides between the first and the "
+                    "last frame, no anchor; positive and latent passed through unchanged")
+            print("[PLS] " + info)
+            return (positive, latent, 0, info)
+        if not core_has_guides():
+            raise ValueError(
+                tag + ": this Core has no MiniMaxH3AddGuide -- it places H3 "
+                "anchors only at the first and last frame, one frame each, no "
+                "audio. Continue needs Core master (0.37+). On this Core: "
+                "MiniMax Keyframes for the last frame (K1), MiniMax Reference "
+                "with the previous clip as <Video 1> (K4).")
+        parts = _parts(latent)
+        if parts is None:
+            raise ValueError(tag + ": `latent` is not a MiniMax H3 AV latent "
+                             "(Polyhedron Empty Latent, latent_type 'MiniMax H3 AV').")
+        video_t, audio_t = parts[0], parts[1]
+        height, width = int(video_t.shape[3]) * 16, int(video_t.shape[4]) * 16
+        frame_count = M.minimax_frames_from_latent_t(int(video_t.shape[2]))
+        target_audio = int(audio_t.shape[-1])
+
+        guides, lines, overlap = [], [], 0
+        lines.append("MiniMax Continue: target %dx%d, %d frames (%.2f s), mode %s"
+                     % (width, height, frame_count, frame_count / 24.0, mode.split(" (")[0]))
+
+        if mode.startswith("K2L"):
+            if clip_latent is None:
+                raise ValueError(tag + ": K2L needs `clip_latent` (Clip Chain Source) "
+                                 "-- and that needs Clip Store after the previous clip's Save.")
+            cp = _parts(clip_latent)
+            if cp is None:
+                raise ValueError(tag + ": `clip_latent` is not an H3 AV latent.")
+            cv = cp[0]
+            if (int(cv.shape[3]), int(cv.shape[4])) != (int(video_t.shape[3]), int(video_t.shape[4])):
+                raise ValueError(tag + ": clip n is %dx%d, this run is %dx%d -- a latent "
+                                 "context shares the target's grid; keep the size of the chain"
+                                 % (int(cv.shape[4]) * 16, int(cv.shape[3]) * 16, width, height))
+            clip_frames = M.minimax_frames_from_latent_t(int(cv.shape[2]))
+            n = snap_guide(min(int(context_frames), clip_frames))
+            if n < 5:
+                raise ValueError(tag + ": a latent context needs 5 frames or more")
+            start, n_tok = latent_window(int(cv.shape[2]), n)
+            resolve_index(0, frame_count, n)
+            kf = {"resolved_frame_index": 0, "latent": cv[:, :, start:].clone()}
+            line = "K2L: last %d frame(s) of clip n (tokens %d..%d of %d) at frame 0, no VAE" % (
+                n, start, start + n_tok - 1, int(cv.shape[2]))
+            if with_audio and len(cp) > 1:
+                ca = cp[1]
+                a0, a1 = audio_window(clip_frames, n, int(ca.shape[-1]))
+                a = ca[..., a0:a1]
+                if a.shape[-1] > target_audio:
+                    a = a[..., :target_audio]
+                if a.shape[-1] >= 1:
+                    kf["audio_latent"] = a.clone()
+                    line += " + sound (audio latent %d..%d)" % (a0, a0 + a.shape[-1] - 1)
+            elif with_audio:
+                line += " -- clip n has no audio latent, no sound carried"
+            guides.append(kf)
+            lines.append(line)
+            overlap = n
+
+        elif mode.startswith("K2 "):
+            if tail is None or int(tail.shape[0]) < 5:
+                raise ValueError(tag + ": K2 needs `tail` with 5 frames or more "
+                                 "(Clip Chain Source tail, tail_frames 22)")
+            if vae is None:
+                raise ValueError(tag + ": K2 encodes the frames -- wire `vae`")
+            n = snap_guide(min(int(context_frames), int(tail.shape[0])))
+            resolve_index(0, frame_count, n)
+            frames = _resize(tail[-n:], width, height)
+            kf = {"resolved_frame_index": 0, "latent": vae.encode(frames)}
+            line = "K2: last %d frame(s) of clip n at frame 0 (VAE encode)" % n
+            if with_audio and tail_audio is not None:
+                if audio_vae is None:
+                    raise ValueError(tag + ": the sound needs `audio_vae` "
+                                     "(or switch with_audio off)")
+                z, rt = _encode_audio(audio_vae, _last_seconds(tail_audio, n / 24.0))
+                if rt > target_audio:
+                    z = z[..., :target_audio].clone()
+                kf["audio_latent"] = z
+                line += " + sound (%d audio latent frames)" % z.shape[-1]
+            elif with_audio:
+                line += " -- no tail_audio wired, no sound carried"
+            guides.append(kf)
+            lines.append(line)
+            overlap = n
+
+        # v1023: the timeline's anchors, then the single `anchor` -- the same
+        # rules for both (AddGuide's snap, index and fit)
+        todo = [(a["image"], int(a["frame"]), a.get("src", "timeline")) for a in (anchors or [])]
+        if anchor is not None:
+            todo.append((anchor, int(anchor_frame), "input"))
+        for img, at, name in todo:
+            if vae is None:
+                raise ValueError(tag + ": an anchor image is encoded -- wire `vae`")
+            g = snap_guide(int(img.shape[0]))
+            i = resolve_index(at, frame_count, g)
+            kf = {"resolved_frame_index": i,
+                  "latent": vae.encode(_resize(img[:g], width, height))}
+            guides.append(kf)
+            line = "anchor %s: %s at frame %d (%.2f s)" % (
+                name, "1 image" if g == 1 else "%d-frame clip" % g, i, i / 24.0)
+            if overlap and i < overlap:
+                line += "  WARN: inside the context (frames 0..%d) -- two guides on the same frames" % (overlap - 1)
+            lines.append(line)
+
+        # exactly AddGuide's append: the list of the FIRST entry, set on all
+        keyframes = list(positive[0][1].get("minimax_keyframes", [])) + guides
+        out = node_helpers.conditioning_set_values(positive, {"minimax_keyframes": keyframes})
+
+        if overlap:
+            lines.append("overlap: clip n+1 re-renders its first %d frame(s) from clip n "
+                         "-> Seam Fix trim_head %d" % (overlap, overlap))
+        info = "\n".join(lines)
+        print("[PLS] " + info.replace("\n", "\n[PLS]   "))
+        return (out, latent, int(overlap), info)
+
+
+NODE_CLASS_MAPPINGS = {"ULSMiniMaxContinue": ULSMiniMaxContinue}
+NODE_DISPLAY_NAME_MAPPINGS = {"ULSMiniMaxContinue": "\u2b21 Polyhedron MiniMax Continue"}

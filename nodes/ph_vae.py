@@ -262,6 +262,114 @@ def _h3_pad_to_two(latent):
     return torch.cat([latent, latent], dim=2)
 
 
+# --- v1053: MiniMax H3 tiles were never ours to set -------------------------
+#
+# MEASURED in Core 7a131a3a (comfy/ldm/minimax/vae.py): MiniMaxH3VideoVAE
+#
+#     def decode_tiled(self, z, **kwargs):  return self.decode(z)
+#     def encode_tiled(self, x, **kwargs):  return self.encode(x)
+#
+# Every tile argument is thrown away; the VAE tiles INTERNALLY from three plain
+# attributes -- tiling, tile_size, tile_overlap_min (pixels; stock 256 / 64).
+# So this node's tile_size / tile_overlap reached every other VAE but never
+# H3: an H3 decode was always 256 px tiles, whatever the widgets said.
+#
+# The fix hands the widgets to those attributes for the duration of ONE pass
+# and restores them afterwards (the VAE object is shared by every node that
+# holds it). Only on the TILED verdict: 'auto' resolves to full for H3 at
+# usual sizes (Core's own memory formula counts one temporal chunk), so saved
+# workflows keep exactly the stock 256 / 64 they rendered with until the user
+# sets tiling = on. Same approach as TripleHeadedMonkey's
+# "MiniMax H3 VAE Decode (fast)": overlap never below a quarter of the tile
+# (H3's own 64/256 ratio; less shows the tile grid as seams), both on the
+# 16 px latent grid, overlap at least one cell below the tile.
+
+_H3_GRID = 16                # one latent cell in pixels (vae_ratio)
+_H3_STOCK = (256, 64)        # Core's tile_size / tile_overlap_min
+
+
+def _h3_tile_plan(tile_size, tile_overlap):
+    """(tile, overlap, raised, asked) in pixels for H3's internal tiler. Pure.
+
+    tile    snapped DOWN to the 16 px grid, at least 128 (two cells of
+            overlap room on a 4:1 ratio)
+    overlap the user's value snapped UP to the grid, raised to tile/4 when
+            below it (raised=True then), capped one cell under the tile"""
+    g = _H3_GRID
+    tile = max(128, (int(tile_size) // g) * g)
+    want = -(-max(0, int(tile_overlap)) // g) * g
+    floor = -(-(tile // 4) // g) * g
+    ov = max(want, floor)
+    raised = ov > want
+    ov = min(ov, tile - g)
+    return tile, ov, raised, want
+
+
+class _H3Tiles(object):
+    """Hand tile_size / tile_overlap to H3's own tiler for one pass, then put
+    the VAE back exactly as found. A no-op for every other VAE."""
+
+    _ATTRS = ("tiling", "tile_size", "tile_overlap_min")
+
+    def __init__(self, vae, tile_size, tile_overlap, lane):
+        self.vae, self.lane = vae, lane
+        self.inner, self.saved = None, None
+        self.plan = None
+        if _is_h3_video_vae(vae):
+            inner = vae.first_stage_model
+            if all(hasattr(inner, a) for a in self._ATTRS):
+                self.inner = inner
+                self.plan = _h3_tile_plan(tile_size, tile_overlap)
+
+    def __enter__(self):
+        if self.inner is None:
+            return self
+        self.saved = {a: getattr(self.inner, a) for a in self._ATTRS}
+        tile, ov, raised, asked = self.plan
+        self.inner.tiling = True
+        self.inner.tile_size = tile
+        self.inner.tile_overlap_min = ov
+        print(f"[PLS] VAE: MiniMax H3 {self.lane} with {tile} px tiles, "
+              f"{ov} px overlap (Core's stock {_H3_STOCK[0]}/{_H3_STOCK[1]})"
+              + (f" - overlap raised from {asked} px to a quarter of the "
+                 f"tile, below that H3 shows its tile grid as seams"
+                 if raised else ""))
+        return self
+
+    def __exit__(self, *exc):
+        if self.inner is not None and self.saved is not None:
+            for a, v in self.saved.items():
+                setattr(self.inner, a, v)
+        return False
+
+
+def _h3_stock_tiles_note(vae, verdict):
+    """The full verdict on H3 is NOT untiled: say what really runs."""
+    if verdict != "tiled" and _is_h3_video_vae(vae):
+        inner = getattr(vae, "first_stage_model", None)
+        ts = getattr(inner, "tile_size", _H3_STOCK[0])
+        ov = getattr(inner, "tile_overlap_min", _H3_STOCK[1])
+        print(f"[PLS] VAE: MiniMax H3 tiles internally at Core's {ts}/{ov} px "
+              f"on this verdict - set tiling = on to hand it tile_size / "
+              f"tile_overlap")
+
+
+def _pixels_for(vae, pixels):
+    """v1078: the channels the VAE takes, not a fixed three. Core's
+    vae_encode_crop_pixels (pin and master) crops channels beyond
+    vae.output_channels and pads missing ones (opaque alpha for an RGBA
+    VAE), so a four-channel image keeps its alpha for a four-channel VAE
+    and a three-channel VAE still sees exactly what it saw before."""
+    n = getattr(vae, "output_channels", None)
+    try:
+        n = int(n)
+    except Exception:
+        n = 3
+    if n <= 0:
+        n = 3
+    return pixels[:, :, :, :max(3, n)]
+
+
 class ULSVAE:
     """One VAE node, four modes, and a verdict that runs before the pass."""
 
@@ -295,11 +403,21 @@ class ULSVAE:
                                       "tooltip": "Spatial tile in PIXELS "
                                                  "(decode converts to "
                                                  "latent internally, like "
-                                                 "stock)."}),
+                                                 "stock). MiniMax H3 tiles "
+                                                 "inside its own VAE: there "
+                                                 "this value counts only "
+                                                 "with tiling = on; auto and "
+                                                 "off keep Core's 256 px "
+                                                 "tiles."}),
                 "tile_overlap": ("INT", {"default": 64, "min": 0, "max": 4096,
                                          "step": 32,
                                          "tooltip": "Spatial overlap in "
-                                                    "pixels."}),
+                                                    "pixels. MiniMax H3 with "
+                                                    "tiling = on: at least a "
+                                                    "quarter of the tile, "
+                                                    "raised when lower (less "
+                                                    "shows the tile grid as "
+                                                    "seams)."}),
                 "temporal_size": ("INT", {"default": 64, "min": 8,
                                           "max": 4096, "step": 4,
                                           "tooltip": "Video VAEs only: "
@@ -413,16 +531,19 @@ class ULSVAE:
                        bar=not (verdict == "tiled" and getattr(vae, "latent_dim", 2) == 2)):
             if verdict == "tiled":
                 # Stock VAEEncodeTiled semantics: pixel-space tiles, raw frame
-                # counts; sd.py converts internally.
-                t = vae.encode_tiled(pixels[:, :, :, :3], tile_x=int(tile_size),
-                                     tile_y=int(tile_size),
-                                     overlap=int(tile_overlap),
-                                     tile_t=int(temporal_size),
-                                     overlap_t=int(temporal_overlap))
+                # counts; sd.py converts internally. v1053: H3 discards these
+                # arguments, so its own tiler gets them via _H3Tiles.
+                with _H3Tiles(vae, tile_size, tile_overlap, "encode"):
+                    t = vae.encode_tiled(_pixels_for(vae, pixels), tile_x=int(tile_size),
+                                         tile_y=int(tile_size),
+                                         overlap=int(tile_overlap),
+                                         tile_t=int(temporal_size),
+                                         overlap_t=int(temporal_overlap))
             else:
+                _h3_stock_tiles_note(vae, verdict)
                 # Stock VAEEncode: full pass; comfy itself falls back to tiled
                 # on a REAL OOM exception - we keep that net underneath ours.
-                t = vae.encode(pixels[:, :, :, :3])
+                t = vae.encode(_pixels_for(vae, pixels))
         dur = time.monotonic() - t0
         n = int(pixels.shape[0])
         print(f"[PLS] VAE: encode done in {dur:.1f}s "
@@ -463,10 +584,15 @@ class ULSVAE:
             with _blocking("VAE", "vae:decode:%s:tiled" % _model_key(vae),
                            size=_mvals(latent), what="decode latent %s (tiled)" % (tuple(latent.shape),),
                            bar=(getattr(latent, "ndim", 4) != 4)):   # a 2-D tiled pass drives Core's own bar
-                images = vae.decode_tiled(latent, tile_x=ts // comp,
-                                          tile_y=ts // comp, overlap=ov // comp,
-                                          tile_t=tps, overlap_t=tpo)
+                # v1053: H3 discards these arguments; _H3Tiles hands the
+                # widget values (pixels, not the clamped latent ones) to its
+                # own tiler for this one pass.
+                with _H3Tiles(vae, tile_size, tile_overlap, "decode"):
+                    images = vae.decode_tiled(latent, tile_x=ts // comp,
+                                              tile_y=ts // comp, overlap=ov // comp,
+                                              tile_t=tps, overlap_t=tpo)
         else:
+            _h3_stock_tiles_note(vae, verdict)
             with _blocking("VAE", "vae:decode:%s:full" % _model_key(vae),
                            size=_mvals(latent), what="decode latent %s (full)" % (tuple(latent.shape),)):
                 images = vae.decode(latent)
@@ -664,18 +790,21 @@ class ULSVAE:
                           f"the roundtrip itself is unaffected")
 
             elif want_dec and _is_music_latent(samples, lat_in, vae):
-                # v1041: music goes to the AUDIO output through Core's own
-                # vae_decode_audio (the same waveform as every other path),
-                # tiled by the same budget verdict; the IMAGE output says why
-                # it stays empty.
-                from comfy_extras.nodes_audio import vae_decode_audio
+                # v1041: music goes to the AUDIO output, tiled by the same
+                # budget verdict; the IMAGE output says why it stays empty.
+                # v1061: the decode is the pack's own (ph_music.decode_music,
+                # the same one the Music Save uses) -- no Core node module.
+                try:
+                    from .ph_music import decode_music as _decode_music
+                except Exception:
+                    from ph_music import decode_music as _decode_music
                 need = self._decode_need(vae, lat_in)
                 dec_verdict = _vae_budget_verdict(need, free, tiling)
                 tiled = dec_verdict == "tiled"
                 print(f"[PLS] VAE: a MUSIC latent {tuple(lat_in.shape)} -> the AUDIO output "
                       f"(verdict={dec_verdict}, need ~{_gb(need):.1f} GB vs {_gb(free):.1f} GB free); "
                       f"no image comes out of music. The Music Save decodes and files it in one node.")
-                out_audio = vae_decode_audio(vae, samples, 512 if tiled else None, 64 if tiled else None)
+                out_audio = _decode_music(vae, samples, 512 if tiled else None, 64 if tiled else None)
                 out_image = None
             elif want_dec:
                 need = self._decode_need(vae, lat_dec)

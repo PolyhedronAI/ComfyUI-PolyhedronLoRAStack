@@ -389,7 +389,7 @@ def concat_videos(paths, out_path):
     """Join clips of one chain into one file by PACKET COPY (no re-encode, no
     subprocess): every clip's packets are shifted by the running duration.
     All clips must share codec and size -- the chain's own clips do. Returns
-    (frames_total_estimate, seconds). Raises by name on a mismatch."""
+    the total seconds. Raises by name on a mismatch."""
     import av
     if not paths:
         raise ValueError("nothing to join")

@@ -96,7 +96,8 @@ for n in tree.body:
 _need(apply_src is not None, "B  UltimateLoraStack.apply found")
 helpers, missing = _LIFT.close_over(
     SRC, ["_group_mult", "_group_scaled", "_safe_weight", "_short_name", "_sort_active_rows",
-          "_group_effective", "_cap_text"],
+          "_group_effective", "_cap_text",
+          "_reset_landing", "_landing_block"],   # v1110: the stack's landing record (v1108)
     provided={"math", "os", "folder_paths", "OrderedDict", "_cached_load_torch_file", "_convert_lora_like_core", "_detect_convention", "_resolve_pick_device", "_check_interrupt", "INTERRUPT_EXC", "_ov_measure", "_ov_cap"})
 _need(not missing, "B  apply's helpers lift closed (%s)" % (sorted(missing) or "none missing"))
 CALLS = []

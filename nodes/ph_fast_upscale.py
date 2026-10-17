@@ -169,7 +169,7 @@ except Exception:
 
 
 def _esrgan_chunked(frames, upscale_model, per_batch):
-    """The wired UPSCALE_MODEL via core (spandrel), fed in sub-batches so a
+    """The wired UPSCALE_MODEL (spandrel; ph_model_upscale, tiled), fed in sub-batches so a
     65-frame 4x intermediate never has to exist as ONE tensor. No model
     upscaler in this build -> honest fallback (the ph_power_upscale
     convention), stated in the log."""

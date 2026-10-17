@@ -82,9 +82,14 @@ const CLIP_PLACEHOLDER = "\u2014 none \u2014";
  * ph_clip_encode.js uses (filters on top, fields below). Revert = drop "device"
  * from CLIP_DISPLAY's head and put it back after "clip_name".
  */
+/*
+ * v1077: `weight_dtype` is APPENDED to the canon (last on disk, #577 law) and
+ * joins `type` and `device` at the top on screen -- it is a setting of the
+ * load, not a slot, and the slot block stays one uninterrupted run.
+ */
 const CLIP_CANON = ["clip_name", "type", "device",
-                    "clip_name_2", "clip_name_3", "clip_name_4"];
-const CLIP_DISPLAY = ["type", "device",
+                    "clip_name_2", "clip_name_3", "clip_name_4", "weight_dtype"];
+const CLIP_DISPLAY = ["type", "device", "weight_dtype",
                       "clip_name", "clip_name_2", "clip_name_3", "clip_name_4"];
 
 /*

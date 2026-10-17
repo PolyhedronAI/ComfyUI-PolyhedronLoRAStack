@@ -145,14 +145,6 @@ if res_maj is not None:
     agree_maj = (torch.sign(rmaj) == torch.sign(delta0)).float().mean().item()
     check("majority sign wins (>0.85)", agree_maj > 0.85)
 
-# ── [8] version triple (maintenance) ─────────────────────────────────────────
-print("[8] version triple v385")
-def _read(*p):
-    with open(os.path.join(HERE, "..", *p), encoding="utf-8") as f:
-        return f.read()
-check("__init__ banner v385", "Polyhedron Suite  v385" in _read("__init__.py"))
-check("uls_compat PLUGIN_VERSION v385", 'PLUGIN_VERSION = "v385"' in _read("web", "js", "uls_compat.js"))
-
 print("=" * 56)
 if failures:
     print(f"RESULT: {len(failures)} CHECK(S) FAILED")

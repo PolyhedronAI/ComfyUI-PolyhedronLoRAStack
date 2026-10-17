@@ -48,11 +48,10 @@ except ImportError:  # pragma: no cover
     import uls_latent_math
     import uls_noise
 
-# MAX_RESOLUTION mirrors the core empty-latent nodes (kept local so import can't fail).
-try:
-    from nodes import MAX_RESOLUTION as _MAX_RES
-except Exception:  # pragma: no cover
-    _MAX_RES = 16384
+# The widget ceiling: the same number the core's empty-latent nodes use
+# (nodes.MAX_RESOLUTION = 16384 on both cores, checked by test_v1061). v1061:
+# our own constant -- no import of the core's node module.
+_MAX_RES = 16384
 
 
 def _vae_geometry(vae):
@@ -95,46 +94,30 @@ def _vae_geometry(vae):
 
 
 def _core_empty(name, width, height, batch_size):
-    """Borrow a core empty-latent node by registry name (same pattern as
-    the WAN delegate below). Returns the latent dict or None when the
-    host has no such node."""
+    """The family's empty latent by the name of the core node it equals
+    (uls_latent_math.CORE_DELEGATES). v1062: built here (ph_flux2) instead of
+    borrowing the core's node class -- test_v1062 compares the two. Returns
+    the latent dict, or None for a name this pack has no rule for."""
     try:
-        import nodes as comfy_nodes
-        cls = comfy_nodes.NODE_CLASS_MAPPINGS.get(name)
-        if cls is None:
-            return None
-        inst = cls()
-        fn = getattr(inst, getattr(cls, "FUNCTION", "generate"))
-        return fn(width=width, height=height, batch_size=batch_size)[0]
+        try:
+            from . import ph_flux2 as F
+        except ImportError:
+            import ph_flux2 as F
+        builders = {"EmptyFlux2LatentImage": F.empty_latent}
+        fn = builders.get(name)
+        return None if fn is None else fn(width=width, height=height, batch_size=batch_size)[0]
     except Exception as e:
-        print(f"[PLS] Empty Latent: core delegate '{name}' failed: {e!r}")
-        return None
-
-
-def _wan_delegate(positive, negative, vae, width, height, length, batch_size,
-                  start_image, clip_vision_output):
-    """Call the registered core WanImageToVideo for the conditioning surgery +
-    base (zeros) latent. Returns (positive, negative, latent_dict) or None if the
-    core node is not registered."""
-    try:
-        import nodes as comfy_nodes
-        cls = comfy_nodes.NODE_CLASS_MAPPINGS.get("WanImageToVideo")
-        if cls is None:
-            return None
-        inst = cls()
-        fn = getattr(inst, getattr(cls, "FUNCTION", "encode"))
-        return fn(positive, negative, vae, width, height, length, batch_size,
-                  start_image=start_image, clip_vision_output=clip_vision_output)
-    except Exception as e:
-        print(f"[PLS] Empty Latent: WanImageToVideo delegation unavailable ({e}); "
-              f"using built-in fallback.")
+        print(f"[PLS] Empty Latent: '{name}' rule failed: {e!r}")
         return None
 
 
 def _wan_fallback(positive, negative, vae, width, height, length, batch_size,
                   start_image, clip_vision_output):
-    """Faithful transcription of core WanImageToVideo.encode -- fallback only.
-    Live-verified against ComfyUI; the delegation path above is preferred."""
+    """The WAN I2V surgery, written here (the core's WanImageToVideo.encode as
+    published): a zeros latent, and with a start image the 0.5-grey clip with
+    the frames in front, VAE-encoded, plus a mask that frees every latent
+    frame after the start frames; clip_vision_output passed on. v1062: the
+    only WAN path (it was the fallback behind the core node)."""
     import comfy.utils
     import node_helpers
     shape = uls_latent_math.plan_latent_shape("wan", width, height, length, batch_size)
@@ -427,7 +410,7 @@ class ULSEmptyLatent:
         if key == "wan":
             # v873: WAN is the one lane that consumes the conditioning instead
             # of passing it through -- core's I2V surgery writes into it. Say so
-            # by name; a None reaching _wan_delegate would break somewhere far
+            # by name; a None reaching the WAN surgery would break somewhere far
             # from here.
             if positive is None or negative is None:
                 raise ValueError(
@@ -435,17 +418,17 @@ class ULSEmptyLatent:
                     "conditioning -- the WAN lane performs core's I2V surgery "
                     "on them, it does not just pass them through. Wire both, "
                     "or pick a latent_type that only builds a latent.")
-            # WAN path: reuse the real core I2V surgery, then overlay noise on the base latent.
+            # WAN path: the I2V surgery (ours, == the core's), then overlay noise on the base latent.
             if start_image is not None and vae is None:
                 raise ValueError(
                     "Empty Latent: latent_type=WAN with a start_image requires a VAE "
                     "(it encodes the reference frame into the I2V conditioning). "
                     "Connect the VAE, or remove the start_image for a plain WAN latent.")
-            out = _wan_delegate(positive, negative, vae, width, height, length, batch_size,
+            # v1062: always the pack's own transcription of the WAN I2V surgery
+            # (the core's WanImageToVideo node class is no longer called;
+            # test_v1062 compares the two, with and without a start image).
+            out = _wan_fallback(positive, negative, vae, width, height, length, batch_size,
                                 start_image, clip_vision_output)
-            if out is None:
-                out = _wan_fallback(positive, negative, vae, width, height, length, batch_size,
-                                    start_image, clip_vision_output)
             pos, neg, lat = out
             if noise_type != "zeros":
                 base = lat["samples"]
@@ -460,8 +443,8 @@ class ULSEmptyLatent:
             return (pos, neg, lat) + _size_outputs(lat["samples"], width, height)
 
         # All other types (Image + non-WAN video): pure latent factory; conditioning
-        # passes through untouched. TRUTH ORDER: wired VAE probe > core delegate
-        # (host ComfyUI's own empty node, registry lookup) > spec fallback.
+        # passes through untouched. TRUTH ORDER: wired VAE probe > family rule
+        # (the pack's own copy of the core's empty node, v1062) > spec fallback.
         delegate = uls_latent_math.CORE_DELEGATES.get(key)
         if delegate and vae_ch is None and vae_sdiv is None:
             lat = (_core if _core is not None
@@ -475,12 +458,11 @@ class ULSEmptyLatent:
                     lat["samples"] = noise.to(base.device, dtype=base.dtype)
                 print(f"[PLS] Empty Latent: type={key} "
                       f"shape={tuple(lat['samples'].shape)} "
-                      f"{uls_noise.noise_log_tag(noise_type, noise_seed)} source=core")
+                      f"{uls_noise.noise_log_tag(noise_type, noise_seed)} source=rule ({delegate})")
                 return ((positive, negative, lat)
                         + _size_outputs(lat["samples"], width, height))
-            print(f"[PLS] Empty Latent: type={key} -- host has no "
-                  f"'{delegate}', falling back to the spec row (wire the "
-                  f"VAE for exact geometry)")
+            print(f"[PLS] Empty Latent: type={key} -- no '{delegate}' rule, "
+                  f"falling back to the spec row (wire the VAE for exact geometry)")
         shape = uls_latent_math.plan_latent_shape(key, width, height, length, batch_size,
                                                   channels=vae_ch, spatial_div=vae_sdiv)
         samples = uls_noise.make_noise(noise_type, shape, noise_seed, noise_strength)

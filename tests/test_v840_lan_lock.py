@@ -140,9 +140,9 @@ _need(deny is None, "P1b: open must answer None (the handler proceeds)")
 GATED = ["handle_media_folders", "handle_media_list", "handle_media_dims",
          "handle_media_thumb", "handle_media_file", "handle_media_native_pick",
          "handle_media_upload", "handle_media_seq_build", "handle_media_resolve",
-         "handle_media_locate", "handle_media_open_folder"]
-OPEN = ["handle_media_seq_list", "handle_media_seq_delete",
-        "handle_media_proc_count"]
+         "handle_media_locate", "handle_media_open_folder",
+         "handle_batch_mkdir", "handle_media_proc_count"]   # AMENDED v1154 (audit): both take a client path
+OPEN = ["handle_media_seq_list", "handle_media_seq_delete"]
 
 
 def _span(name):

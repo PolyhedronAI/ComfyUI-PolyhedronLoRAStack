@@ -1,20 +1,21 @@
 """
 ULS API Routes
-━━━━━━━━━━━━━
+=============
 Endpoints (each registered under both the bare path and the /api alias):
-  GET  /uls/preview/image?lora=<name>  → image bytes
-  GET  /uls/preview/video?lora=<name>  → video (with Range-request support)
-  GET  /uls/metadata?lora=<name>       → JSON metadata
-  GET  /uls/list                       → all LoRAs with preview flags
-  GET  /uls/groups                     → all group assignments
-  POST /uls/groups                     → set a group assignment
-  POST /uls/triggers                   → save trigger words (.uls-meta.json)
-  GET  /uls/group_modes                → all per-group merge modes
-  POST /uls/group_modes                → set the merge mode for a group
-  POST /uls/civitai_fetch              → hash-based Civitai preview + triggers
+  GET  /uls/preview/image?lora=<name>  -> image bytes
+  GET  /uls/preview/video?lora=<name>  -> video (with Range-request support)
+  GET  /uls/metadata?lora=<name>       -> JSON metadata
+  GET  /uls/list                       -> all LoRAs with preview flags
+  GET  /uls/groups                     -> all group assignments
+  POST /uls/groups                     -> set a group assignment
+  POST /uls/triggers                   -> save trigger words (.uls-meta.json)
+  GET  /uls/group_modes                -> all per-group merge modes
+  POST /uls/group_modes                -> set the merge mode for a group
+  POST /uls/civitai_fetch              -> hash-based Civitai preview + triggers
 """
 
 import os
+import asyncio
 import json
 import re
 import mimetypes
@@ -36,12 +37,12 @@ _MAX_PREVIEW_BYTES = 32 * 1024 * 1024  # 32 MB
 
 def _pick_preview_url(images, max_nsfw_level: int = 2):
     """First image-type entry at or below the NSFW threshold, else None.
-    v267 (audit A-2): NO fallback to images[0] any more — that fallback
+    v267 (audit A-2): NO fallback to images[0] any more -- that fallback
     returned exactly an image that had FAILED the filter, contradicting the
-    documented "with NSFW filter". No SFW preview found → no preview saved.
+    documented "with NSFW filter". No SFW preview found -> no preview saved.
     Threshold unified with the CLI (N-1): Civitai nsfwLevel 1=None / 2=Soft
-    / 4=Mature / 8+=X — ≤2 keeps previews SFW. Want Mature previews back?
-    That is this one number.\n    Pure function — covered by test_v267."""
+    / 4=Mature / 8+=X -- <=2 keeps previews SFW. Want Mature previews back?
+    That is this one number.\n    Pure function -- covered by test_v267."""
     for img in images or []:
         if img.get("type", "image") == "image" and img.get("nsfwLevel", 0) <= max_nsfw_level:
             url = img.get("url")
@@ -52,8 +53,8 @@ def _pick_preview_url(images, max_nsfw_level: int = 2):
 
 async def _download_capped_image(resp, max_bytes: int):
     """Read an HTTP response body as an image with two guards (v251):
-      • Content-Type must be image/* (no writing arbitrary bodies as .jpg)
-      • a hard byte cap, checked against Content-Length up front AND enforced
+      * Content-Type must be image/* (no writing arbitrary bodies as .jpg)
+      * a hard byte cap, checked against Content-Length up front AND enforced
         mid-stream so a chunked/lying response can't exhaust RAM.
     Returns the bytes on success, or None (reason logged) on any rejection.
     Does not raise for the type/size checks themselves."""
@@ -61,17 +62,17 @@ async def _download_capped_image(resp, max_bytes: int):
         return None
     ctype = (resp.headers.get("Content-Type", "") or "").split(";")[0].strip().lower()
     if not ctype.startswith("image/"):
-        print(f"[ULS] ⚠ Preview skipped: not an image (Content-Type: {ctype or 'unknown'})")
+        print(f"[ULS] \u26a0 Preview skipped: not an image (Content-Type: {ctype or 'unknown'})")
         return None
     clen = resp.headers.get("Content-Length")
     if clen and str(clen).isdigit() and int(clen) > max_bytes:
-        print(f"[ULS] ⚠ Preview skipped: declared {clen} bytes > {max_bytes} cap")
+        print(f"[ULS] \u26a0 Preview skipped: declared {clen} bytes > {max_bytes} cap")
         return None
     buf = bytearray()
     async for chunk in resp.content.iter_chunked(64 * 1024):
         buf += chunk
         if len(buf) > max_bytes:
-            print(f"[ULS] ⚠ Preview skipped: exceeded {max_bytes} byte cap mid-stream")
+            print(f"[ULS] \u26a0 Preview skipped: exceeded {max_bytes} byte cap mid-stream")
             return None
     return bytes(buf)
 
@@ -92,7 +93,7 @@ def _load_uls_meta(full_path: str) -> dict:
     return _uls_meta_read(full_path)
 
 
-# ─── Route Handler ─────────────────────────────────────────────────────────
+# --- Route Handler ---------------------------------------------------------
 
 async def handle_preview_image(request: web.Request) -> web.Response:
     lora_name = request.rel_url.query.get("lora", "").strip()
@@ -132,71 +133,9 @@ async def handle_preview_video(request: web.Request) -> web.Response:
         return web.Response(status=404, text="No preview video found")
 
     mime = mimetypes.guess_type(vid_path)[0] or "video/mp4"
-    file_size = os.path.getsize(vid_path)
-
-    # Parse Range-Request (for browser video player)
-    range_header = request.headers.get("Range", "")
-    if range_header.startswith("bytes="):
-        try:
-            range_val = range_header[6:]
-            start_str, end_str = range_val.split("-", 1)
-            if not start_str and end_str:
-                # v267 (N-5): RFC-7233 suffix range "bytes=-N" = the LAST N
-                # bytes. Was misread as 0..N before. Browser players never
-                # send suffix ranges here, so normal playback is unchanged.
-                n_suffix = int(end_str)
-                start = max(0, file_size - n_suffix) if n_suffix > 0 else file_size
-                end   = file_size - 1
-            else:
-                start = int(start_str) if start_str else 0
-                end   = int(end_str)   if end_str   else file_size - 1
-            end   = min(end, file_size - 1)
-            # v263: reject an unsatisfiable range with a proper 416 (RFC 7233)
-            # instead of serving an empty body and a nonsensical (possibly
-            # negative) Content-Length. A negative start also lands here rather
-            # than raising inside f.seek(). Well-behaved browser players never
-            # send such ranges, so normal playback is unaffected.
-            if start < 0 or start > end or start >= file_size:
-                return web.Response(
-                    status=416,
-                    headers={"Content-Range": f"bytes */{file_size}"},
-                    text="Requested Range Not Satisfiable",
-                )
-            length = end - start + 1
-
-            with open(vid_path, "rb") as f:
-                f.seek(start)
-                data = f.read(length)
-
-            return web.Response(
-                status=206,
-                body=data,
-                content_type=mime,
-                headers={
-                    "Content-Range":  f"bytes {start}-{end}/{file_size}",
-                    "Accept-Ranges":  "bytes",
-                    "Content-Length": str(length),
-                    "Cache-Control":  "public, max-age=3600",
-                },
-            )
-        except (ValueError, OSError):
-            pass  # Fall back to full response
-
-    # Full response
-    try:
-        with open(vid_path, "rb") as f:
-            data = f.read()
-        return web.Response(
-            body=data,
-            content_type=mime,
-            headers={
-                "Accept-Ranges":  "bytes",
-                "Content-Length": str(file_size),
-                "Cache-Control":  "public, max-age=3600",
-            },
-        )
-    except OSError as e:
-        return web.Response(status=500, text=f"Read error: {e}")
+    # v1154 (audit, v1155): aiohttp's FileResponse answers Range itself (suffix ranges, 416, sendfile in chunks) --
+    # the hand-made reader took a browser's first "bytes=0-" as the WHOLE file into RAM, on the event loop
+    return web.FileResponse(vid_path, headers={"Content-Type": mime, "Cache-Control": "public, max-age=3600"})
 
 
 async def handle_metadata(request: web.Request) -> web.Response:
@@ -246,22 +185,25 @@ async def handle_list(request: web.Request) -> web.Response:
     except Exception:
         loras = []
 
-    result = []
-    for name in loras:
-        try:
-            previews = _find_preview(name)
-            result.append({
-                "name":      name,
-                "has_image": "image" in previews,
-                "has_video": "video" in previews,
-            })
-        except Exception:
-            result.append({"name": name, "has_image": False, "has_video": False})
+    def _scan():
+        result = []
+        for name in loras:
+            try:
+                previews = _find_preview(name)
+                result.append({
+                    "name":      name,
+                    "has_image": "image" in previews,
+                    "has_video": "video" in previews,
+                })
+            except Exception:
+                result.append({"name": name, "has_image": False, "has_video": False})
+        return result
 
-    return web.json_response(result)
+    # v1155 (audit): up to 12 stats per LoRA -- 2000 LoRAs on a network drive held the event loop for seconds
+    return web.json_response(await asyncio.to_thread(_scan))
 
 
-# ─── Route Registration ────────────────────────────────────────────────────
+# --- Route Registration ----------------------------------------------------
 
 
 
@@ -278,7 +220,7 @@ def _get_groups_file():
     return _GROUPS_FILE
 
 # v267 (audit A-6): valid group names for POST /uls/groups. The UI only ever
-# posts these; the backend maps unknown strings to "custom" anyway — this is
+# posts these; the backend maps unknown strings to "custom" anyway -- this is
 # purely defensive input validation so arbitrary strings never reach the JSON.
 _VALID_GROUPS = {"acc", "style", "scene", "motion", "subject", "detail", "custom"}
 
@@ -325,7 +267,7 @@ def _save_groups(data: dict):
         with open(f, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"[ULS] ⚠ Failed to save groups: {e}")
+        print(f"[ULS] \u26a0 Failed to save groups: {e}")
 
 async def handle_groups_get(request: web.Request) -> web.Response:
     """Alle gespeicherten Gruppen-Zuordnungen."""
@@ -336,13 +278,13 @@ async def handle_groups_set(request: web.Request) -> web.Response:
     try:
         body = await request.json()
         lora_name = body.get("lora_name", "").strip()
-        group     = body.get("group", "—").strip()
+        group     = body.get("group", "\u2014").strip()
         if not lora_name:
             return web.Response(status=400, text="Missing lora_name")
-        if group != "—" and group not in _VALID_GROUPS:
+        if group != "\u2014" and group not in _VALID_GROUPS:
             return web.Response(status=400, text=f"Unknown group: {group}")
         groups = _load_groups()
-        if group == "—":
+        if group == "\u2014":
             groups.pop(lora_name, None)
         else:
             groups[lora_name] = group
@@ -373,8 +315,8 @@ async def handle_triggers_set(request: web.Request) -> web.Response:
         return web.Response(status=500, text=str(e))
 
 
-# ─── Group Apply Modes ─────────────────────────────────────────────────────
-# Persisted per-group (not per-LoRA): "character" → "DARE", "detail" → "CONCAT", etc.
+# --- Group Apply Modes -----------------------------------------------------
+# Persisted per-group (not per-LoRA): "character" -> "DARE", "detail" -> "CONCAT", etc.
 # Stored in uls_group_modes.json next to uls_groups.json. Valid modes: SEQ/CONCAT/DARE.
 
 _GROUP_MODES_FILE = None
@@ -409,10 +351,10 @@ def _save_group_modes(data: dict):
         with open(f, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"[ULS] ⚠ Failed to save group modes: {e}")
+        print(f"[ULS] \u26a0 Failed to save group modes: {e}")
 
 async def handle_group_modes_get(request: web.Request) -> web.Response:
-    """Return all group→mode mappings."""
+    """Return all group->mode mappings."""
     return web.json_response(_load_group_modes())
 
 async def handle_group_modes_set(request: web.Request) -> web.Response:
@@ -422,8 +364,8 @@ async def handle_group_modes_set(request: web.Request) -> web.Response:
         body = await request.json()
         group = (body.get("group") or "").strip()
         mode  = (body.get("mode")  or "").strip().upper()
-        if not group or group == "—":
-            return web.Response(status=400, text="Group missing or '—' (no mode applies)")
+        if not group or group == "\u2014":
+            return web.Response(status=400, text="Group missing or '\u2014' (no mode applies)")
         if mode and mode not in _VALID_MODES:
             return web.Response(status=400, text=f"Invalid mode: {mode}")
         modes = _load_group_modes()
@@ -444,7 +386,7 @@ async def handle_civitai_fetch(request: web.Request) -> web.Response:
 
     Fully async: the Civitai API call and preview download run through aiohttp
     so they never block ComfyUI's event loop (the old urllib.urlopen path froze
-    the whole server — websocket, queue, every client — for up to ~25 s).
+    the whole server -- websocket, queue, every client -- for up to ~25 s).
     The small local file ops (safetensors header read, image/JSON write) stay
     synchronous; they are negligible compared to the network round-trips."""
     import struct
@@ -467,7 +409,7 @@ async def handle_civitai_fetch(request: web.Request) -> web.Response:
                 if len(header8) < 8:
                     return web.json_response({"ok": False, "error": "Not a valid safetensors file (truncated header)"})
                 length = struct.unpack("<Q", header8)[0]
-                # v267 (audit A-1): same 50 MB header cap as _read_meta — a corrupt
+                # v267 (audit A-1): same 50 MB header cap as _read_meta -- a corrupt
                 # or malicious local file must not trigger a giant allocation.
                 if length <= 0 or length > 50 * 1024 * 1024:
                     return web.json_response({"ok": False, "error": "Safetensors header invalid or oversized"})
@@ -480,7 +422,7 @@ async def handle_civitai_fetch(request: web.Request) -> web.Response:
         if not model_hash:
             return web.json_response({"ok": False, "error": "No sshs_model_hash in safetensors header"})
 
-        # v347: the hash is interpolated into a URL path below — accept only hex
+        # v347: the hash is interpolated into a URL path below -- accept only hex
         # (SHA256 or the shorter AutoV2 hash) so a crafted header value cannot
         # manipulate the outgoing request URL.
         if not re.fullmatch(r"[0-9a-fA-F]{8,64}", model_hash):
@@ -490,7 +432,7 @@ async def handle_civitai_fetch(request: web.Request) -> web.Response:
         api_url = f"https://civitai.com/api/v1/model-versions/by-hash/{model_hash}"
 
         async with aiohttp.ClientSession(headers=ua) as session:
-            # 2. Query Civitai API (async — no event-loop blocking)
+            # 2. Query Civitai API (async -- no event-loop blocking)
             try:
                 async with session.get(
                         api_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -515,7 +457,7 @@ async def handle_civitai_fetch(request: web.Request) -> web.Response:
             # 5. Download first preview image (async)
             preview_saved = False
             images = civ_data.get("images", [])
-            # v267 (audit A-2): filter-strict — no fallback past the NSFW filter.
+            # v267 (audit A-2): filter-strict -- no fallback past the NSFW filter.
             preview_url = _pick_preview_url(images)
 
             if preview_url:
@@ -529,7 +471,7 @@ async def handle_civitai_fetch(request: web.Request) -> web.Response:
                             f.write(img_bytes)
                         preview_saved = True
                 except Exception as e:
-                    print(f"[ULS] ⚠ Preview download failed: {e}")
+                    print(f"[ULS] \u26a0 Preview download failed: {e}")
 
         # 6. Persist via the shared canonical writer (same file the Stack
         #    backend and /uls/metadata read; migrates any legacy file).
@@ -561,7 +503,7 @@ def register_routes():
     try:
         app = PromptServer.instance.app
     except Exception as e:
-        print(f"[ULS] ⚠ PromptServer not available: {e}")
+        print(f"[ULS] \u26a0 PromptServer not available: {e}")
         return
 
     routes = [
@@ -576,11 +518,11 @@ def register_routes():
         ("POST", "/uls/group_modes",   handle_group_modes_set),
         ("POST", "/uls/civitai_fetch", handle_civitai_fetch),
     ]
-    # ── Register each route under BOTH the bare path and the /api-prefixed path
+    # -- Register each route under BOTH the bare path and the /api-prefixed path
     #
     # Why: ComfyUI's frontend helpers (api.fetchApi / api.apiURL) now prefix
-    # every call with "/api" (frontend ≥ ~1.4x). Routes added directly via
-    # app.router.add_route — i.e. NOT through the PromptServer RouteTableDef —
+    # every call with "/api" (frontend >= ~1.4x). Routes added directly via
+    # app.router.add_route -- i.e. NOT through the PromptServer RouteTableDef --
     # do not receive that "/api" alias automatically, so a frontend asking for
     # "/api/uls/list" hits nothing and gets a 404 with an empty body, which the
     # UI reports as "Could not load LoRA list: unexpected end of data".
@@ -595,5 +537,5 @@ def register_routes():
                 app.router.add_route(method, p, handler)
                 registered += 1
             except Exception as e:
-                print(f"[ULS] ⚠ could not add route {method} {p}: {e}")
-    print(f"[ULS] ✓ API routes registered (root + /api alias, {registered} paths)")
+                print(f"[ULS] \u26a0 could not add route {method} {p}: {e}")
+    print(f"[ULS] \u2713 API routes registered (root + /api alias, {registered} paths)")

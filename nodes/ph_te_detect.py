@@ -107,6 +107,11 @@ _LOCAL_RULES = (
     ("encoder.block.0.layer.0.SelfAttention.k.weight", None, "t5_base"),
     ("model.layers.0.self_attn.k_proj.bias", 256, "qwen25_3b"),
     ("model.layers.0.self_attn.k_proj.bias", 512, "qwen25_7b"),
+    # v1078: Qwen3-VL (the Qwen-Image 2.1 encoder family). Core tells 4B from
+    # 8B on the vision merger's output width; 32B is the MiniMax H3 encoder.
+    ("model.visual.merger.linear_fc2.weight", 2560, "qwen3vl_4b"),
+    ("model.visual.merger.linear_fc2.weight", 4096, "qwen3vl_8b"),
+    ("model.visual.merger.linear_fc2.weight", 5120, "qwen3vl_32b"),
 )
 
 # core TEModel enum member -> the short name we speak in recipes and messages.
@@ -118,6 +123,8 @@ _TEMODEL_NAMES = {
     "GEMMA_2_2B": "gemma2_2b", "GEMMA_3_4B": "gemma3_4b",
     "GEMMA_3_4B_VISION": "gemma3_4b_vision", "GEMMA_3_12B": "gemma3_12b",
     "QWEN25_3B": "qwen25_3b", "QWEN25_7B": "qwen25_7b",
+    "QWEN3VL_4B": "qwen3vl_4b", "QWEN3VL_8B": "qwen3vl_8b",   # v1078
+    "QWEN3VL_32B": "qwen3vl_32b",
     "BYT5_SMALL_GLYPH": "byt5_small", "JINA_CLIP_2": "jina_clip_2",
 }
 

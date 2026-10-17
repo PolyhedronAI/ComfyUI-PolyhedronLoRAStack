@@ -56,6 +56,11 @@ TYPE_SPEC = {
     # frontend greying behave. The REAL builder is the minimax_* arithmetic
     # below -- temporal_div 0 is a MARKER that this row cannot pack frames.
     "minimax_h3": (24, 16, True, 0),
+    # v1078: Qwen-Image 2.1 -- MEASURED in core master comfy/latent_formats.py
+    # (class QwenImage21: latent_channels 64, spacial_downscale_ratio 16; the
+    # VAE is a Wan-2.2-layout image VAE with temporal kernel 1, RGBA). Core
+    # 7a131a3a (pin) has no such model; the row is geometry only.
+    "qwen_image21": (64, 16, False, 0),
     "flux2":   (128, 16, False, 0),  # MEASURED in the field (v679 run): a
                                      # 1440x1440 decode carried a
                                      # (1, 128, 90, 90) latent -- 128 channels,
@@ -77,7 +82,7 @@ CORE_DELEGATES = {
 # APPEND-ONLY: existing labels are never renamed (the combo serializes the
 # label VALUE into workflows); new families join at the end.
 TYPE_ORDER = ["image", "wan", "hunyuan", "mochi", "ltxv", "cosmos",
-              "sd", "flux2", "minimax_h3"]
+              "sd", "flux2", "minimax_h3", "qwen_image21"]
 TYPE_LABELS = {
     "image":   "Image",
     "wan":     "WAN video",
@@ -88,6 +93,7 @@ TYPE_LABELS = {
     "sd":      "SD/SDXL image",
     "flux2":   "Flux2 image",
     "minimax_h3": "MiniMax H3 AV (video+audio)",
+    "qwen_image21": "Qwen-Image 2.1 image (64ch)",
 }
 LATENT_TYPE_LABELS = [TYPE_LABELS[k] for k in TYPE_ORDER]
 LABEL_TO_KEY = {TYPE_LABELS[k]: k for k in TYPE_ORDER}
@@ -100,6 +106,7 @@ ALIASES = {
     # at 16 channels, which was wrong without a wired VAE).
     "flux": "image", "sd3": "image",
     "qwen": "image", "qwen_image": "image", "qwen_edit": "image", "chroma": "image",
+    "qwen_image_2.1": "qwen_image21", "qwen21": "qwen_image21", "QwenImage21": "qwen_image21",
     "sdxl": "sd", "sd15": "sd", "sd21": "sd",
     "hunyuan_video": "hunyuan", "ltx": "ltxv", "ltx_video": "ltxv",
 }

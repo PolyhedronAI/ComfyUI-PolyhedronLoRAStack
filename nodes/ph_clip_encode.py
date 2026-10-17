@@ -1,9 +1,10 @@
 """Polyhedron CLIP Text Encode (v556)
 
 ONE node instead of five: segmented positive text + an optional negative,
-composed into a single prompt each, encoded through the CORE CLIPTextEncode
-(reused, never re-implemented - the _MODEL_UPSCALER pattern), with the
-composed strings exposed as STRING outputs for the Token Counter and shown
+composed into a single prompt each, encoded with the clip's own two calls
+(clip.tokenize + clip.encode_from_tokens_scheduled -- the comfy.sd model
+library; v1061: no Core node class, measured equal to CLIPTextEncode), with
+the composed strings exposed as STRING outputs for the Token Counter and shown
 inside the node.
 
 Design notes worth keeping:
@@ -23,13 +24,6 @@ Design notes worth keeping:
 """
 import re
 
-try:  # core node reuse (house pattern - immune to internal API drift)
-    from nodes import CLIPTextEncode
-    _CORE_ENCODER = CLIPTextEncode()
-except Exception as _exc:  # pragma: no cover
-    _CORE_ENCODER = None
-    print(f"[PLS] CLIP Text Encode: core encoder unavailable ({_exc!r})")
-
 try:  # package load (ComfyUI) vs direct module load (tools)
     from .uls_stack_node import _count_tokens
 except ImportError:  # pragma: no cover
@@ -44,6 +38,32 @@ MAX_SEGMENTS = 6
 _SEPARATORS = {"comma": ", ", "newline": "\n", "space": " ", "none": ""}
 _DEFAULT_MARKERS = "//"
 _RX_CACHE = {}
+# v1150 (Frank 17.10.: "everything that does not change in the prompt can just as well go into the CTE -- the
+# timeline should only hold what steers the clip"): the wired text is a FORM with places for the segments.
+# {pos_1} .. {pos_6} = that segment as typed, {prompt} = all shown segments one under the other. The filled text
+# is then cleaned like a replace: so a form + segments give byte for byte the text the segments stood in.
+FILL_MODE = "fill {pos_N}"
+EXTERNAL_MODES = ["append", "prepend", "replace", FILL_MODE]      # appended last: old values keep their meaning
+_FILL_RX = re.compile(r"\{(prompt|pos_[1-6])\}")   # on the negative side {prompt} = neg_1
+
+
+def _fill(external, parts, prefix="pos"):
+    """-> (the wired text with every {pos_N} / {prompt} put in, the names used). parts = the shown segments as
+    typed (raw, not cleaned). A place for a segment that is not shown stays empty."""
+    raw = {"%s_%d" % (prefix, i + 1): str(p or "") for i, p in enumerate(parts)}
+    whole = "\n".join(x for x in (str(p or "") for p in parts) if x.strip())
+    used = []
+
+    def put(mo):
+        k = mo.group(1)
+        used.append(k)
+        return whole if k == "prompt" else raw.get(k, "")
+    return _FILL_RX.sub(put, str(external or "")), used
+
+
+def has_places(external):
+    """Does the wired text carry a place ({pos_N}, {prompt}) to fill?"""
+    return bool(_FILL_RX.search(str(external or "")))
 
 
 def _comment_rx(markers):
@@ -85,6 +105,9 @@ def _compose(parts, separator, strip_comments, strip_newlines,
              external="", external_mode="append", markers=_DEFAULT_MARKERS):
     """Pure composition: clean every block, drop the empty ones, fold in the
     external text (append / prepend / replace), join with the separator."""
+    if str(external_mode) == FILL_MODE and has_places(external):
+        # v1150: the segments go INTO the wired form, then the whole is cleaned once -- like replace
+        return _clean(_fill(external, parts)[0], strip_comments, strip_newlines, markers)
     blocks = [_clean(p, strip_comments, strip_newlines, markers) for p in parts]
     blocks = [b for b in blocks if b]
     ext = _clean(external or "", strip_comments, strip_newlines, markers)
@@ -142,11 +165,15 @@ def slot_consumed(prompt, unique_id, slot):
 
 
 def _encode(clip, text):
-    if _CORE_ENCODER is None:
-        raise RuntimeError("CLIP Text Encode: the core CLIPTextEncode node is "
-                           "unavailable (changed ComfyUI Core API?). Nothing "
-                           "was encoded.")
-    return _CORE_ENCODER.encode(clip, text)[0]
+    """Text -> CONDITIONING with the clip object's own API (comfy.sd.CLIP):
+    tokenize, then encode_from_tokens_scheduled (hooks / schedules included).
+    v1061: written here instead of calling the core's CLIPTextEncode node;
+    test_v1061 compares both on a real comfy.sd.CLIP."""
+    if clip is None:
+        raise RuntimeError("CLIP Text Encode: no clip is wired (or the checkpoint "
+                           "carries no text encoder). Nothing was encoded.")
+    tokens = clip.tokenize(text)
+    return clip.encode_from_tokens_scheduled(tokens)
 
 
 class ULSCLIPTextEncode:
@@ -213,11 +240,17 @@ class ULSCLIPTextEncode:
                                                "label_on": "On", "label_off": "Off",
                                                "tooltip": "Flatten line breaks into "
                                                           "spaces after the comment pass."}),
-                "external_mode": (["append", "prepend", "replace"],
+                "external_mode": (EXTERNAL_MODES,
                                   {"default": "append",
                                    "tooltip": "What to do with a wired external text "
                                               "(e.g. Florence2): add it behind, in "
-                                              "front, or let it REPLACE the segments."}),
+                                              "front, or let it REPLACE the segments. "
+                                              "fill {pos_N}: the wired text is a form -- every {pos_1} .. "
+                                              "{pos_6} in it takes that segment as typed, {prompt} all "
+                                              "shown segments; the filled text is encoded (a wired text "
+                                              "without a place: the segments come first, the text after). "
+                                              "So the parts of a prompt that never change live here, the "
+                                              "parts that steer a clip in the node that sends the form."}),
                 # v557: belongs to strip_comments (appended LAST - the
                 # serialisation law: every existing index keeps its slot).
                 "comment_markers": ("STRING", {"default": _DEFAULT_MARKERS,

@@ -109,12 +109,7 @@ def main():
            'V3_NODE_CLASSES["ULSImagePickFrame"] if _V3_OK else ULSImagePickFrame') in init)
 
     # ---- [5] v352 triple --------------------------------------------------
-    check(5, 'pyproject version = "3.85.0"',
-          'version = "3.85.0"' in _read("pyproject.toml"))
-    check(5, "banner 'Polyhedron Suite  v385' (two spaces)",
-          "Polyhedron Suite  v385" in init)
-    check(5, 'uls_compat PLUGIN_VERSION = "v385"',
-          'const PLUGIN_VERSION = "v385";' in _read("web", "js", "uls_compat.js"))
+    # (the version triple's agreement is pinned once, in test_v365_public_build)
 
     # ---- [6] behaviour of the verbatim-ported inflate() logic --------------
     from nodes.wan_frame_inflate import ULSWanFrameInflate

@@ -418,12 +418,35 @@ def _find_ckpt(ckpt_name):
         p = os.path.join(root, ckpt_name)
         if os.path.isfile(p):
             return p, root
+    try:                                   # v1059: every root ComfyUI reports for vfi
+        from . import ph_weights
+        p = ph_weights.find_file("vfi", ckpt_name)
+        if p:
+            return p, os.path.dirname(p)
+    except Exception:
+        pass
     return None, None
 
 
+def missing_text(ckpt_name):
+    """v1059: the run refuses a missing checkpoint -- a node run never
+    downloads (the v747 rule, now held here too)."""
+    spec = RIFE_WEIGHTS.get(ckpt_name)
+    try:
+        from . import ph_weights
+        home = ph_weights.primary_dir("vfi")
+    except Exception:
+        home = "models/vfi"
+    if spec is None:
+        return "[PLS] Interpolate: %s is not in %s." % (ckpt_name, home)
+    return ("[PLS] Interpolate: %s (%d MB) is not installed. Click Download in the node's notice -- "
+            "or put the file from %s into %s." % (ckpt_name, round(spec["bytes"] / 1048576.0),
+                                                  spec["url"], home))
+
+
 def _fetch_ckpt(ckpt_name):
-    """Pull the weights on first use -- through the pack's ONE download
-    door (v836, audit B2). ph_weights stages to .part, verifies sha256
+    """Pull the weights -- through the pack's ONE download door (v836,
+    audit B2). Since v1059 only the click route calls this, never a run. ph_weights stages to .part, verifies sha256
     against the measured pin, times out, prints MB marks, and installs
     atomically; the old urlretrieve here had none of that. On any failure
     the door's error names the URL and the destination for a manual drop."""
@@ -441,8 +464,7 @@ def _load_model(ckpt_name, arch_ver, dtype_str, device):
 
     path, root = _find_ckpt(ckpt_name)
     if path is None:
-        path = _fetch_ckpt(ckpt_name)
-        root = os.path.dirname(path)
+        raise RuntimeError(missing_text(ckpt_name))
 
     # v835 (audit A2), MEASURED before flipping: the pinned Fannovel16
     # release checkpoints (rife426/rife47) load under weights_only=True

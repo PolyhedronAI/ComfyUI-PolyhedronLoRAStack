@@ -271,18 +271,17 @@ def expand_filename_tokens(prefix, width=0, height=0, now=None):
     s = s.replace("%width%", str(int(width))).replace("%height%", str(int(height)))
 
     def _repl(m):
-        tok = m.group(1)
-        if tok.startswith("date:"):
-            fmt = tok[5:]
-            for a, b in _DATE_MAP:
-                fmt = fmt.replace(a, b)
-            try:
-                return now.strftime(fmt)
-            except Exception:
-                return ""
-        return m.group(0)                      # leave non-date tokens for the core
+        fmt = m.group(1)
+        for a, b in _DATE_MAP:
+            fmt = fmt.replace(a, b)
+        try:
+            return now.strftime(fmt)
+        except Exception:
+            return ""
 
-    return _re2.sub(r"%([^%]+)%", _repl, s)
+    # v1154 (audit): only %date:...% -- a generic %...% pair took "%_%" out of "100%_%date:yy%" and left the date
+    # token literal (ComfyUI's own expander matches %date:(.*?)% the same way)
+    return _re2.sub(r"%date:([^%]*)%", _repl, s)
 
 
 def sanitize_prefix(prefix, width=0, height=0, now=None):

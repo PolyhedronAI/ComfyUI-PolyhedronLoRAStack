@@ -47,11 +47,15 @@ if not m:
     _fail("P2 TAE_REGISTRY has no taeh3 entry")
 ent = m.group(1)
 for want in ('"file": "taeh3.safetensors"',
-             'madebyollin/taehv/"', 'main/safetensors/taeh3.safetensors',
+             'github.com/madebyollin/taehv, folder safetensors/',
              '"4fd022bfcab08772fe0536b17ea1a3bb"', '"b5625be11e397868d1c5d891863d4c13"',
              '"bytes": 22709752'):
     if want not in ent:
         _fail("P2 registry entry lacks " + want)
+# v1059: no download address -- the only source was a repository file view,
+# which the registry scanner flags. The file is placed by hand.
+if '"url"' in ent or "raw.githubusercontent" in ent:
+    _fail("P2 taeh3 must carry no url since v1059 (placed by hand)")
 
 for want in ('MODE_TAE_H3 = "Video · TAE (taeh3)"',
              'TAE_MODES = (MODE_TAE_STD, MODE_TAE_LIGHT, MODE_TAE_H3)',

@@ -28,13 +28,11 @@ Routes (14), each registered under the bare path AND the /api alias:
 """
 
 import os
-import json
 import time
 import asyncio
 import shutil
 import subprocess
 import mimetypes
-import re
 
 import folder_paths
 from aiohttp import web
@@ -61,7 +59,7 @@ def _hint_cv2_once(what):
         return
     _CV2_HINTED[0] = True
     print(f"[PLS] Media: {what} needs opencv-python, which ComfyUI does not "
-          f"bundle. Install it (pip install opencv-python) to enable video "
+          f"bundle. Adding the opencv-python package to ComfyUI's Python enables video "
           f"thumbnails and the dimension probe. Everything else works without it.")
 
 def _within(parent: str, child: str) -> bool:
@@ -72,7 +70,10 @@ def _within(parent: str, child: str) -> bool:
     try:
         rp = os.path.realpath(parent)
         rc = os.path.realpath(child)
-        return rc == rp or rc.startswith(rp + os.sep)
+        # v1154 (audit): a drive root ("/", "D:\\") already ends in the separator -- rp + os.sep never matched,
+        # a media folder pinned at D:\ answered 404
+        base = rp if rp.endswith(os.sep) else rp + os.sep
+        return rc == rp or rc.startswith(base)
     except Exception:
         return False
 
@@ -100,15 +101,15 @@ def _cleanup_names(out_dir: str, names) -> None:
             pass
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Media Loader (ULSMediaLoader) — server-side folder browser + thumbnail/list +
+# --------------------------------------------------------------------------
+# Media Loader (ULSMediaLoader) -- server-side folder browser + thumbnail/list +
 # upload routes. The node UI (web/js/ph_media_loader.js) drives these so the user
 # can pin ANY local folder, see a thumbnail grid, and upload files. The pinned
 # folder is an absolute path the user navigated to; this is a LOCAL tool, so
 # browsing the machine's filesystem is intentional. A thumb/upload target is
 # realpath-checked to resolve inside its stated folder (_within), and uploads
 # keep the streaming byte cap.
-# ──────────────────────────────────────────────────────────────────────────
+# --------------------------------------------------------------------------
 # v377: these were literal tuples duplicating ph_media_loader's, kept in
 # lock-step by comment only -- the drift issue #4 walked into. The law now
 # lives in ph_media_util and both sides read it.
@@ -164,7 +165,7 @@ def _safe_media_name(filename: str) -> str:
     extension, else fall back to .png. Mirrors _safe_companion_name's defense.
 
     v661 (B-03): audio was missing from the whitelist, so an uploaded/dropped
-    .m4a was renamed to .png — the extension-driven kind detection then routed
+    .m4a was renamed to .png -- the extension-driven kind detection then routed
     an AAC file into the image path (black preview, no audio pairing possible).
     Audio has been a first-class browsable kind since v457, so its extensions
     belong here too."""
@@ -207,7 +208,7 @@ def _media_names_in(rp, cap=60):
     return names[:cap], total
 
 
-# ── v367: LAN browse lock (internal v840; audit B1 -- opt-in flag) ───────────
+# -- v367: LAN browse lock (internal v840; audit B1 -- opt-in flag) -----------
 # These routes anchor on a CLIENT-supplied folder/path. On the default
 # localhost bind that is the feature (browse anywhere); bound to the LAN
 # (--listen) it would let every client on the network read arbitrary
@@ -215,7 +216,7 @@ def _media_names_in(rp, cap=60):
 # Local behaviour stays untouched; under a non-local bind the path-anchored
 # routes refuse with 403 unless ULS_ALLOW_LAN_BROWSE=1 opens them
 # deliberately. Own copy on purpose -- this module imports nothing from the
-# stack side (MAINTAINING.md rule 1).
+# stack side.
 _LAN_BROWSE_ENV = "ULS_ALLOW_LAN_BROWSE"
 
 
@@ -287,7 +288,7 @@ async def handle_media_folders(request: web.Request) -> web.Response:
 def _media_img_dims(path):
     """(w, h) for an image via a Pillow *header* read (no full decode), corrected
     for EXIF orientation so it matches the loader's exif_transpose. (None, None)
-    on any error / Pillow missing — dimensions are best-effort, never fatal."""
+    on any error / Pillow missing -- dimensions are best-effort, never fatal."""
     try:
         from PIL import Image
         from .ph_media_util import oriented_size
@@ -303,11 +304,11 @@ def _media_img_dims(path):
 
 
 def _media_vid_dims(path):
-    """(w, h, fps) for a video via an OpenCV *header* probe — reads the frame-size
+    """(w, h, fps) for a video via an OpenCV *header* probe -- reads the frame-size
     and fps properties WITHOUT decoding a frame. Uses the FFMPEG backend so the
     reported width matches the loader's own decode (v394: Windows MSMF can pad the
     width, e.g. 720->728). v625: fps rides along for the frontend's fixed-length
-    trim (frame counts are native-fps counts — the very fps _slice_frames cuts
+    trim (frame counts are native-fps counts -- the very fps _slice_frames cuts
     with). (None, None, None) if cv2 is missing or the probe fails."""
     try:
         import cv2  # opencv-python (optional, same dep as the thumb/video decode)
@@ -419,6 +420,36 @@ async def handle_media_list(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": str(e), "files": []}, status=500)
 
 
+def _thumb_bytes(path, kind):
+    """-> (200, jpeg bytes) or (404, why) -- the thumbnail of one image / video's first frame."""
+    try:
+        import io as _io
+        from PIL import Image, ImageOps
+        if kind == "image":
+            img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+        elif kind == "video":
+            try:
+                import cv2  # opencv-python (optional; core does not bundle it)
+            except ImportError:
+                _hint_cv2_once("the video thumbnail")
+                return 404, "no cv2"
+            cap = cv2.VideoCapture(path)
+            ok, frame = cap.read()
+            cap.release()
+            if not ok:
+                return 404, "no frame"
+            img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        else:
+            return 404, "unsupported"
+        img.thumbnail((_MEDIA_THUMB_PX, _MEDIA_THUMB_PX))
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=82)
+        return 200, buf.getvalue()
+    except Exception as e:
+        # Pillow/cv2 missing or a decode error -> let the UI show its placeholder.
+        return 404, "thumb error: %s" % e
+
+
 async def handle_media_thumb(request: web.Request) -> web.Response:
     """GET ?folder=&file= -> a downscaled JPEG thumbnail. Images via Pillow; a
     video's first frame via OpenCV. 404 if no thumbnail can be made (the UI then
@@ -434,33 +465,12 @@ async def handle_media_thumb(request: web.Request) -> web.Response:
     if not _within(folder, path) or not os.path.isfile(path):
         return web.Response(status=404, text="not found")
     kind = _media_kind(file)
-    try:
-        import io as _io
-        from PIL import Image, ImageOps
-        if kind == "image":
-            img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
-        elif kind == "video":
-            try:
-                import cv2  # opencv-python (optional; core does not bundle it)
-            except ImportError:
-                _hint_cv2_once("the video thumbnail")
-                return web.Response(status=404, text="no cv2")
-            cap = cv2.VideoCapture(path)
-            ok, frame = cap.read()
-            cap.release()
-            if not ok:
-                return web.Response(status=404, text="no frame")
-            img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        else:
-            return web.Response(status=404, text="unsupported")
-        img.thumbnail((_MEDIA_THUMB_PX, _MEDIA_THUMB_PX))
-        buf = _io.BytesIO()
-        img.save(buf, format="JPEG", quality=82)
-        return web.Response(body=buf.getvalue(), content_type="image/jpeg",
-                            headers={"Cache-Control": "no-cache"})
-    except Exception as e:
-        # Pillow/cv2 missing or a decode error -> let the UI show its placeholder.
-        return web.Response(status=404, text=f"thumb error: {e}")
+    # v1155 (audit): the decode runs in a worker thread -- a page of tiles fired one decode each on the event loop
+    # and stalled every other route (ComfyUI's /prompt too) while 4K stills or videos were opened
+    status, body = await asyncio.to_thread(_thumb_bytes, path, kind)
+    if status != 200:
+        return web.Response(status=status, text=body)
+    return web.Response(body=body, content_type="image/jpeg", headers={"Cache-Control": "no-cache"})
 
 
 async def handle_media_file(request: web.Request) -> web.Response:
@@ -482,53 +492,17 @@ async def handle_media_file(request: web.Request) -> web.Response:
     if not mime:
         # v457: keep audio Content-Type honest when the OS mimetypes DB is thin.
         mime = _AUDIO_MIME.get(os.path.splitext(path)[1].lower(), "application/octet-stream")
-    file_size = os.path.getsize(path)
-
-    range_header = request.headers.get("Range", "")
-    if range_header.startswith("bytes="):
-        try:
-            start_str, end_str = range_header[6:].split("-", 1)
-            if not start_str and end_str:          # RFC-7233 suffix range bytes=-N
-                n_suffix = int(end_str)
-                start = max(0, file_size - n_suffix) if n_suffix > 0 else file_size
-                end = file_size - 1
-            else:
-                start = int(start_str) if start_str else 0
-                end = int(end_str) if end_str else file_size - 1
-            end = min(end, file_size - 1)
-            if start < 0 or start > end or start >= file_size:
-                return web.Response(status=416,
-                                    headers={"Content-Range": f"bytes */{file_size}"},
-                                    text="Requested Range Not Satisfiable")
-            length = end - start + 1
-            with open(path, "rb") as f:
-                f.seek(start)
-                data = f.read(length)
-            return web.Response(status=206, body=data, content_type=mime,
-                                headers={"Content-Range": f"bytes {start}-{end}/{file_size}",
-                                         "Accept-Ranges": "bytes",
-                                         "Content-Length": str(length),
-                                         "Cache-Control": "no-cache"})
-        except (ValueError, OSError):
-            pass  # fall back to full response
-
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-        return web.Response(body=data, content_type=mime,
-                            headers={"Accept-Ranges": "bytes",
-                                     "Content-Length": str(file_size),
-                                     "Cache-Control": "no-cache"})
-    except OSError as e:
-        return web.Response(status=500, text=f"read error: {e}")
+    # v1155 (audit): FileResponse answers Range itself and streams -- the hand-made reader read a whole clip into
+    # RAM on the event loop for a browser's first "bytes=0-" (again on every hover-play)
+    return web.FileResponse(path, headers={"Content-Type": mime, "Cache-Control": "no-cache"})
 
 
 # v437: PowerShell for the NATIVE folder pick. Primary path = the modern Common Item
-# Dialog (IFileOpenDialog) with FOS_PICKFOLDERS — the Explorer-style picker (breadcrumb
+# Dialog (IFileOpenDialog) with FOS_PICKFOLDERS -- the Explorer-style picker (breadcrumb
 # + search box) that returns an absolute filesystem path. If the COM interop is
 # unavailable for any reason the catch falls back to the original FolderBrowserDialog
 # (older tree look, but always present on Windows), so there is never a regression.
-# NOTE: this is LIVE-only verifiable — it needs Windows + PowerShell, which the build
+# NOTE: this is LIVE-only verifiable -- it needs Windows + PowerShell, which the build
 # sandbox does not have. The gate tests assert its STRUCTURE (interop + fallback), not
 # its on-screen behaviour.
 # v448: bring an EXISTING Explorer window for a folder to the foreground (or open a
@@ -692,11 +666,11 @@ async def handle_media_native_pick(request: web.Request) -> web.Response:
     """Open a NATIVE OS folder-picker on the machine running ComfyUI and return the
     chosen absolute path. This is a LOCAL-tool feature: the dialog appears on the
     server's desktop (= the user's own screen for a local ComfyUI). Windows opens the
-    modern Common Item Dialog (IFileOpenDialog, FOS_PICKFOLDERS — Explorer look), with
+    modern Common Item Dialog (IFileOpenDialog, FOS_PICKFOLDERS -- Explorer look), with
     the older PowerShell FolderBrowserDialog as a no-regression fallback; other
     platforms try tkinter (needs a display). Returns {ok, path} on a pick,
     {ok:false, cancelled:true} on cancel, or {ok:false, reason:...} when no native
-    dialog can be opened — the frontend then falls back to the list/recent/paste."""
+    dialog can be opened -- the frontend then falls back to the list/recent/paste."""
     _deny = _lan_deny(request)          # v367: LAN browse lock (audit B1)
     if _deny is not None:
         return _deny
@@ -794,7 +768,7 @@ async def handle_media_upload(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "folder": rp, "names": saved})
 
 
-# ─── Media Loader: sequence library (v443) ──────────────────────
+# --- Media Loader: sequence library (v443) ----------------------
 # Build clean, ordered image sequences WITHOUT mutating originals, and keep them
 # permanently. Every built sequence is a NAMED, persistent folder under one fixed
 # library root, "<output>/PLS_sequences/<name>/", filled with 00001.ext, ... .
@@ -938,25 +912,29 @@ async def handle_media_seq_build(request: web.Request) -> web.Response:
     if os.path.isdir(target) and not overwrite:
         return web.json_response({"ok": False, "exists": True, "name": name,
                                   "error": f'sequence "{name}" already exists'})
-    try:
+    from .ph_media_util import renumbered_targets
+
+    def _build():
+        # v1155 (audit): the clear and the copy loop run in a worker thread -- a long sequence held the event loop
         os.makedirs(lib, exist_ok=True)
         if os.path.isdir(target):
             shutil.rmtree(target)          # overwrite -> fresh rebuild
         os.makedirs(target, exist_ok=True)
+        out = []
+        for src_name, dst_name in renumbered_targets(selected):
+            dst = os.path.join(target, dst_name)
+            if not _within(target, dst):
+                continue
+            try:
+                shutil.copy2(os.path.join(rs, src_name), dst)
+                out.append(dst_name)
+            except OSError:
+                continue
+        return out
+    try:
+        written = await asyncio.to_thread(_build)
     except OSError as e:
         return web.json_response({"ok": False, "error": f"cannot prepare folder: {e}"}, status=500)
-
-    from .ph_media_util import renumbered_targets
-    written = []
-    for src_name, dst_name in renumbered_targets(selected):
-        dst = os.path.join(target, dst_name)
-        if not _within(target, dst):
-            continue
-        try:
-            shutil.copy2(os.path.join(rs, src_name), dst)
-            written.append(dst_name)
-        except OSError:
-            continue
     print(f"[PLS] MediaLoader: built sequence '{name}' ({len(written)} frame(s)) -> {target}")
     return web.json_response({"ok": True, "name": name, "path": target, "count": len(written)})
 
@@ -979,7 +957,7 @@ async def handle_media_seq_delete(request: web.Request) -> web.Response:
     if not os.path.isdir(target):
         return web.json_response({"ok": True, "name": name, "removed": False, "note": "nothing to delete"})
     try:
-        shutil.rmtree(target)
+        await asyncio.to_thread(shutil.rmtree, target)   # v1155 (audit): off the event loop
     except OSError as e:
         return web.json_response({"ok": False, "error": f"delete failed: {e}"}, status=500)
     print(f"[PLS] MediaLoader: deleted sequence '{name}' -> {target}")
@@ -1019,7 +997,7 @@ async def handle_media_locate(request: web.Request) -> web.Response:
     v665: the drag&drop pin path for browsers that hide the origin of an OS file
     drop. The browser still hands out the file's NAME, byte SIZE and MTIME; this
     checks that triple against the CANDIDATE folders the frontend supplies (the
-    node's recents + current pin + input) — never a disk-wide search. Rules:
+    node's recents + current pin + input) -- never a disk-wide search. Rules:
       exactly one folder holds a file matching name AND size (mtime within 2 s,
       tolerating FAT/exFAT's 2-second stamps and timezone-less copies) -> that hit;
       several folders match -> {'reason': 'ambiguous'} (an honest refusal beats a
@@ -1043,7 +1021,7 @@ async def handle_media_locate(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "need name, size, folders"}, status=400)
     if not _media_kind(name):
         return web.json_response({"ok": False, "reason": "not_media"})
-    # input/ is always a candidate — a previously copied file re-locates there.
+    # input/ is always a candidate -- a previously copied file re-locates there.
     try:
         folders = list(folders) + [os.path.realpath(folder_paths.get_input_directory())]
     except Exception:
@@ -1133,6 +1111,9 @@ async def handle_media_proc_count(request: web.Request) -> web.Response:
     node's exact total -- the "Run all" button queues precisely this many runs and
     the sweep stops on its own. The scan runs in a worker thread so os.scandir never
     blocks the event loop (mirrors handle_media_list)."""
+    _deny = _lan_deny(request)          # v1154 (audit): it lists any client-given folder -- LAN lock
+    if _deny is not None:
+        return _deny
     folder = (request.query.get("folder", "") or "").strip()
     sort_mode = (request.query.get("sort", "") or "name (natural)")
     name_filter = (request.query.get("filter", "") or "*") or "*"

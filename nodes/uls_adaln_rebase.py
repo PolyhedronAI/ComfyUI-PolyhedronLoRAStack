@@ -164,8 +164,6 @@ def rebase_lora_adaln(sd, c, V, log=None):
     Returns (new dict, count). Modules that are already narrow, or that carry
     no matching factor pair, are left exactly as they are.
     """
-    import torch
-
     dense = int(c.shape[0])
     k = int(V.shape[1])
     out = dict(sd)

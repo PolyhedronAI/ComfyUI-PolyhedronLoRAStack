@@ -87,8 +87,11 @@ CLIP_PH = "\u2014 none \u2014"
 # The canon, restated here ON PURPOSE: this is the contract with every workflow
 # already on disk. If ph_basics.py's INPUT_TYPES order ever changes, this guard
 # must fail rather than quietly follow along.
+# v1077 (DECLARED): the canon GREW by one appended entry, weight_dtype. An
+# append at the END is the one edit #577 allows -- every older slot keeps its
+# index. The guard carries the append so it keeps checking the old positions.
 EXPECTED_CANON = ["clip_name", "type", "device",
-                  "clip_name_2", "clip_name_3", "clip_name_4"]
+                  "clip_name_2", "clip_name_3", "clip_name_4", "weight_dtype"]
 
 
 def _harness(js):
@@ -193,7 +196,7 @@ def check_round_trip(js):
 const out = {};
 // values a workflow saved by an OLDER version would hold, in CANON order
 const onDisk = ["umt5.safetensors", "flux", "cpu",
-                "clip_l.safetensors", "%s", "%s"];
+                "clip_l.safetensors", "%s", "%s", "default"];
 
 // (1) load it the way the frontend does -- rows are still CANON at this point
 const node = mkNode(true);
@@ -231,7 +234,7 @@ console.log(JSON.stringify(out));
     res = json.loads(_run_js(script))
 
     on_disk = ["umt5.safetensors", "flux", "cpu",
-               "clip_l.safetensors", CLIP_PH, CLIP_PH]
+               "clip_l.safetensors", CLIP_PH, CLIP_PH, "default"]
     want = dict(zip(EXPECTED_CANON, on_disk))
 
     if res["orderAtLoad"][:len(EXPECTED_CANON)] != EXPECTED_CANON:

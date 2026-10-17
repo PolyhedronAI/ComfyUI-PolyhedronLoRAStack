@@ -1,23 +1,8 @@
-# Polyhedron Suite — dependencies
-# Installed automatically by ComfyUI Manager.
+# Polyhedron Suite -- dependencies
 #
-# Note: the loaded nodes themselves need NEITHER Pillow NOR requests —
-# they run fine without these packages (graceful degradation; the runtime
-# Civitai fetch uses aiohttp, which ComfyUI already ships). Both packages
-# are only needed by the optional standalone CLI `uls_preview_gen.py`
-# (info-card generation + Civitai preview download outside of ComfyUI).
-
-# Optional (CLI only): preview generation (info cards as fallback)
-Pillow>=9.0.0
-
-# Optional (CLI only): Civitai API + preview download
-requests>=2.28.0
-
-# ---------------------------------------------------------------------------
-# Media Loader / Save (v362) -- still NOT required. Both nodes import these
-# lazily and fall back cleanly:
-#   opencv-python  video thumbnails in the tile grid + the dimension probe
-#   av (PyAV)      shipped by recent ComfyUI builds; only older ones need it
-#                  for video writing and alpha-mask decode
-# Install with:  pip install "polyhedron-lora-stack[media]"
-# ---------------------------------------------------------------------------
+# None required: the nodes run on what ComfyUI ships.
+#
+# Optional (each adds one feature, nothing breaks without it):
+#   opencv-python    video thumbnails in the Media Loader
+#   imageio-ffmpeg   an ffmpeg for the Cine Timeline when none is on the PATH
+#   av               PyAV -- only for old ComfyUI builds that do not ship it

@@ -42,6 +42,9 @@ def main():
     for rx in (r"_SEPARATORS = \{[^\n]*\}", r'_DEFAULT_MARKERS = "[^"]*"',
                r"_RX_CACHE = \{\}", r"def _comment_rx\(.*?\n(?=\n\ndef )",
                r"def _clean\(.*?\n(?=\n\ndef )",
+               # AMENDED v1150: _compose fills a wired form (external_mode fill {pos_N}) -- its helpers come along
+               r'FILL_MODE = "[^"]*"', r"_FILL_RX = re\.compile\([^\n]*\)",
+               r"def _fill\(.*?\n(?=\n\ndef )", r"def has_places\(.*?\n(?=\n\ndef )",
                r"def _compose\(.*?\n(?=\n\ndef )"):
         m = re.search(rx, py, re.S)
         if not m:
@@ -91,13 +94,18 @@ def main():
     if "def _count_tokens" in py or "def _heuristic" in py:
         _fail("a second token counter crept in - that is a second truth")
 
-    # ---- core encoder reuse ---------------------------------------------------
-    if "from nodes import CLIPTextEncode" not in py or \
-       "_CORE_ENCODER = CLIPTextEncode()" not in py:
-        _fail("the CORE CLIPTextEncode must be REUSED (the _MODEL_UPSCALER "
-              "pattern), never re-implemented")
-    if "encode_from_tokens" in py:
-        _fail("the encode internals must not be re-implemented")
+    # ---- the encode: the clip's own two calls ----------------------------------
+    # re-grounded v1061 (Frank: the suite calls no Core node classes, only the
+    # comfy.* model library). The promise stays "no second encoder": exactly the
+    # clip object's tokenize + encode_from_tokens_scheduled, nothing hand-rolled.
+    # test_v1061 measures the result equal to the core's CLIPTextEncode.
+    if "from nodes import" in py or "import nodes" in py:
+        _fail("a Core node class came back into the CLIP encode (v1061: none)")
+    if "tokens = clip.tokenize(text)" not in py or \
+       "return clip.encode_from_tokens_scheduled(tokens)" not in py:
+        _fail("the encode must be the clip's own tokenize + encode_from_tokens_scheduled")
+    if py.count("encode_from_tokens_scheduled(") != 1 or "encode_from_tokens(" in py:
+        _fail("one encode call only -- a second path is a second truth")
 
     # ---- contract -------------------------------------------------------------
     # v600 added a FIFTH output (full_text). The four that were here are still

@@ -91,6 +91,9 @@ async def handle_sampler_tae_install(request: web.Request) -> web.Response:
     if not name:
         return web.json_response({"ok": False, "error": "name required"},
                                  status=400)
+    from . import ph_weights as _PW
+    if _PW.download_locked():
+        return web.json_response({"ok": False, "error": _PW.download_locked_text()}, status=403)
     try:
         import asyncio
         from .uls_sampler import tae_install

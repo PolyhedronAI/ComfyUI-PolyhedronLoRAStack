@@ -12,7 +12,6 @@ helpers, deterministic Trim channel selection, and the TIES RESOLVE sign-electio
 (_resolve_sign_elect). torch is imported lazily inside the functions, exactly as
 before, so importing this module stays cheap and dependency-light.
 """
-import math
 import hashlib
 
 # ── module constants ──────────────────────────────────────────────────────

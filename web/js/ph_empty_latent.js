@@ -44,7 +44,7 @@ const NODE_TYPE = "ULSEmptyLatent";
 // greyed, so `length` DISAPPEARED in the one mode where it is the only way to
 // name a frame count. Frank saw a node that could be told seconds and nothing
 // else. The mirror is now driven against Python by test_v898.
-const LATENT_TYPES = ["Image", "WAN video", "Hunyuan video", "Mochi video", "LTXV video", "Cosmos video", "SD/SDXL image", "Flux2 image", "MiniMax H3 AV (video+audio)"];
+const LATENT_TYPES = ["Image", "WAN video", "Hunyuan video", "Mochi video", "LTXV video", "Cosmos video", "SD/SDXL image", "Flux2 image", "MiniMax H3 AV (video+audio)", "Qwen-Image 2.1 image (64ch)"];
 // Per-type latent geometry — mirrors uls_latent_math.TYPE_SPEC (spatial_div, temporal_div, video).
 const TYPE_GEOM = {
     "Image":         { sdiv: 8,  tdiv: 0, video: false },
@@ -58,6 +58,7 @@ const TYPE_GEOM = {
     // tdiv 0 is not "no time": H3's time axis is not a divisor at all, it is
     // the 17k+5 grid below. TYPE_SPEC says the same with its own 0.
     "MiniMax H3 AV (video+audio)": { sdiv: 16, tdiv: 0, video: true },
+    "Qwen-Image 2.1 image (64ch)": { sdiv: 16, tdiv: 0, video: false },   // v1078, mirrors TYPE_SPEC qwen_image21
 };
 const MINIMAX_TYPE = "MiniMax H3 AV (video+audio)";
 const MINIMAX_FPS = 24;                     // mirrors uls_latent_math.MINIMAX_FPS

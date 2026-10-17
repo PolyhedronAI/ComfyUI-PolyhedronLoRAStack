@@ -134,6 +134,28 @@ def _shot_seconds(m):
     return int(m.group(3)) * 60 + int(m.group(4)) + int(ms) / 1000.0
 
 
+RUBRIC_RX = re.compile(r"(^|\s)//.*$")
+
+
+def strip_rubrics(text):
+    """v1084: the // rubrics out of a prompt, the way the CLIP Text Encode's
+    strip_comments does it (a '//' at a line start or after whitespace takes
+    the rest of its line; a line left empty goes). -> (text, lines_stripped).
+    The timeline writes its head under // TRIGGERS and // LOOK; the MiniMax
+    nodes strip it here, so the rubrics never reach the model and the check
+    does not warn about them every run."""
+    kept, n = [], 0
+    for line in str(text or "").split("\n"):
+        cut = RUBRIC_RX.sub("", line)
+        if cut != line:
+            n += 1
+        if cut.strip() or not line.strip():
+            kept.append(cut)
+    out = "\n".join(kept)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip("\n"), n
+
+
 def check(text, live, duration_s=None):
     """[(level, message)] for a RESOLVED prompt.
 

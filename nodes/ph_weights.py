@@ -42,6 +42,14 @@ FOLDERS = {
     "sam3": "ULS_SAM3_HOME",
     # v836 (audit B2): the RIFE checkpoints now come through this door too.
     "vfi": "ULS_VFI_HOME",
+    # v1060: the MiniMax-Music3 DAV for Music Audio Encode (Core knows the folder already).
+    "audio_encoders": "ULS_AUDIO_ENC_HOME",
+    # v1066: the pack's OWN music folder (Frank, 09.10.: "einen eigenen Ordner unter den
+    # Modellen, wo wir unsere Musik-Modelle reinlegen") -- the Music Analyse stages' models
+    # (Demucs stems, the music CLAP) live here, apart from Core's audio_encoders.
+    "polyhedron_music": "ULS_MUSIC_HOME",
+    # v1095: the recommended text model (Music Lyrics, later the Timeline's script) -- Core's folder
+    "text_encoders": "ULS_TEXT_HOME",
 }
 
 _registered = set()
@@ -200,7 +208,17 @@ def ensure_weights(folder, name, registry, tag="provision", _fetch=None,
                         next_mark = got + (32 << 20)
                 print("[PLS] %s: download done (%d MiB), verifying sha256"
                       % (tag, got >> 20))
+        # v1070: the sha256 of a big file takes seconds -- say so before and after (Frank, 10.10.:
+        # "ComfyUI war beim Sha-Check laenger eingefroren ... auch diesen Check kann man dokumentieren")
+        import time as _time
+        _t0 = _time.time()
+        try:
+            _mib = os.path.getsize(part) >> 20
+        except OSError:
+            _mib = 0
+        print("[PLS] %s: verifying sha256 of %s (%d MiB) ..." % (tag, spec["file"], _mib))
         got_hash = sha256_file(part)
+        print("[PLS] %s: sha256 %s in %.1f s" % (tag, "ok" if got_hash == spec["sha256"] else "MISMATCH", _time.time() - _t0))
         if got_hash != spec["sha256"]:
             extra = ""
             if mismatch_text is not None:
@@ -223,6 +241,31 @@ def ensure_weights(folder, name, registry, tag="provision", _fetch=None,
             "%s failed for '%s': %s\n"
             "Manual fix: download\n  %s\nand place it at\n  %s"
             % (tag, name, e, spec["url"], dest)) from e
+
+
+LAN_DOWNLOAD_ENV = "ULS_ALLOW_LAN_DOWNLOAD"
+
+
+def download_locked():
+    """v1059: True when a download route must refuse -- the server is bound
+    beyond localhost (--listen) and the override is not set. A download is a
+    file written into the model folders on someone's click; on a shared
+    network that click must come from the machine's owner. An UNKNOWN bind
+    reads as local (fail-open, same rule as the media lock of v840)."""
+    if str(os.environ.get(LAN_DOWNLOAD_ENV, "")).strip().lower() in ("1", "true", "yes", "on"):
+        return False
+    try:
+        from comfy.cli_args import args as _cli_args
+        bind = str(getattr(_cli_args, "listen", "") or "")
+    except Exception:
+        return False
+    local = ("", "127.0.0.1", "localhost", "::1")
+    return any(h.strip() not in local for h in bind.split(",") if h.strip())
+
+
+def download_locked_text():
+    return ("downloads are locked while ComfyUI is bound beyond localhost (--listen). "
+            "Set %s=1 to allow them on your network, or place the file by hand." % LAN_DOWNLOAD_ENV)
 
 
 register_folders()

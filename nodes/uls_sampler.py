@@ -89,6 +89,15 @@ _CLOCK_FOLD_S = 5.0
 # start of every render so each run begins from the node's serialised preview_mode.
 _LIVE_PREVIEW_MODE = {}   # str(node_id) -> requested mode string
 
+# v1027: the Rough Cut Gate (nodes/ph_rough_cut_gate.py). The gate node tags
+# the latent dict (`pls_gate`); _sample_impl parks the tag here for the run,
+# the preview callback fires it after the gate's step. Cleared in finally.
+_PENDING_GATE = {}        # str(node_id) -> {"after_step", "timeout", "node"}
+
+
+def _gate_for(node_id):
+    return _PENDING_GATE.get(str(node_id))
+
 
 def _previews_enabled():
     """Respect ComfyUI's global preview method — the same switch the stock
@@ -709,7 +718,7 @@ def tae_warm(tae_name):
         if device is not None:
             x = x.to(device)
         x = x.to(next(tae.decoder.parameters()).dtype)
-        y = apply(tae.decoder, x, False, False)
+        apply(tae.decoder, x, False, False)      # the warm-up decode; its result is not needed
         if device is not None and str(device).startswith("cuda"):
             torch.cuda.synchronize(device)
     return "taeh3 warm on %s in %.1fs (%s)" % (device, time.time() - t0,
@@ -719,12 +728,13 @@ def tae_warm(tae_name):
 TAE_REGISTRY = {
     "taew2_1": {
         "file": "taew2_1.safetensors",
-        "url": ("https://raw.githubusercontent.com/madebyollin/taehv/"
-                "main/safetensors/taew2_1.safetensors"),
+        # v1059: no url -- the only source is a repository file view, and the
+        # registry scanner flags those addresses. Placed by hand; the bubble
+        # names the source page.
         "sha256": ("04766eac0221b5390b985ae3fdcca652"
                    "cbb4b1e8b82b28ea7ff89dfad1b1a93f"),
         "bytes": 22642902,
-        "source": "github.com/madebyollin/taehv (safetensors build)",
+        "source": "github.com/madebyollin/taehv, folder safetensors/ (MIT)",
     },
     "taeh3": {
         # v918 -- MiniMax H3 (24 ch, patch 2). Pinned 05.09. IN the build
@@ -732,12 +742,11 @@ TAE_REGISTRY = {
         # the allowlist), sha256 + size measured, and the vendored decoder
         # loaded it and decoded one 84x48 latent frame to 1344x768.
         "file": "taeh3.safetensors",
-        "url": ("https://raw.githubusercontent.com/madebyollin/taehv/"
-                "main/safetensors/taeh3.safetensors"),
+        # v1059: no url (see taew2_1).
         "sha256": ("4fd022bfcab08772fe0536b17ea1a3bb"
                    "b5625be11e397868d1c5d891863d4c13"),
         "bytes": 22709752,
-        "source": "github.com/madebyollin/taehv (safetensors build, MIT)",
+        "source": "github.com/madebyollin/taehv, folder safetensors/ (MIT)",
     },
     "lighttaew2_1": {
         # Pinned 02.08. from Frank's source. The build sandbox cannot
@@ -1032,6 +1041,27 @@ def _make_preview_callback(model, total_steps, node_id, step_offset=0,
                     previewer.set_mode(req)
             except Exception:
                 pass
+        # v1027: the Rough Cut Gate -- after ITS step, show the whole clip and
+        # wait for continue / abort. Fires whether or not the running preview
+        # was rate-limited this step; an abort raises Core's own interrupt.
+        gate = _gate_for(node_id) if node_id is not None else None
+        if gate is not None and (step_offset + step + 1) == int(gate.get("after_step", 0)):
+            try:
+                from .ph_rough_cut_gate import fire as _gate_fire
+            except Exception:
+                _gate_fire = None
+            if _gate_fire is not None:
+                _gate_fire(gate, previewer if (previewer is not None and previewer.ok) else None,
+                           x0, step_offset + step + 1, total_steps, fps=fps)
+                # v1028: the wait is not the next step's time (Frank's W1 log:
+                # "step 2 ... 93 s" was 3 s of render and 90 s of gate)
+                if clock is not None:
+                    try:
+                        waited = clock.skip()
+                        if waited >= 1.0:
+                            print(f"[PLS SAMPLER] gate waited {waited:.1f}s -- not counted as render time")
+                    except Exception:
+                        pass
         if not want_preview or previewer is None or not previewer.ok:
             return
         now = time.time()
@@ -2054,6 +2084,33 @@ class ULSSampler:
         # through _initial_noise, so one context covers them all, and the
         # finally clause inside _NoiseContext puts the module back even if the
         # sampler raises.
+        # v1027: a gate the latent carries (Rough Cut Gate) -- parked for
+        # this run only; the callback fires it after the gate's step.
+        gate_id = _current_node_id()
+        try:
+            from .ph_rough_cut_gate import gate_of
+            g = gate_of(latent_image)
+        except Exception:
+            g = None
+        if g is not None and gate_id is not None:
+            _PENDING_GATE[str(gate_id)] = g
+        try:
+            return self._sample_gated(model, positive, negative, latent_image, seed, steps, cfg,
+                                      sampler_name, scheduler, denoise, add_noise,
+                                      start_at_step, end_at_step, return_with_leftover_noise,
+                                      dual_moe, boundary, cfg_low, preview_mode, sigma_shift,
+                                      handoff_mode, sampler_low, scheduler_low, sigma_shift_low,
+                                      model_low, sigmas, sigmas_high, sigmas_low, noise)
+        finally:
+            if gate_id is not None:
+                _PENDING_GATE.pop(str(gate_id), None)
+
+    def _sample_gated(self, model, positive, negative, latent_image, seed, steps, cfg,
+                      sampler_name, scheduler, denoise, add_noise,
+                      start_at_step, end_at_step, return_with_leftover_noise,
+                      dual_moe, boundary, cfg_low, preview_mode, sigma_shift,
+                      handoff_mode, sampler_low, scheduler_low, sigma_shift_low,
+                      model_low, sigmas, sigmas_high, sigmas_low, noise):
         with _NoiseContext(noise):
             return self._run(model, positive, negative, latent_image, seed, steps, cfg,
                              sampler_name, scheduler, denoise, add_noise,

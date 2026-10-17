@@ -271,19 +271,177 @@ def convert_h3_diffusers(sd, metadata=None, log=None):
     return out, notes
 
 
-# name -> (detector, converter). A new schema is one line.
-LORA_CONVERTERS = (
-    ("MiniMax-H3 (Diffusers)", detect_h3_diffusers, convert_h3_diffusers),
+# ---------------------------------------------------------------------------
+# v1108 -- language-model adapters saved by PEFT under a `language_model.`
+# prefix (SimpleTuner writes them so when it trains the language model inside a
+# larger pipeline). Core's text-encoder map knows `text_encoders.<module>` and
+# the classic kohya/diffusers names -- never `language_model.`, so such a file
+# matched nothing and said so only as console lines. Measured 12.10. against
+# core 3c1b7a17: 0 of 252 modules as saved, 252 of 252 after the rename (on an
+# unmerged checkpoint; a merged one needs fit_lora_to_target below).
+# ---------------------------------------------------------------------------
+LM_PREFIX = "language_model."
+TE_PREFIX = "text_encoders."
+# keys PEFT saves next to the factors that are training aids or modules the
+# inference model does not have -- they cannot be applied as weight patches
+_LM_EXTRA_MARKERS = (".modules_to_save.", "xm_route_embeddings", "nextlat_predictor")
+
+
+def detect_lm_peft(sd):
+    """True for a dict of PEFT LoRA factors under `language_model.` on a
+    transformer language model (self_attn / mlp modules). Both conditions are
+    required: the prefix alone could be anything, the module names alone are
+    every HF language model."""
+    for k in sd:
+        if k.startswith(LM_PREFIX) and (k.endswith(".lora_A.weight") or k.endswith(".lora_B.weight")) \
+                and (".self_attn." in k or ".mlp." in k):
+            return True
+    return False
+
+
+def convert_lm_peft(sd, metadata=None, log=None):
+    """`language_model.X` -> `text_encoders.X`; factors and alphas only.
+    Extras (modules_to_save copies, routing embeddings, training-only heads)
+    are dropped and COUNTED -- said, never silent. No alpha is invented: PEFT
+    saves none, its runtime scale is alpha/rank with alpha defaulting to the
+    rank (= 1.0, Core's default without an alpha); a header ratio, when the file
+    carries one, is synthesised per module like the H3 path does."""
+    out = {}
+    dropped = []
+    ranks = {}
+    for k, v in sd.items():
+        if not k.startswith(LM_PREFIX):
+            out[k] = v
+            continue
+        if any(m in k for m in _LM_EXTRA_MARKERS):
+            dropped.append(k)
+            continue
+        nk = TE_PREFIX + k[len(LM_PREFIX):]
+        out[nk] = v
+        mod, suf = _split_key(nk)
+        if mod is not None and _canon_suffix(suf) == "A":
+            ranks[mod] = int(v.shape[0])
+    file_alpha = _scale_of(metadata, None)
+    if file_alpha is not None:
+        import torch
+        for mod in ranks:
+            if mod + ".alpha" not in out:
+                out[mod + ".alpha"] = torch.tensor(float(file_alpha))
+    notes = ["LM adapter (PEFT) -> ComfyUI: %d modules renamed to %s" % (len(ranks), TE_PREFIX)]
+    if dropped:
+        notes.append("%d training-only / non-weight keys dropped (e.g. %s)" % (len(dropped), dropped[0]))
+    if log:
+        for n in notes:
+            log(n)
+    return out, notes
+
+
+# ---------------------------------------------------------------------------
+# v1108 -- fit split projections to a MERGED checkpoint.
+# HF language models keep q/k/v and gate/up as separate Linears; a merged
+# checkpoint keeps one `qkv_proj` (rows q, k, v -- core llama.py splits it so)
+# and one `gate_up_proj` (rows gate, up -- core chunks it gate first). A LoRA
+# trained on the split model then names modules the merged model does not have.
+# The fusion is the same IDENTITY the H3 path uses (and the guard proves
+# numerically): A = [A_1; A_2; ...], B = blockdiag(s_1*B_1, s_2*B_2, ...) with
+# s_i = alpha_i / rank_i (1.0 without alpha), written with alpha = total rank,
+# i.e. scale 1.0 -- the per-part scales live inside B.
+# Only done when the target has the merged module AND lacks the split one, and
+# only for COMPLETE groups: a missing part's row count cannot be known from the
+# LoRA, so an incomplete group is left as it is and reported.
+# ---------------------------------------------------------------------------
+FUSE_GROUPS = (
+    (("q_proj", "k_proj", "v_proj"), "qkv_proj"),
+    (("gate_proj", "up_proj"), "gate_up_proj"),
 )
 
 
-def convert_foreign_lora(sd, metadata=None, log=None):
+def fit_lora_to_target(sd, target_modules, log=None):
+    """Return (dict, notes). target_modules: the LoRA-side module names the
+    target accepts (Core's key map keys). Never raises; a dict that needs no
+    fitting comes back as the SAME object."""
+    try:
+        import torch
+    except Exception:
+        return sd, []
+    groups = {}
+    for k in sd:
+        mod, suf = _split_key(k)
+        if mod is None:
+            continue
+        base, _, leaf = mod.rpartition(".")
+        for parts, merged in FUSE_GROUPS:
+            if leaf in parts:
+                groups.setdefault((base, merged), {}).setdefault(leaf, {})[_canon_suffix(suf)] = k
+    if not groups:
+        return sd, []
+    out = None
+    fused = 0
+    incomplete = []
+    for (base, merged), have in groups.items():
+        parts = next(p for p, m in FUSE_GROUPS if m == merged)
+        tgt = base + "." + merged
+        if tgt not in target_modules or (base + "." + parts[0]) in target_modules:
+            continue                       # target takes the split names (or neither)
+        if any(p not in have or "A" not in have[p] or "B" not in have[p] for p in parts):
+            incomplete.append(tgt)
+            continue
+        if out is None:
+            out = dict(sd)
+        As, Bs = [], []
+        for p in parts:
+            ka, kb = have[p]["A"], have[p]["B"]
+            a, b = sd[ka], sd[kb]
+            r = a.shape[0]
+            al = sd.get(have[p].get("alpha")) if have[p].get("alpha") else None
+            s = (float(al) / r) if al is not None else 1.0
+            As.append(a)
+            Bs.append((b.float() * s).to(b.dtype))
+            for kk in have[p].values():
+                out.pop(kk, None)
+        A = torch.cat(As, dim=0)
+        B = torch.block_diag(*Bs)
+        out[tgt + ".lora_A.weight"] = A
+        out[tgt + ".lora_B.weight"] = B
+        out[tgt + ".alpha"] = torch.tensor(float(A.shape[0]))
+        fused += 1
+    notes = []
+    if fused:
+        notes.append("fitted to a merged checkpoint: %d split groups fused (qkv_proj / gate_up_proj)" % fused)
+    if incomplete:
+        notes.append("%d incomplete split groups NOT fused (they cannot land on a merged module): %s"
+                     % (len(incomplete), incomplete[0]))
+    if log:
+        for n in notes:
+            log(n)
+    return (out if out is not None else sd), notes
+
+
+# name -> (detector, converter). A new schema is one line.
+LORA_CONVERTERS = (
+    ("MiniMax-H3 (Diffusers)", detect_h3_diffusers, convert_h3_diffusers),
+    ("LM adapter (PEFT, language_model.)", detect_lm_peft, convert_lm_peft),
+)
+
+# v1108: the converters the SEQ path (the stack's own loader, parity with core's
+# LoraLoader for every dict core understands) runs.
+# v1109 (Frank's go, 12.10.): the H3 entry joins. Until v1109 SEQ handed H3
+# Diffusers files to core unconverted -- an H3 LoRA in the Diffusers layout,
+# alone in a SEQ row, matched nothing (the v1108 landing toast showed it). Now
+# every path converts it the same way: SEQ, merge, bypass, bake, inspector.
+SEQ_CONVERTERS = ("MiniMax-H3 (Diffusers)", "LM adapter (PEFT, language_model.)")
+
+
+def convert_foreign_lora(sd, metadata=None, log=None, only=None):
     """Run the first converter that recognises this dict. Returns (sd, name).
 
     Unrecognised dicts come back untouched with name None -- this is a hand
-    through, never a guess.
+    through, never a guess. v1108: `only` limits the run to the named
+    converters (the SEQ path passes SEQ_CONVERTERS).
     """
     for name, detect, convert in LORA_CONVERTERS:
+        if only is not None and name not in only:
+            continue
         try:
             if not detect(sd):
                 continue

@@ -87,6 +87,20 @@ except Exception:  # pragma: no cover
 
 
 # ── small torch-free-at-import helpers ───────────────────────────────────────
+def _mask_frames(m, n):
+    """v1142: a MASK for an n-frame clip as exactly n frames -- [H,W] or a single mask holds for every
+    frame, a shorter batch holds its last mask (before: frame 2 of an animated save with one mask sliced
+    an empty array and raised). None stays None."""
+    if m is None:
+        return None
+    m = np.asarray(m, dtype=np.float32)
+    if m.ndim == 2:
+        m = m[None]
+    if m.shape[0] >= n:
+        return m[:n]
+    return np.concatenate([m, np.repeat(m[-1:], n - m.shape[0], axis=0)], axis=0)
+
+
 def _to_np(x):
     """ComfyUI hands tensors; accept either a tensor (.cpu()) or a numpy array
     without importing torch at module load."""
@@ -512,6 +526,10 @@ class ULSSave:
         audio_dict = audio if audio is not None else src_audio   # explicit audio overrides
         if trim_to_audio and audio_dict is not None:
             frames, audio_dict = self._trim_to_audio(frames, audio_dict, fps)
+        if mask is not None and video is None and pingpong:
+            # v1154 (audit): the mask turns with the frames -- it was held on its last frame for the whole way back
+            # (frames 0 1 2 3 4 3 2 1 had masks 0 1 2 3 4 4 4 4)
+            mask = U.apply_pingpong(_mask_frames(_to_np(mask), int(frames.shape[0])), True)
         frames = U.apply_pingpong(frames, bool(pingpong))
 
         alpha = U.wants_alpha(video_preset, mask is not None) and (video is None)
@@ -616,7 +634,7 @@ class ULSSave:
             from PIL import Image
             fmt = U.image_ext(image_format)
             idx = n // 2
-            msk = _to_np(mask)
+            msk = _mask_frames(_to_np(mask), n)
             arr, pil_mode = U.compose_still(
                 frames[idx], None if msk is None else msk[idx], fmt)
             pil = Image.fromarray(arr, pil_mode)
@@ -692,7 +710,7 @@ class ULSSave:
     def _write_pillow_anim(self, frames, mask, p, fps, loop_count, path):
         """Animated GIF / WebP via Pillow -- no ffmpeg, no PyAV."""
         from PIL import Image
-        msk = _to_np(mask)
+        msk = _mask_frames(_to_np(mask), int(frames.shape[0]))
         pil_frames = []
         _n, _mp = int(frames.shape[0]), float(frames.shape[1] * frames.shape[2]) / 1e6
         _conv = _NodeProgress("Save", "save:pillow:frames", total=_n, unit="frame", size=_mp)
@@ -720,7 +738,7 @@ class ULSSave:
         """The pro-master encoder on ComfyUI's bundled PyAV. 10-bit pix_fmts get a
         16-bit intermediate; intra presets force GOP=1. Audio mux is defensive."""
         import av
-        msk = _to_np(mask)
+        msk = _mask_frames(_to_np(mask), int(frames.shape[0]))
         alpha = mask is not None and p.get("alpha")
         ten = bool(p.get("ten_bit"))
         src_fmt = ("rgba64le" if ten else "rgba") if alpha else ("rgb48le" if ten else "rgb24")
@@ -747,7 +765,7 @@ class ULSSave:
                 if alpha:
                     if ten:
                         rgb = np.clip(frames[i, ..., :3], 0.0, 1.0)
-                        a = (1.0 - (np.clip(msk[i], 0.0, 1.0) if msk is not None else 0.0)) if msk is not None else np.ones(rgb.shape[:2], np.float32)
+                        a = (1.0 - np.clip(msk[i], 0.0, 1.0)) if msk is not None else np.ones(rgb.shape[:2], np.float32)
                         arr = (np.concatenate([rgb, a[..., None]], -1) * scale + 0.5).astype(dt)
                     else:
                         arr = U.rgb_and_mask_to_rgba_uint8(frames[i:i + 1], None if msk is None else msk[i:i + 1])[0]

@@ -751,6 +751,18 @@ async function openFolderPicker(startPath, onPin) {
 }
 
 // ── per-node UI controller ─────────────────────────────────────────────────
+
+// v1112: the wired output slots of the node, written into the prompt's media_ref as "outs".
+// Anything that is not a JSON object (empty selection) passes unchanged.
+function plsWithWiredOuts(value, node) {
+    if (!value || typeof value !== "string") return value;
+    let o;
+    try { o = JSON.parse(value); } catch (e) { return value; }
+    if (!o || typeof o !== "object" || Array.isArray(o)) return value;
+    o.outs = (node.outputs || []).map((s, i) => (s && s.links && s.links.length ? i : -1)).filter((i) => i >= 0);
+    return JSON.stringify(o);
+}
+
 class MediaLoaderUI {
     constructor(node) {
         injectCSS();
@@ -769,6 +781,14 @@ class MediaLoaderUI {
             return w;
         };
         this._refWidget = hideWidget(node.widgets?.find((w) => w.name === "media_ref"));
+        // v1112: the PROMPT's media_ref carries the wired output slots ("outs"), so the backend
+        // decodes no frame when only `audio` is wired; the saved workflow keeps the plain value
+        // (serializeValue feeds the prompt). Rewiring changes the prompt value -> the cache follows.
+        if (this._refWidget && !this._refWidget._plsOuts) {
+            const rw = this._refWidget;
+            rw._plsOuts = true;
+            rw.serializeValue = async () => plsWithWiredOuts(rw.value, node);
+        }
         this._cfgWidget = hideWidget(node.widgets?.find((w) => w.name === "batch_config"));
         this._procWidget = hideWidget(node.widgets?.find((w) => w.name === "proc_config"));
 

@@ -1,72 +1,53 @@
-# Kompatibilität — Polyhedron Suite (v257)
+# Compatibility — Polyhedron Suite
 
-Konsolidierter Kompatibilitäts-Vertrag dieses Packs. Faktisch am Code verankert
-(siehe `AUDIT_v256_full.md` für die ausführliche Analyse, `AUDIT_v253_full.md`
-für die vorausgegangene). Zweck: ein klarer, solider Stand — was wo läuft, was
-bei ComfyUI-/kijai-Updates passiert, und wo der eine offene Frontpunkt liegt.
+## Runtime
 
-## Laufzeitumgebung
-- **Python:** ≥ 3.10 (`requires-python`). Keine 3.10+-Sprachfeatures im Code —
-  der Floor ist konservativ, nicht ausgereizt.
-- **Abhängigkeiten:** Die geladenen Nodes brauchen **weder Pillow noch
-  requests** (graceful degradation; der Civitai-Fetch zur Laufzeit nutzt
-  aiohttp, das ComfyUI ohnehin mitbringt). Beide sind ein **optionales Extra**
-  (`pip install .[cli]`) nur für das eigenständige CLI `uls_preview_gen.py`,
-  das vollständig vom Node-Laden entkoppelt ist. Der ComfyUI-Manager installiert
-  sie weiterhin über `requirements.txt`.
+- **Python** 3.10 or newer (`requires-python`).
+- **ComfyUI**: checked on 0.39.2 with frontend 1.53.10, and on an older pinned
+  core (frontend 1.49.6). The nodes call no ComfyUI core *node* classes, only the
+  `comfy.*` model library; the few rules they need (the Flux2 empty latent and
+  schedule, the tiled model upscale) are written in this pack.
+- **Required packages: none.** Optional: `opencv-python` (video thumbnails in
+  the Media Loader), `av` (PyAV, shipped by current ComfyUI builds), ffmpeg on
+  the PATH or via `imageio-ffmpeg` (the Cine Timeline's strips, waveforms and
+  export). A missing optional package costs one feature and never blocks a load.
+- **Downloads** happen only on a click, over https, checked by size and sha256
+  (Interpolate's RIFE checkpoints, the Sampler's preview decoders). A run never
+  downloads, and the pack never installs packages.
 
-## Frontend-Renderer (der entscheidende Punkt)
-- Die **Stack-** und **Engine**-UI wird vollständig auf dem **LiteGraph-Canvas**
-  gezeichnet (`onDrawForeground` + manuelles Hit-Testing). Unter ComfyUIs neuem
-  **Vue-Renderer („Nodes 2.0")** wird `onDrawForeground` nicht aufgerufen → die
-  UI erscheint dort **ohne Fehler nicht** (leerer Node).
-- **Erkennung:** `uls_compat.js` meldet genau diesen Fall verhaltensbasiert
-  (über `node._ulsDrawFired`, nicht über Versions-Strings) — eine einmalige,
-  abschaltbare Warnung. Inspizierbar in der Browser-Konsole via
-  `window.__POLYHEDRON_COMPAT__`. Abschalten: Settings → Polyhedron.
-- **Workaround heute:** In den ComfyUI-Settings auf **LiteGraph-Rendering**
-  schalten (Vue/Nodes-2.0 aus), dann erscheint die volle Polyhedron-UI.
-- **Renderer-agnostisch (kein Problem):** alle Popups sind **DOM-Overlays**
-  (`document.body`); die **Backend-Nodes** (Bridge, Sigma, Frame Inflate, Token
-  Counter, Inspector, Model Switch) nutzen Standard-Widgets und laufen unter
-  beiden Renderern; die **Persistenz** läuft über ein verstecktes
-  `uls_config`/`engine_config`-Widget — ein gespeicherter Workflow lädt auch
-  nach einem Renderer-Wechsel korrekt (nur das Zeichnen fehlte ggf.).
-- **Offener Frontpunkt (eigene Roadmap):** der volle Umbau des Node-Körpers von
-  Canvas-Zeichnen auf `addDOMWidget` (renderer-agnostisch). Bewusst **nicht** in
-  einem Rutsch — gestaffeltes Eigenprojekt; die DOM-Overlay-Popups sind die
-  Blaupause. Pflicht, sobald ComfyUI ein LiteGraph-Abkündigungs-Datum nennt.
+## Renderers
 
-## Bridge ↔ kijai WanVideoWrapper
-- Die Bridge patcht **kijai-interne** Funktionen (`load_weights`,
-  `set_lora_params`, `remove_lora_from_module`), gefunden per `sys.modules`-Scan
-  nach „WanVideoWrapper". Alle Patches sind **idempotent**, marker-basiert
-  (`_BRIDGE_SKIP_MARKER`) und werden bei Bedarf erneut versucht.
-- **Bei kijai-Updates:** Fehlt ein erwartetes Symbol (z. B. nach einem Rename in
-  kijais Code), meldet die Bridge das jetzt mit **einer lauten Ein-Mal-Warnung**
-  (`_warn_symbol_missing_once`, seit v254) statt still nichts zu tun. Bei
-  merkwürdigem/doppeltem WAN-LoRA-Verhalten zuerst auf ein kijai-Update prüfen.
-- **Verbose-Logs:** standardmäßig **aus**; mit `PLS_BRIDGE_VERBOSE=1` (bzw.
-  `true`/`yes`/`on`) einschalten.
-- **Hand-off-Pfad** (x-Unpack, t→timestep, y-Concat, Return-Shape, Sampler):
-  unverändert seit v248; v254 hat nur additive Diagnose danebengelegt.
+Every node works under the classic canvas and under **Nodes 2.0** (the Vue
+renderer). Panels that the classic canvas paints have a DOM view under Nodes
+2.0; saved workflows load the same in both.
 
-## Robustheit beim Laden (seit v254)
-- Jede Node-Gruppe importiert **unabhängig**. Ein brechender ComfyUI-Core-Wechsel
-  in einer Gruppe (z. B. `comfy.lora`, das nur Stack/Engine nutzen) reißt **nicht**
-  das ganze Pack mit — die betroffene Gruppe meldet klar und wird übersprungen,
-  der Rest registriert weiter.
-- Der Tensor-Cache (CONCAT/DARE) ist **thread-sicher** gelockt (zukunftssicher
-  gegen parallele Graph-Exekution; beim heutigen Single-Worker unkontestiert).
+## Loading
 
-## API-Wachposten (was bei Updates zuerst bricht)
-Niedrige Stabilität (beobachten): Canvas-Render-Pfad (Vue/Nodes-2.0),
-kijai-WanVideoWrapper-Interna, `comfy.lora.*`, `comfy.ldm.modules.attention`
-(die NAG-Node patcht dort; die Attention-Node hängt zusätzlich an optionalen
-SageAttention-/Kitchen-Wheels, degradiert aber ehrlich — die Modusliste zeigt
-nur, was auf der Maschine wirklich lädt). Hohe Stabilität: `folder_paths.*`,
-das versteckte Persistenz-Widget, `api.fetchApi`/`api.apiURL` (Routen sind unter
-nacktem **und** `/api`-Pfad registriert).
+Every node group imports on its own: a breaking ComfyUI change in one group logs
+that group and skips it, the rest of the pack registers. Routes are registered
+under the bare path and the `/api` alias.
+
+## Running with `--listen`
+
+Bound beyond localhost, the routes that read folders or files the client names
+answer 403: the Media Loader's folder routes, and a Cine Timeline clip "read
+where it lies" (a dropped copy in `input/` still works). Set
+`ULS_ALLOW_LAN_BROWSE=1` to open them deliberately.
+
+## Wan Bridge and kijai's WanVideoWrapper
+
+The Bridge patches internal functions of WanVideoWrapper (`load_weights`,
+`set_lora_params`, `remove_lora_from_module`). The patches are idempotent and
+marker-based; when an expected symbol is missing after a WanVideoWrapper update
+the Bridge says so once in the console instead of doing nothing silently.
+`PLS_BRIDGE_VERBOSE=1` turns on its detailed log.
+
+## What breaks first on updates
+
+`comfy.lora.*` and `comfy.ldm.modules.attention` (Stack, Engine, NAG,
+Attention), WanVideoWrapper internals (Bridge), and optional attention wheels
+(SageAttention, Kitchen) — the Attention node lists only the modes that load on
+the machine.
 
 ## Vendored third-party code
 
@@ -77,7 +58,6 @@ reasoning in `nodes/vfi/NOTICE.md`. Used by ⬡ Polyhedron Interpolate.
 
 `nodes/vendor/taehv/taehv.py` — the TAEHV tiny video autoencoder from
 **taehv** (madebyollin, Ollin Boer Bohan). MIT licence, copied verbatim, not
-modified; the LICENSE file sits next to it, provenance and the reason for
-vendoring (Core has no H3 branch for 24 latent channels) in
+modified; the LICENSE file sits next to it, provenance in
 `nodes/vendor/taehv/SOURCE.md`. Used by ⬡ Polyhedron Sampler for the
-"Video · TAE (taeh3)" live preview (v374 / internal v918).
+"Video · TAE (taeh3)" live preview.

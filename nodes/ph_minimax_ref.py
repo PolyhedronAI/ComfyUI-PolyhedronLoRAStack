@@ -473,6 +473,7 @@ class ULSMiniMaxReference:
                 alias_errors.append("@%s is a board tile AND a tags line (%s) -- "
                                     "keep one" % (tag, aliases[tag]))
             aliases[tag] = slot
+        prompt, n_rub = HP.strip_rubrics(prompt)     # v1084: rubrics never reach the model
         prompt, used, tag_errors = HP.resolve(prompt, slot_tags, all_slots,
                                               aliases)
         if alias_errors or tag_errors:
@@ -483,6 +484,8 @@ class ULSMiniMaxReference:
                 "Audio": sum(1 for k, _ in tags if k in ("audio", "soundtrack"))}
         check_lines = HP.report(used, HP.check(
             prompt, live, frame_count / float(M.MINIMAX_FPS)))
+        if n_rub:
+            check_lines.append("%d // rubric line(s) stripped before the encode" % n_rub)
 
         ref_items = []
         ref_blocks = []
@@ -603,7 +606,8 @@ class ULSMiniMaxReference:
                 KR.mark(kf, who)
                 lines.append("first_frame  %dx%d -> %dx%d (stretched), pinned at frame 0 next to the "
                              "references (%s merge)" % (int(first.shape[2]), int(first.shape[1]), gen_w, gen_h,
-                                                        "our" if who == "ours" else "the Director's"))
+                                                        {"ours": "our", "core-native": "Core's own"}.get(
+                                                            who, "the Director's")))
             else:
                 kf_images = [fitted]
                 lines.append("first_frame  %dx%d -> %dx%d (stretched), pinned at frame 0 = <Picture 1> "
