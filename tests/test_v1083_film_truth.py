@@ -169,9 +169,11 @@ if ff:
 else:
     print("  note  ffmpeg missing -- F6 driven part skipped")
 py = (ROOT / "nodes" / "ph_cine_timeline.py").read_text(encoding="utf-8")
-_need('carry_img = frame_index(r["carry"], r["carry_index"])' in py, "F6 build() reads the carry frame by the film's index")
+# AMENDED v1168: the film's index goes through the clip's own rate first (source_index) -- the neon film's seams
+_need('sidx, sfps, sn = source_index(r["carry"], r["carry_index"])' in py and 'carry_img = frame_index(r["carry"], sidx)' in py,
+      "F6 build() reads the carry frame by the film's index, turned into the clip's own frame (v1168)")
 _need('idx = T.film_last_index(model, k) if which == "last" else (0 if which == "first" else T.asked_frames(which))' in py
-      and "img = frame_index(path, idx)" in py, "F6 @clip:K:last / :S go through frame_index")
+      and "img = frame_index(path, sidx)" in py, "F6 @clip:K:last / :S go through frame_index (via source_index, v1168)")
 _need("def frame_at(" not in py, "F6 the seek-based frame_at is gone")
 
 # ------------------------------------------------------------------ F7

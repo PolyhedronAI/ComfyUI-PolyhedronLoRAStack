@@ -31,6 +31,7 @@ output/ holds only day folders), the editor shows the stack (GET /pls/cine/scene
 """
 
 import hashlib
+import math
 import json
 import os
 import re
@@ -344,12 +345,13 @@ class ULSCineTimeline:
             # v1083: "last" is the frame the FILM shows last of that place, a
             # time is the frame the editor's labels mean (frame index, not a seek)
             idx = T.film_last_index(model, k) if which == "last" else (0 if which == "first" else T.asked_frames(which))
-            img = frame_index(path, idx)
+            sidx, sfps, sn = source_index(path, idx)        # v1168: the clip's own frame for that film frame
+            img = frame_index(path, sidx)
             sources[src] = img
             png = save_frame(model, src, img)
-            clip_lines.append("clip frame %s: %s (frame %d) of %s -> %s" % (
-                src, which if isinstance(which, str) else "%.2f s" % which, idx + 1,
-                os.path.basename(path), png or "(not saved)"))
+            clip_lines.append("clip frame %s: %s (film frame %d = frame %d of %s%s) -> %s" % (
+                src, which if isinstance(which, str) else "%.2f s" % which, idx + 1, sidx + 1,
+                os.path.basename(path), " at %g fps" % sfps if abs(sfps - E.FPS) > 0.01 else "", png or "(not saved)"))
         prev = carry_source(model, k0) if T.carry_of(model, k0) else None
         if T.carry_of(model, k0) and prev is None:
             # v1083: in "all" mode the run before registers its clip from the
@@ -371,7 +373,11 @@ class ULSCineTimeline:
             raise ValueError(tag + ":\n  " + "\n  ".join(errs))
         carry_img = None
         if r.get("carry"):
-            carry_img = frame_index(r["carry"], r["carry_index"])
+            sidx, sfps, sn = source_index(r["carry"], r["carry_index"])
+            if abs(sfps - E.FPS) > 0.01:
+                r["lines"].insert(1, "carry: %s runs at %g fps (%s frames) -- film frame %d is its frame %d"
+                                  % (os.path.basename(r["carry"]), sfps, sn if sn else "?", r["carry_index"] + 1, sidx + 1))
+            carry_img = frame_index(r["carry"], sidx)
             sources = dict(sources)
             sources[T.CARRY_SRC] = carry_img
         if r["first"] is not None:
@@ -476,11 +482,29 @@ def last_frame(path):
         shutil.rmtree(d, ignore_errors=True)
 
 
+def source_index(path, film_idx):
+    """v1168 (Frank 18.10., the neon film: every scene began on the MIDDLE of the scene before): the editor counts
+    film frames at 24 fps, but the clip it reads may run at another rate -- the interpolated final (48 fps, 281
+    frames) is the newest take of a scene, and film frame 140 is its middle, not its end. The film frame -> the
+    clip's own frame number: film_idx * clip_fps / 24, never past its last frame. -> (index, clip fps, clip frames)."""
+    fps, n = float(E.FPS), None
+    try:
+        ci = clip_info(path)
+        fps = float(ci.get("fps") or E.FPS) or float(E.FPS)
+        n = int(ci.get("src_frames") or ci.get("frames") or 0) or None
+    except Exception:
+        pass
+    idx = int(math.floor(max(0, int(film_idx)) * fps / float(E.FPS) + 0.5))
+    if n:
+        idx = min(idx, n - 1)
+    return idx, fps, n
+
+
 def frame_index(path, idx):
     """v1083: frame number idx (0-based) of a clip as an IMAGE [1, H, W, 3] --
     selected by its NUMBER (ffmpeg select=eq(n,idx)), not by a seek time
     (-ss landed one frame off at 2.500 s, measured). Past the end: the last
-    frame."""
+    frame. idx counts the CLIP's own frames -- a film frame goes through source_index() first (v1168)."""
     import subprocess
     import tempfile
     import numpy as np

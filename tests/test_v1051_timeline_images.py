@@ -155,7 +155,8 @@ else:
     _need(c[2] > 0.5 and c[0] < 0.3, "I3 @clip:0:last -> first_frame is the clip's LAST frame (blue %s)" % c)
     # v1083 (DECLARED): the line names the frame number the film shows last
     # AMENDED v1152: the kept frame lies in input/cine_media/<project>/stack/frames/ (output/ holds only day folders)
-    _need("clip frame @clip:0:last: last (frame " in out[6] and ") of whole_00001_.mp4 -> input/cine_media/imgp/stack/frames/whole_last.png" in out[6],
+    # AMENDED v1168: the line names the film frame AND the clip's own frame (a clip at another rate is said)
+    _need("clip frame @clip:0:last: last (film frame " in out[6] and " of whole_00001_.mp4) -> input/cine_media/imgp/stack/frames/whole_last.png" in out[6],
           "I3 the info names the clip and the kept PNG")
     _need((TMP / "input" / "cine_media" / "imgp" / "stack" / "frames" / "whole_last.png").is_file()
           and not (TMP / "output" / "imgp" / "frames").exists(), "I3 the frame is kept as PNG in frames/ -- in input/, not output/")
