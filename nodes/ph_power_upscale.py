@@ -1244,6 +1244,13 @@ def _refine_tiles(model, positive, negative, vae, image, grid, seed, steps,
     (a dict) collects the measured VRAM peak per phase for the stage line."""
     n, height, width = int(image.shape[0]), int(image.shape[1]), int(image.shape[2])
     tw, th = grid["tile_w"], grid["tile_h"]
+    # v1162: a tile is not the frame -- a pinned whole frame (carry / keyframe) cannot ride into it
+    _pins = sorted(set(_pins_of(positive)) | set(_pins_of(negative)))
+    if _pins:
+        positive, _ = _repin_conds(positive, None)
+        negative, _ = _repin_conds(negative, None)
+        print(f"[PLS] Power Upscale:   {stage_tag}: pinned frame(s) {', '.join(str(p) for p in _pins)} left out of the tile refine "
+              f"(a tile is not the whole frame; the pin belongs to the render's canvas)")
     if sig_run is not None:
         steps = max(0, len(sig_run) - 1)
     else:
@@ -1788,6 +1795,59 @@ def _build_video(frames, audio, frame_rate):
         return None
 
 
+PIN_KEY = "minimax_keyframes"           # v1162 (v1163: one name per line -- the lifting guards close over plain assignments)
+PIN_COUNT = "minimax_frame_count"
+
+
+def _pins_of(conds):
+    """The frame indices pinned in a conditioning (minimax_keyframes), sorted; [] when none."""
+    out = set()
+    for c in conds or []:
+        d = c[1] if isinstance(c, (list, tuple)) and len(c) > 1 and isinstance(c[1], dict) else {}
+        for kf in d.get(PIN_KEY) or []:
+            try:
+                out.add(int(kf.get("resolved_frame_index", 0)))
+            except Exception:
+                pass
+    return sorted(out)
+
+
+def _repin_conds(conds, encode_at):
+    """v1162 (Frank 18.10., scene 2 of the neon lane: 'shape mismatch [2801, 96] vs [3799, 96]' in the joint
+    refine). A pinned frame -- MiniMax Reference's first_frame (a scene's carry), MiniMax Keyframes' first /
+    last frame -- rides in the conditioning as a latent ENCODED AT THE RENDER CANVAS. A refine on another
+    canvas cannot use it. -> (conds', notes): every pin re-encoded by encode_at(frame_index) on the refine's
+    own canvas (the frame that is already there, so the pin holds and the seam stays exact); a pin
+    encode_at cannot give (None) is dropped and said; the frame count goes with the last pin. Every other
+    key, and every conditioning without pins, passes through untouched (a copy, never in place)."""
+    if not conds:
+        return conds, []
+    out, notes = [], []
+    for c in conds:
+        d = c[1] if isinstance(c, (list, tuple)) and len(c) > 1 and isinstance(c[1], dict) else None
+        if not d or not d.get(PIN_KEY):
+            out.append(c)
+            continue
+        d2 = dict(d)
+        kept = []
+        for kf in d[PIN_KEY]:
+            i = int(kf.get("resolved_frame_index", 0))
+            lat = encode_at(i) if encode_at is not None else None
+            if lat is None:
+                notes.append("pinned frame %d dropped (not on this canvas)" % i)
+                continue
+            k2 = dict(kf)
+            k2["latent"] = lat
+            kept.append(k2)
+        if kept:
+            d2[PIN_KEY] = kept
+        else:
+            d2.pop(PIN_KEY, None)
+            d2.pop(PIN_COUNT, None)
+        out.append([c[0], d2] + list(c[2:]))
+    return out, notes
+
+
 def _reject_none_conditioning(positive, negative):
     """v881: refuse a None CONDITIONING before any work is done.
 
@@ -1948,6 +2008,23 @@ def _vae_spatial(vae, default=8):
     try:
         if isinstance(r, (tuple, list)) and len(r) >= 2:
             return max(1, int(r[1]))
+        if isinstance(r, (int, float)) and not isinstance(r, bool) and r > 0:
+            return max(1, int(r))
+    except Exception:
+        pass
+    return int(default)
+
+
+def _dit_patch(model, default=1):
+    """The transformer's spatial patch, READ from the model (patch_size: an int or (t, h, w)). A latent
+    side that is not a multiple of it cannot be patchified: Core pads the noisy latent, but NOT a pinned
+    frame (a keyframe / carry) -- an odd latent side there is a reshape crash (v1164). `default` when the
+    model states none."""
+    dm = getattr(getattr(model, "model", None), "diffusion_model", None)
+    r = getattr(dm, "patch_size", None)
+    try:
+        if isinstance(r, (tuple, list)) and len(r) >= 2:
+            return max(1, int(max(r[-2:])))
         if isinstance(r, (int, float)) and not isinstance(r, bool) and r > 0:
             return max(1, int(r))
     except Exception:
@@ -2174,7 +2251,7 @@ def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
     (said by name); everything else is measured and printed."""
     import comfy.samplers as _cs
     from comfy.nested_tensor import NestedTensor
-    snap = _vae_spatial(vae, _JOINT_SNAP_DEFAULT)
+    snap = _vae_spatial(vae, _JOINT_SNAP_DEFAULT) * _dit_patch(model, 1)   # v1164: VAE x patch (H3: /32)
     if cached is not None:
         # v1006: (vid_lat, n_in, sw, sh) from the cache -- no frames needed
         vid_lat_c, n_in, sw, sh = cached
@@ -2187,7 +2264,7 @@ def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
         src = frames
     if src is not None and (sw, sh) != (w_in, h_in):
         print(f"[PLS] Power Upscale: joint refine: canvas {w_in}x{h_in} is not /{snap} "
-              f"-> fitted to {sw}x{sh} (the VAE would centre-crop it otherwise)")
+              f"-> fitted to {sw}x{sh} (the joint grid: the VAE's factor x the model's patch)")
         src = _lanczos_to(frames, sw, sh)
     t_lat, n_back = _vae_frame_law(vae, n_in)
     if n_back != n_in:
@@ -2286,6 +2363,25 @@ def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
               f"-> video latent {tuple(vid_lat.shape)} + audio latent {tuple(audio_lat.shape)}"
               + (f" (planned ~{_fmt_clock(est['enc'])})" if est["enc"] else ""))
     vid_lat_keep = vid_lat.detach().to("cpu")   # v1006: handed back for the cache
+    # v1162: pinned frames (a scene's carry, a keyframe) were encoded at the render canvas -- re-encode
+    # them here, on the refine's canvas, from the frame that already stands there
+    pins = sorted(set(_pins_of(positive)) | set(_pins_of(negative)))
+    if pins:
+        def _enc_at(i):
+            if src is None or i < 0 or i >= int(src.shape[0]):
+                return None
+            with _MuteInfoLogs(mute, label="Power Upscale"):
+                lt = v_enc(src[i:i + 1, :, :, :3])
+            if lt.dim() == 4:
+                lt = lt.movedim(0, 1).unsqueeze(0)
+            return lt
+        positive, n_pos = _repin_conds(positive, _enc_at)
+        negative, n_neg = _repin_conds(negative, _enc_at)
+        dropped = sorted(set(n_pos + n_neg))
+        print(f"[PLS] Power Upscale: joint refine: pinned frame(s) {', '.join(str(p) for p in pins)} "
+              f"re-encoded for the refine canvas {sw}x{sh} (the conditioning carried them at the render "
+              f"canvas) -- the pin holds, the seam to the scene before stays exact"
+              + (" | " + "; ".join(dropped) if dropped else ""))
     packed = NestedTensor([vid_lat, audio_lat.to(vid_lat.dtype)])
     # -- noise + the per-stream denoise mask --
     noise = comfy.sample.prepare_noise(packed, int(seed), None)
@@ -3051,6 +3147,10 @@ class ULSPowerUpscale:
         _jr_hit = None
         _jr_snap = _vae_spatial(vae, _JOINT_SNAP_DEFAULT) if _joint_on else _JOINT_SNAP_DEFAULT
         if _joint_on:
+            # v1164: the grid is VAE x patch (H3: 16 x 2 = /32) -- a /16 canvas gave an odd latent side
+            # (1072x1872 -> 67x117) and a pinned frame cannot be patchified there
+            _jr_snap *= _dit_patch(model, 1)
+        if _joint_on:
             if sigmas is not None:
                 _jr_steps = max(1, len(_sigma_run(
                     [float(v) for v in sigmas.flatten().tolist()], denoise)[0]) - 1)
@@ -3392,7 +3492,7 @@ class ULSPowerUpscale:
                           f"Pick a kernel to put the canvas in your hand.")
                 tw, th, grows = _final_canvas(fw, fh, fsc, resize_method, fby)
                 if _joint_on and _order == "after pixel" and str(resize_method) != _NO_RESIZE:
-                    # v1004: the joint VAE's grid (H3: /16) -- land the canvas
+                    # v1004: the joint grid (VAE x patch since v1164; H3: /32) -- land the canvas
                     # there NOW so the refine's encode never centre-crops it.
                     _sw, _sh = _snap_to(tw, th, _jr_snap)
                     if (_sw, _sh) != (tw, th):

@@ -72,12 +72,14 @@ def read_list(folder):
         return {}
 
 
-def register(folder, k, full_path, keep=20, primary=False):
+def register(folder, k, full_path, keep=20, primary=False, run_files=None):
     """Add a clip to the list for scene k (0 = whole). The clip must be a
     video file INSIDE output/ (_root: OUTPUT_ROOT, else the folder's parent). -> the stored rel path.
     v1050: primary=True marks it THE clip of its run (the editor picks it at
     the run's end: the Save wired to clip_prefix, else the run's last video)
-    -- it then leads the scene's takes (see _order)."""
+    -- it then leads the scene's takes (see _order).
+    v1165: with primary, run_files (the run's clips, rel to output/) go into the scene's run history -- which
+    files belong to WHICH run, so the editor can say a newer run replaced the clip V1 showed (see replaced)."""
     root = _root(folder)
     full = os.path.realpath(full_path)
     if not (full == root or full.startswith(root + os.sep)):
@@ -95,10 +97,14 @@ def register(folder, k, full_path, keep=20, primary=False):
         items = [x for x in lst.get(k, []) if x != rel] + [rel]
         lst[k] = items[-int(keep):]
         prim = read_primary(folder)
+        runs = read_runs(folder)
         if primary:
             import time
             prim[k] = {"rel": rel, "at": time.time()}
-        _write_list(folder, lst, prim)
+            files = sorted(set([str(x).replace("\\", "/") for x in (run_files or []) if isinstance(x, str)] + [rel]))
+            hist = [h for h in runs.get(k, []) if h["rel"] != rel] + [{"rel": rel, "files": files, "at": prim[k]["at"]}]
+            runs[k] = hist[-int(keep):]
+        _write_list(folder, lst, prim, runs)
     return rel
 
 
@@ -107,15 +113,18 @@ def register(folder, k, full_path, keep=20, primary=False):
 _LIST_LOCK = threading.RLock()
 
 
-def _write_list(folder, lst, prim):
+def _write_list(folder, lst, prim, runs=None):
     import json
+    if runs is None:
+        runs = read_runs(folder)          # a writer that does not touch the history keeps it
     import tempfile
     os.makedirs(folder, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=STACK_LIST + ".", suffix=".tmp", dir=folder)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump({"v": 1, "scenes": {str(a): b for a, b in sorted(lst.items())},
-                       "primary": {str(a): b for a, b in sorted(prim.items())}}, f, indent=1)
+                       "primary": {str(a): b for a, b in sorted(prim.items())},
+                       "runs": {str(a): b for a, b in sorted(runs.items())}}, f, indent=1)
         os.replace(tmp, _list_path(folder))
     except BaseException:
         try:
@@ -186,6 +195,60 @@ def read_primary(folder):
 
 # a file of the same run may be written a moment AFTER the pick is stored
 PRIMARY_GRACE = 2.0
+
+
+LEGACY_RUN_GAP = 45 * 60.0     # seconds (v1165): a list without a run history -- older takes than this are a run before
+
+
+def read_runs(folder):
+    """v1165: {k: [{"rel", "files", "at"}, oldest first]} -- one entry per finished run of a scene: its clip and
+    every file it wrote. ({} when none -- a list written before v1165.)"""
+    import json
+    try:
+        with open(_list_path(folder), "r", encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception:
+        return {}
+    out = {}
+    for k, v in (d.get("runs") or {}).items():
+        try:
+            hist = [{"rel": str(h["rel"]), "files": [str(x) for x in (h.get("files") or [])], "at": float(h.get("at") or 0)}
+                    for h in v if isinstance(h, dict) and isinstance(h.get("rel"), str)]
+            out[int(k)] = hist
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def replaced(folder, k, takes, shown, stem=None):
+    """v1165 (Frank 18.10.: "dass man sehen kann, dass in der Timeline eine Datei ersetzt worden ist"): does the
+    clip `shown` (rel) stand where an EARLIER run's clip stood? takes = the scene's rels, newest first.
+    With a run history: some take is not a file of shown's own run (an earlier run, or a run that broke off
+    after saving). Without one (a list from before v1165) an estimate: two or more clips of the run's own
+    name (<stem>_NNNNN_, the clip_prefix Save -- one per finished run), or a take written more than LEGACY_RUN_GAP
+    before the shown clip (no run of this line takes that long from its first file to its last)."""
+    if not shown or len(takes or []) < 2:
+        return False
+    hist = [h for h in read_runs(folder).get(int(k), []) if h["rel"] == shown]
+    if hist:
+        own = set(hist[-1]["files"]) | {shown}
+        return any(t not in own for t in takes)
+    root = _root(folder)
+
+    def _mt(rel):
+        try:
+            return os.path.getmtime(os.path.join(root, rel))
+        except OSError:
+            return None
+    m0 = _mt(shown)
+    if m0 is not None and any((_mt(x) or m0) < m0 - LEGACY_RUN_GAP for x in takes if x != shown):
+        return True
+    if stem:
+        parts = re.split(r"(%[^%/]*%)", str(stem))      # %date:...% tokens are expanded in the file name
+        body = "".join("[^/]*?" if re.match(r"^%[^%/]*%$", x) else re.escape(x) for x in parts)
+        rx = re.compile("^" + body + r"_\d+_?\.[A-Za-z0-9]+$")
+        return sum(1 for t in takes if rx.search(os.path.basename(t))) >= 2
+    return False
 
 
 def _order(folder, k, timed):

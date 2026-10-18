@@ -190,6 +190,12 @@ const FIELD = "pls_timeline_view";
 export const PREVIEW_MIN = 96, PREVIEW_DEF = 180, PREVIEW_MAX = 2000;
 export const ROOT_GAP = 4, TOPBAR_H = 38, REFS_H = 40, WORK_H = 312, SND_H = 44, SND_W = 300, STATE_H = 14, BAR_H = 30, STATUS_H = 28;   // v1153: SND_W = the sound column
 export const RULER_H = 16, SCENES_H = 22, SHOTS_H = 34, ANCH_H = 24, MON_W = 460, MON_H = 240;
+/* v1163 (Frank 18.10.: "das Wiedergabe-Fenster ... an die Groesse des Clips anpassen", "beim Aufziehen und
+ * Zusammenziehen sauber anpassen"): the monitor is a BOX the clip is fitted into (contain), never a 16:9 frame
+ * the clip is stretched into; the work row's columns shrink down to their floors; the node has a floor width
+ * through computeSize (the ph_reference / CTE pattern -- LiteGraph clamps a drag against it; no onResize). */
+export const MON_MIN_W = 200, SND_MIN_W = 160, LEFT_MIN_W = 200, MON_AREA_H = 276;
+export const TL_MIN_W = 760;   // the node's floor: the three work columns at their floors + gaps + the track heads
 export const TAB_MODE_KEY = "pls_cine_mode", PREV_OPEN_KEY = "pls_cine_prev_open";
 export const MODES = [["text", "Text (T2V)"], ["keys", "Keyframes (I2V / FL2V)"], ["ref", "Reference (Ref2V)"]];
 const DBL_MS = 400;
@@ -454,6 +460,24 @@ export function splitOrder(n, number) {
     const ks = Array.from({ length: Math.max(0, n) }, (_, i) => i + 1);
     return Number(number) === -1 ? ks.reverse() : ks;
 }
+/* v1163 (Frank 18.10.: "Szene 2 bis 5 zusammen machen ... in einem Rutsch rendern"): every scene has a tick on
+ * the Scenes row; "render all scenes" and the "all scenes" run queue the TICKED ones only, in order. The node
+ * stores the UNticked scenes (node.properties, saved with the workflow) -- a scene added later starts ticked. */
+export const SKIP_KEY = "pls_cine_skip";
+export function skipOf(node) {
+    const v = node && node.properties && node.properties[SKIP_KEY];
+    return new Set(Array.isArray(v) ? v.map((x) => Math.trunc(Number(x))).filter((x) => x >= 1) : []);
+}
+export function pickedOrder(n, number, skip) {
+    return splitOrder(n, number).filter((k) => !(skip && skip.has(k)));
+}
+function _setSkip(node, k, ticked) {
+    const s = skipOf(node);
+    if (ticked) s.delete(k); else s.add(k);
+    node.properties = node.properties || {};
+    node.properties[SKIP_KEY] = [...s].sort((a, b) => a - b);
+    node.setDirtyCanvas?.(true, true);
+}
 const VIDEO_RE = /\.(mp4|webm|mov|mkv|m4v)$/i;
 /* the video clips a node's run output names ({filename, subfolder, type}) --
  * the pack's Save ("ph_save") or any other node that lists files */
@@ -505,6 +529,7 @@ export const DIV_H = 10;
 export const GUT_W = 216, NEWROW_H = 22;
 /* v1046: the timeline's toolbar (two rows at most) and the E4 switches */
 export const TOOLS_H = 40, TOOLS_MAX = 140, AUTO_KEY = "auto_track", RESTORE_KEY = "pls_cine_restore";
+export const AUTO_CHOICES = [["track", "new track"], ["replace", "replace"]];   // v1163
 /* v1047 (Frank 01.10.: "the total length free, e.g. 5 minutes -- prominent,
  * the view and the zoom follow"): the FILM row over the tracks -- the film's
  * length (= the edit span) and the zoom; the heads stay put while the lanes
@@ -1436,6 +1461,7 @@ function _stripCheck(node, fresh) {
 function _widthCheck(node, fresh) {
     const st = node._plsTl;
     if (!st || !st.prev) return;
+    _monitorFit(node);                                   // v1163: the monitor follows its column
     if (fresh) st.firstTries = 0;
     if (st.fitQueued) return;
     const w = st.prev.clientWidth;
@@ -1536,6 +1562,14 @@ function _savePieces(node, pieces) {
     for (const k of ["cuts", "end", "slip", "keep_tail"]) delete e[k];
     _saveEdit(node, e);
 }
+/* v1165 (Frank 18.10.: "dass man sehen kann, dass in der Timeline eine Datei ersetzt worden ist ... ein kleines
+ * gruenes NEW"): V1 shows the newest run of its place and an EARLIER run's clip stood there before (replace
+ * mode). The server decides which files belong to which run (the run history the register call now carries;
+ * for a list from before v1165 an estimate) -- the extra files ONE run writes (raw, upscale, interpolated) are
+ * no replacement. V1 pinned to an older take (new track mode: the later runs are tracks) is not marked. */
+export function isReplaced(c) {
+    return !!(c && c.replaced && Array.isArray(c.takes) && c.takes.length > 1 && (c.take || 0) === 0);
+}
 function _clipLane(node, m, pct) {
     const st = node._plsTl;
     const lane = st.clips;
@@ -1607,11 +1641,19 @@ function _clipLane(node, m, pct) {
             (sg.k ? "scene " + sg.k : "whole") + (split ? " \u00b7 " + (pcs.slice(0, i + 1).filter((q) => q.k === sg.k).length) : "")
             + (sg.speed !== 1 ? "  " + speedLabel(sg.speed) : "") + (sg.missing ? " -- not rendered" : ""));
         box.appendChild(lab);
+        if (!sg.missing && isReplaced(c)) {
+            const nw = _el("div", "position:absolute;right:3px;top:2px;padding:0 3px;border-radius:2px;font:bold 9px sans-serif;line-height:12px;"
+                + "color:#0b1a0b;background:#4caf50;box-shadow:0 0 2px #000;pointer-events:none;", "NEW");
+            nw.dataset.pls = "newmark";
+            box.appendChild(nw);
+        }
         // v1046 (Frank 30.09.): no take chip -- V1 shows the newest render; older
         // takes become tracks ("takes -> tracks" in the toolbar)
         box.title = (sg.k ? "scene " + sg.k : "whole run") + (split ? ", piece" : "") + (c.name ? ": " + c.name : "") + "\nfilm " + (sg.film_in / FPS).toFixed(3) + " - " + (sg.film_out / FPS).toFixed(3)
             + " s  <-  clip " + (sg.src_in / FPS).toFixed(3) + " - " + (sg.src_out / FPS).toFixed(3) + " s" + (sg.speed !== 1 ? "  at " + speedLabel(sg.speed) : "")
-            + (sg.hold ? " (+" + sg.hold + " frames held)" : "") + "\nclick: select + show its first frame  |  drag: slip (which part of the clip plays)";
+            + (sg.hold ? " (+" + sg.hold + " frames held)" : "")
+            + (!sg.missing && isReplaced(c) ? "\nNEW: replaced -- a newer run's clip stands here (the earlier files stay on disk: \u29c9 takes \u2192 tracks)" : "")
+            + "\nclick: select + show its first frame  |  drag: slip (which part of the clip plays)";
         // click = select + the player shows its first frame; drag = slip
         box.addEventListener("pointerdown", (ev) => {
             if (ev.button !== 0) return;
@@ -2660,7 +2702,8 @@ function _playerLoad(node) {
         pl.lvid.set(r.id, m);
     }
     const c0 = D.clips.find((c) => c && c.w) || ((D.film && D.film.layers) || []).map((r) => r.clip).find((c) => c && c.w);
-    if (c0) { pl.canvas.width = 480; pl.canvas.height = Math.round(480 * c0.h / c0.w); }
+    if (c0) { pl.ar = c0.w / c0.h; pl.boxW = null; }   // v1163: the clip's aspect -> the monitor's box
+    _monitorFit(node);
     pl.t = Math.min(pl.t || 0, filmLen(D) / FPS);
     _playerLabel(node);
 }
@@ -2717,14 +2760,15 @@ function _playerDraw(node) {
     const st = node._plsTl, pl = st.player, ctx = pl.canvas.getContext("2d");
     const W = pl.canvas.width, H = pl.canvas.height;
     ctx.globalAlpha = 1; ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
-    if (st.exact) { try { ctx.drawImage(st.exact, 0, 0, W, H); } catch (e) { /* not ready */ } _playerLabel(node); return; }
+    if (st.exact) { try { const v = st.exact, sc = v.videoWidth ? Math.min(W / v.videoWidth, H / v.videoHeight) : 0;
+        if (sc) ctx.drawImage(v, (W - v.videoWidth * sc) / 2, (H - v.videoHeight * sc) / 2, v.videoWidth * sc, v.videoHeight * sc); else ctx.drawImage(v, 0, 0, W, H); } catch (e) { /* not ready */ } _playerLabel(node); return; }
     const D = st.plan;
     if (!D || !D.plan) return;
     // at the very end the playhead stands AFTER the last frame -- show that frame
     const t = Math.min(pl.t || 0, filmLen(D) / FPS - 0.5 / FPS);
     const own = _owners(D, t);
-    if (!own) _drawMix(ctx, W, H, pl.videos, D.plan, t, false);
-    else if (own.v && own.v.base) _drawMix(ctx, W, H, pl.videos, D.plan, t, false);
+    if (!own) _drawMix(ctx, W, H, pl.videos, D.plan, t, true);              // v1163: contain, never stretched
+    else if (own.v && own.v.base) _drawMix(ctx, W, H, pl.videos, D.plan, t, true);
     else if (own.v) _drawMix(ctx, W, H, (pl.lvid && pl.lvid.get(own.v.id)) || new Map(), own.v.plan, t, true);
     _playerLabel(node);
 }
@@ -2813,6 +2857,48 @@ function _scrub(node, ev) {
     const mv = (e) => { e.stopPropagation(); if (e.buttons === 0) { up(); return; } go(e); };
     el.addEventListener("pointermove", mv); el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
 }
+/* v1163 (Frank 18.10.: "bei aktiv selektierter Timeline-Node ... Space-Taste ... Play"): Space plays / pauses
+ * the film of the ONE selected timeline node -- not while typing (a field, a select, a button keeps its own Space),
+ * not with a modifier. Pure: which node Space belongs to, or null. */
+export function spaceNode(ev, selected) {
+    if (!ev || !(ev.code === "Space" || ev.key === " ") || ev.ctrlKey || ev.altKey || ev.metaKey || ev.shiftKey) return null;
+    const t = ev.target, tag = t && t.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || (t && t.isContentEditable)) return null;
+    const tls = (selected || []).filter((n) => n && n.type === NODE && n._plsTl && (n.mode === 0 || n.mode === undefined));
+    return tls.length === 1 ? tls[0] : null;
+}
+function _selectedNodes() {
+    const s = app.canvas && app.canvas.selected_nodes;
+    if (!s) return [];
+    return s instanceof Map ? [...s.values()] : Array.isArray(s) ? s : Object.values(s);
+}
+function _onSpace(ev) {
+    const n = spaceNode(ev, _selectedNodes());
+    if (!n) return;
+    ev.preventDefault(); ev.stopPropagation();          // the page does not scroll, the canvas does not pan
+    if (!ev.repeat) { try { _playerToggle(n); } catch (x) { /* view only */ } }
+}
+/* the clip's picture inside the monitor's area: as large as fits, its own aspect (pure) */
+export function monitorBox(areaW, areaH, ar) {
+    const W = Math.max(1, Math.floor(Number(areaW) || 0)), H = Math.max(1, Math.floor(Number(areaH) || 0));
+    const a = Number(ar) > 0 ? Number(ar) : 16 / 9;
+    return W / H > a ? [Math.max(1, Math.round(H * a)), H] : [W, Math.max(1, Math.round(W / a))];
+}
+/* the monitor follows the clip's aspect and its column's width -- called when a clip comes (the plan) and on
+ * every width check (a resize, a pan, coming on screen); cheap when nothing changed */
+function _monitorFit(node) {
+    const st = node && node._plsTl, pl = st && st.player;
+    if (!pl || !pl.canvas) return;
+    const col = st.monCol, aw = (col && col.clientWidth) || MON_W;
+    if (!(aw > 0)) return;
+    const [w, h] = monitorBox(aw, MON_AREA_H, pl.ar);
+    if (pl.boxW === w && pl.boxH === h) return;
+    pl.boxW = w; pl.boxH = h;
+    const dpr = Math.min(2, (typeof window !== "undefined" && window.devicePixelRatio) || 1);
+    pl.canvas.style.width = w + "px"; pl.canvas.style.height = h + "px";
+    pl.canvas.width = Math.max(1, Math.round(w * dpr)); pl.canvas.height = Math.max(1, Math.round(h * dpr));
+    try { _playerDraw(node); } catch (e) { /* not ready */ }
+}
 function _playerToggle(node) {
     const st = node._plsTl, pl = st.player, L = filmLen(st.plan) / FPS;
     if (!L) return;
@@ -2867,21 +2953,23 @@ async function _renderAll(node) {
     const m0 = _model(node);
     const n = scenesOf(m0).length;
     const keep = { render: m0.render, active: m0.active };
+    const ticks = pickedOrder(n, 0, skipOf(node));               // v1163: the ticked scenes, in order
+    if (!ticks.length) { st.state.textContent = "no scene is ticked -- tick the scenes to render on the Scenes row"; return; }
     let queued = 0;
-    for (let k = 1; k <= n; k++) {
+    for (const k of ticks) {
         const mm = _model(node); mm.render = "scene"; mm.active = k; _save(node, mm, false);
         st.state.textContent = "queueing scene " + k + " of " + n + " ...";
         // v1082: the frontend's queue call returns false when the prompt was
         // refused (its own dialog shows why) -- the loop stops and says so
         let ok = true;
         try { ok = await _queue(); } catch (e) { ok = false; st.state.textContent = "queue failed at scene " + k + ": " + e.message; }
-        if (ok === false) { queued = k - 1; break; }
-        queued = k;
+        if (ok === false) { break; }
+        queued++;
     }
     const mm = _model(node); mm.render = keep.render; mm.active = keep.active; _save(node, mm, false);
     _render(node);
-    if (queued < n) st.state.textContent = (st.state.textContent.startsWith("queue failed") ? st.state.textContent + " -- " : "scene " + (queued + 1) + " was refused (see the dialog) -- ") + "scenes " + (queued + 1) + ".." + n + " not queued (" + queued + " queued)";
-    else st.state.textContent = n + " scene run(s) queued -> the stack of " + (m0.project || "cine");
+    if (queued < ticks.length) { const left = ticks.slice(queued); st.state.textContent = (st.state.textContent.startsWith("queue failed") ? st.state.textContent + " -- " : "scene " + left[0] + " was refused (see the dialog) -- ") + "scenes " + (left.every((x, i) => i === 0 || x === left[i - 1] + 1) ? left[0] + ".." + left[left.length - 1] : left.join(", ")) + " not queued (" + queued + " queued)"; }
+    else st.state.textContent = queued + " scene run(s) queued (" + (ticks.length < n ? "scenes " + ticks.join(", ") : "all") + ") -> the stack of " + (m0.project || "cine");
 }
 
 /* v1030: a number field for seconds -- lands on the frame when applied */
@@ -3210,10 +3298,42 @@ export function refItems(node) {
     for (const sname of SLOTS) { const n = up(sname); if (n) out.push({ name: sname, url: _thumbOf(n), title: n.title || n.type }); }
     return out;
 }
+/* v1162 (Frank 18.10., the neon lane: three photos on MiniMax Reference, the timeline said "no reference
+ * pictures"): the pictures may hang on the MiniMax Reference node the prompt flows into, not on this node.
+ * Follow the outputs downstream (prompt -> CLIP Text Encode -> MiniMax Reference, a few hops) and list the
+ * images wired THERE, in wired order -- the order the node numbers them <Picture 1..n>. */
+export const REF_NODE = "ULSMiniMaxReference", DOWN_HOPS = 4;
+export function refItemsDown(node) {
+    const g = node && (node.graph || app.graph), out = [];
+    if (!g || !g.getNodeById) return out;
+    const seen = new Set([node.id]);
+    let front = [node];
+    for (let hop = 0; hop < DOWN_HOPS && front.length; hop++) {
+        const next = [];
+        for (const n of front) for (const o of (n.outputs || [])) for (const id of (o && o.links) || []) {
+            const l = _link(n, id), t = l && g.getNodeById(l.target_id);
+            if (!t || seen.has(t.id)) continue;
+            seen.add(t.id);
+            if (t.type === REF_NODE) {
+                let k = 0;
+                for (const inp of (t.inputs || [])) {
+                    if (!inp || !/^image_\d+$/.test(inp.name) || inp.link == null) continue;
+                    const il = _link(t, inp.link), src = il && g.getNodeById(il.origin_id);
+                    if (!src) continue;
+                    k += 1;
+                    out.push({ name: "@" + inp.name, url: _thumbOf(src), title: "<Picture " + k + "> \u00b7 " + (src.title || src.type) });
+                }
+            } else next.push(t);
+        }
+        front = next;
+    }
+    return out;
+}
 function _refsRow(node, md) {
     const st = node._plsTl;
     if (!st || !st.refsRow || md === "text") return;
-    const items = refItems(node);
+    let items = refItems(node);
+    if (!items.length && md === "ref") items = refItemsDown(node);   // v1162: the pictures at MiniMax Reference count
     const sig = md + "|" + items.map((x) => x.name + "=" + x.url).join("|");
     if (st.refsSig === sig) return;
     st.refsSig = sig;
@@ -3328,6 +3448,18 @@ function _render(node) {
             (carryOf(m, k + 1) ? "\u21e4 " : "") + "Scene " + (k + 1) + "  " + (t1 - t0).toFixed(2) + " s" + (active ? "  (renders)" : ""));
         bar.title = "Scene " + (k + 1) + ": " + timeLabel(t0) + " - " + timeLabel(t1) + ", shots " + (a + 1) + "-" + b
             + "\nclick: select its first shot  |  double-click: its start and end";
+        // v1163: the tick -- "render all scenes" / the all-scenes run queue the ticked scenes only
+        if (sc.length > 1) {
+            const on = !skipOf(node).has(k + 1);
+            const tick = document.createElement("input"); tick.type = "checkbox"; tick.checked = on; tick.dataset.pls = "scenetick";
+            tick.style.cssText = "margin:0 4px 0 0;vertical-align:middle;width:11px;height:11px;cursor:pointer;";
+            tick.title = "ticked: 'render all scenes' renders scene " + (k + 1) + "  |  unticked: it is left out (its clips stay)";
+            tick.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+            tick.addEventListener("click", (ev) => ev.stopPropagation());
+            tick.addEventListener("change", () => { _setSkip(node, k + 1, tick.checked); _render(node); });
+            bar.prepend(tick);
+            if (!on) bar.style.opacity = "0.45";
+        }
         bar.addEventListener("pointerdown", (ev) => {
             ev.stopPropagation();
             if (isDouble(st, "scene:" + (k + 1))) { ev.preventDefault(); st.sel = { kind: "scene", k: k + 1 }; st.open = { focus: "start" }; }
@@ -3428,7 +3560,7 @@ function _render(node) {
     // source list for new anchors
     const srcs = _fillSources(node);
     if (st.snapSel && document.activeElement !== st.snapSel) st.snapSel.value = String(snapStep(node));
-    if (st.autoChk) st.autoChk.checked = autoOn(editOf(node));
+    if (st.autoChk) st.autoChk.value = autoOn(editOf(node)) ? "track" : "replace";   // v1163: the choice mirrors autoOn
     if (st.restChk) st.restChk.checked = !(node.properties && node.properties[RESTORE_KEY] === false);
     if (st.takesBtn) { const older = ((st.plan && st.plan.clips) || []).some((c) => c && (c.takes || []).length > 1);
         st.takesBtn.disabled = !older; st.takesBtn.style.opacity = older ? "1" : "0.5"; }
@@ -3559,13 +3691,16 @@ function _render(node) {
         : m.render === "scene" ? "scene:" + Math.min(sc.length, m.active) : "whole";
     st.mode.replaceChildren();
     const o0 = document.createElement("option"); o0.value = "whole"; o0.textContent = sc.length > 1 ? "whole timeline, one run (" + sc.length + " scenes as hard cuts)" : "whole timeline, one run"; st.mode.appendChild(o0);
-    if (sc.length > 1) { const oa = document.createElement("option"); oa.value = "all"; oa.textContent = "all scenes, one run each (" + sc.length + " runs)"; st.mode.appendChild(oa); }
+    const nTick = pickedOrder(sc.length, 0, skipOf(node)).length;   // v1163
+    if (sc.length > 1) { const oa = document.createElement("option"); oa.value = "all"; oa.textContent = nTick < sc.length ? "ticked scenes, one run each (" + nTick + " of " + sc.length + ")" : "all scenes, one run each (" + sc.length + " runs)"; st.mode.appendChild(oa); }
     sc.forEach((_, k) => { const o = document.createElement("option"); o.value = "scene:" + (k + 1); o.textContent = "scene " + (k + 1) + " only" + (sc.length === 1 ? " (= the whole)" : ""); st.mode.appendChild(o); });
     if (st.stackLabel) { const h = stackHint(m, sc.length); st.stackLabel.textContent = h; st.stackLabel.title = h; }
     st.mode.value = want;
     if (document.activeElement !== st.project) st.project.value = m.project || "";
     st.all.disabled = sc.length < 2; st.all.style.opacity = sc.length < 2 ? "0.5" : "1";
     st.all.style.display = sc.length < 2 ? "none" : "";   // v1153 (Frank: "what is render all scenes? do we have scenes?"): shown with 2+ scenes only
+    st.all.textContent = nTick < sc.length ? "render ticked scenes (" + nTick + ")" : "render all scenes";   // v1163
+    if (sc.length > 1 && nTick === 0) { st.all.disabled = true; st.all.style.opacity = "0.5"; }
     const ok = !!(st.plan && st.plan.plan && st.plan.plan.complete);
     for (const b of [st.join, st.exactBtn]) if (b) { b.disabled = !ok; b.style.opacity = ok ? "1" : "0.5"; }
     if (st.cutsBtn) { const P2 = st.plan && st.plan.plan; const diff = !!(P2 && !st.plan.whole && P2.place_cuts.length === P2.cuts_prompt.length && P2.place_cuts.some((f, j) => f !== P2.cuts_prompt[j]));
@@ -3579,7 +3714,7 @@ function _render(node) {
 
 function _field(node) {
     if (_w(node, FIELD) || typeof node.addDOMWidget !== "function") return;
-    const root = _el("div", "width:100%;height:" + fieldH(node, _model(node)) + "px;box-sizing:border-box;display:flex;flex-direction:column;gap:" + ROOT_GAP + "px;font-family:sans-serif;");
+    const root = _el("div", "width:100%;height:" + fieldH(node, _model(node)) + "px;box-sizing:border-box;display:flex;flex-direction:column;gap:" + ROOT_GAP + "px;font-family:sans-serif;overflow:hidden;");
     const stop = (e) => e.stopPropagation();
     root.addEventListener("pointerdown", stop); root.addEventListener("wheel", stop);
     // v1150: the CLIP Text Encode's segments may have changed -- the next look at the timeline asks again
@@ -3754,7 +3889,7 @@ function _field(node) {
     const edit = _el("div", "display:flex;flex-direction:column;gap:4px;height:" + WORK_H + "px;flex:0 0 auto;overflow:hidden;");
     // v1153 (Frank 17.10.: "the box must be marked as the audio prompt -- one only sees it while it is empty"):
     // the sound column, each field under its name, in the room beside the monitor
-    const sndRow = _el("div", "display:flex;flex-direction:column;gap:4px;flex:0 0 " + SND_W + "px;width:" + SND_W + "px;min-width:0;");
+    const sndRow = _el("div", "display:flex;flex-direction:column;gap:4px;flex:0 1 " + SND_W + "px;width:" + SND_W + "px;min-width:" + SND_MIN_W + "px;");
     sndRow.dataset.pls = "soundcol";
     const sndLab = _el("div", "font-size:11px;color:#80cbc4;font-weight:bold;flex:0 0 auto;", "overall_soundscape");
     sndLab.title = "the clip's sound: ambience and action sounds -- no dialogue, no diegetic music (H3 invents the sound when this is empty)";
@@ -3790,9 +3925,13 @@ function _field(node) {
     state.addEventListener("mouseenter", () => { state.title = state.textContent; });   // v1153: the whole line as the tooltip (it is cut at the width)
     // v1036: the player (the old stack tiles now live on the clip lane)
     // v1150: the monitor is the right column of the work area -- a 16:9 picture of MON_H px, the transport under it
-    const stack = _el("div", "display:flex;flex-direction:column;gap:6px;flex:0 0 " + MON_W + "px;width:" + MON_W + "px;align-items:stretch;min-width:0;");
-    const canvas = _el("canvas", "height:" + MON_H + "px;background:#000;border-radius:4px;flex:0 0 auto;aspect-ratio:16/9;max-width:100%;align-self:center;");
-    canvas.width = 480; canvas.height = 274;
+    const stack = _el("div", "display:flex;flex-direction:column;gap:6px;flex:0 1 " + MON_W + "px;width:" + MON_W + "px;align-items:stretch;min-width:" + MON_MIN_W + "px;");
+    // v1163: a box of MON_AREA_H px; the canvas inside takes the clip's aspect (_monitorFit), centred
+    const monBox = _el("div", "height:" + MON_AREA_H + "px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;background:#0b0b0b;border-radius:4px;overflow:hidden;min-width:0;");
+    monBox.dataset.pls = "monitor-box";
+    const canvas = _el("canvas", "height:" + MON_H + "px;background:#000;border-radius:4px;flex:0 0 auto;display:block;max-width:100%;");
+    canvas.width = 480; canvas.height = 270;
+    monBox.append(canvas);
     const ctl = _el("div", "display:flex;gap:6px;align-items:center;font-size:12px;color:#aaa;min-width:0;flex:0 0 auto;overflow:hidden;");
     const play = mk("\u25b6 play", () => _playerToggle(node), "play / pause the film as the clip lane cuts it (live mix; 'exact preview' = ffmpeg)");
     play.style.alignSelf = "flex-start"; play.style.minWidth = "84px";
@@ -3872,7 +4011,7 @@ function _field(node) {
     const r1 = _el("div", "display:flex;gap:6px;align-items:center;"); r1.append(play, ptime);
     const r2 = _el("div", "display:flex;gap:6px;align-items:center;margin-left:auto;"); r2.append(exactBtn, live, join);
     ctl.append(r1, r2);
-    stack.append(canvas, ctl);
+    stack.append(monBox, ctl);
     stack.dataset.pls = "monitor";
     // the E4 switches (Frank 30.09.): new renders into a new track; restore the
     // tracks when the workflow is opened again; the render's older takes as tracks
@@ -3884,8 +4023,16 @@ function _field(node) {
         l.append(c, _el("span", "", label)); l.title = title;
         return [l, c];
     };
-    const [autoLab, autoChk] = chk("new render \u2192 new track", "on (default): the first run of a place lands in V1, every run after it in a NEW track on top -- a basin of takes to cut from (V1 keeps the clip it shows now)\noff: a new run REPLACES the render in V1 (the newest is shown; the old files stay on disk)",
-        true, (v) => _setAuto(node, v), "auto");
+    // v1163 (Frank 18.10.: "nicht new Track, sondern Replace"): the switch as an explicit choice, same two modes
+    const autoLab = _el("label", "display:flex;gap:3px;align-items:center;white-space:nowrap;");
+    const autoChk = document.createElement("select"); autoChk.dataset.pls = "auto";
+    autoChk.style.cssText = "background:#222;color:#ddd;border:1px solid #444;border-radius:3px;font-size:11px;padding:0 2px;";
+    for (const [v, lab] of AUTO_CHOICES) { const o = document.createElement("option"); o.value = v; o.textContent = lab; autoChk.appendChild(o); }
+    autoChk.addEventListener("pointerdown", (e) => e.stopPropagation());
+    autoChk.addEventListener("change", () => _setAuto(node, autoChk.value === "track"));
+    autoLab.append(_el("span", "", "new render \u2192"), autoChk);
+    autoLab.title = "new track (default): the first run of a place lands in V1, every run after it in a NEW track on top -- a basin of takes to cut from (V1 keeps the clip it shows now)\n"
+        + "replace: a new run REPLACES the clip of its scene in V1 -- V1 shows the newest run of every scene (the old files stay on disk; tracks stay as they are)";
     const [restLab, restChk] = chk("restore on open", "on: the tracks and cuts come back when the workflow is opened again\noff: opened again, the timeline starts empty (V1 shows the newest render; the files stay on disk)",
         true, (v) => { node.properties = node.properties || {}; node.properties[RESTORE_KEY] = !!v; node.setDirtyCanvas?.(true, true); }, "restore");
     const takesBtn = mk("\u29c9 takes \u2192 tracks", () => _takesToTracks(node), "the render's OLDER takes (the runs before the newest) as tracks of their own, on top");
@@ -3930,7 +4077,7 @@ function _field(node) {
     topBar.append(modeSeg, tgt, _el("span", "margin-left:4px", "length"), len, _el("span", "", "s"), lenInfo,
         _el("span", "margin-left:8px", "project"), project, _el("span", "margin-left:8px", "render"), mode,
         _el("span", "flex:1 1 auto;"), all, run);
-    const left = _el("div", "display:flex;flex-direction:column;gap:6px;flex:1 1 auto;min-width:0;");
+    const left = _el("div", "display:flex;flex-direction:column;gap:6px;flex:1 1 auto;min-width:" + LEFT_MIN_W + "px;");
     left.dataset.pls = "inspector";
     left.append(edit);
     const work = _el("div", "display:flex;gap:10px;flex:0 0 auto;align-items:stretch;height:" + WORK_H + "px;");
@@ -3954,7 +4101,7 @@ function _field(node) {
         node._plsTl = { root, stackLabel, topBar, headRow, refsRow, work, status, chips, prevBtn, pop, popImg, modeBtns, modeSeg, toCte, m: _model(node),
             sec: { topbar: topBar, headrow: headRow, refs: refsRow, work, state, tools, film, scroller, bar, status, prev }, anchorsRow, anchorBtns, above, below, v1Row, tools, autoChk, restChk, takesBtn, v1Head, a1Head, tc, tl, newLane, addBtn, delBtn, span, filmInfo, viewInfo, zSl, nav, thumb, scroller, active: BASE_ID, recent: [], len, lenInfo, style, trig, tgt, ruler, scenes, shots, anchors, src, snapSel, edit, sound, music, prev, mode, project, target,
             all, join, state, stack, clips, audio, head, headGrip, cuts, lanes, divs: null, pct: null, cutCtx: null, plan: null, exact: null, ax: 0, exactBtn, cutsBtn, tail, splitBtn, healBtn, linkBtn, typeBtn, laneW: 0, scrubbing: false,
-            player: { canvas, play, time: ptime, videos: new Map(), playing: false, t: 0, t0: 0, raf: 0 }, sel: { kind: "shot", i: 0 }, timer: null,
+            player: { canvas, play, time: ptime, videos: new Map(), playing: false, t: 0, t0: 0, raf: 0, ar: 16 / 9, boxW: null, boxH: null }, monCol: stack, sel: { kind: "shot", i: 0 }, timer: null,
             io: null, prevH: PREVIEW_DEF, fitW: null, fitNodeW: null, fitQueued: false, bracket: false, bracketTimer: null, previewPending: false, fitting: false, lastDown: null, open: null, transSel: null };
         for (const [el, d] of [[state, "block"], [scroller, "block"], [prev, "block"]]) el._plsDisp = d;
         if (typeof IntersectionObserver === "function") {
@@ -3971,6 +4118,13 @@ app.registerExtension({
     name: "polyhedron.cine_timeline",
     beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== NODE) return;
+        // v1163: the node's floor width -- LiteGraph clamps a drag against computeSize (no onResize hook)
+        const _cs = nodeType.prototype.computeSize;
+        nodeType.prototype.computeSize = function () {
+            const size = _cs ? _cs.apply(this, arguments) : [TL_MIN_W, 80];
+            size[0] = Math.max(size[0], TL_MIN_W);
+            return size;
+        };
         const created = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const r = created?.apply(this, arguments);
@@ -4041,6 +4195,8 @@ app.registerExtension({
         };
     },
     async setup() {
+        // v1163: Space = play / pause the selected timeline (one listener for the page, capture phase)
+        if (!globalThis.__plsTlSpace && typeof document !== "undefined" && document.addEventListener) { globalThis.__plsTlSpace = true; document.addEventListener("keydown", _onSpace, true); }
         // v1031: a resize, a pan or a drag ends with the pointer let go --
         // then every timeline looks once whether its width changed
         window.addEventListener("pointerup", () => {
@@ -4147,7 +4303,7 @@ app.registerExtension({
                         const cut = pick.lastIndexOf("/");
                         try {
                             await api.fetchApi("/pls/cine/register", { method: "POST", headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({ project: run.project, scene: run.scene, primary: true,
+                                body: JSON.stringify({ project: run.project, scene: run.scene, primary: true, run_files: run.rels,   // v1165: the run history
                                     file: { filename: pick.slice(cut + 1), subfolder: cut >= 0 ? pick.slice(0, cut) : "", type: "output" } }) });
                         } catch (e) { /* the newest file still leads */ }
                         // v1046: "new render -> new track" -- v1088: on THIS run's timeline only
@@ -4182,7 +4338,10 @@ app.registerExtension({
                 let res;
                 let done = 0, refused = 0;
                 try {
+                    const skip = skipOf(node);                       // v1163: the ticked scenes only
+                    if (pickedOrder(n, number, skip).length === 0) { node._plsTl.state.textContent = "no scene is ticked -- nothing queued"; return false; }
                     for (const k of splitOrder(n, number)) {
+                        if (skip.has(k)) continue;
                         const mm = _model(node); mm.active = k; _save(node, mm, false);
                         node._plsTl.state.textContent = "queueing scene " + k + " of " + n + " ...";
                         res = await orig.call(this, number, batchCount);
@@ -4190,7 +4349,7 @@ app.registerExtension({
                         done++;
                     }
                     node._plsTl.state.textContent = refused ? "scene " + refused + " was refused (see the dialog) -- the remaining scenes are not queued (" + done + " queued)"
-                        : n + " scene run(s) queued -> the stack of " + (m0.project || "cine");
+                        : done + " scene run(s) queued" + (done < n ? " (the ticked ones)" : "") + " -> the stack of " + (m0.project || "cine");
                 } catch (x) {
                     node._plsTl.state.textContent = "queue failed after " + done + " scene run(s): " + x.message;
                     throw x;

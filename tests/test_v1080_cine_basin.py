@@ -115,8 +115,12 @@ js = (ROOT / "web" / "js" / "ph_cine_timeline.js").read_text(encoding="utf-8")
 _need('export function autoOn(e) { return !(e && e[AUTO_KEY] === false); }' in js, "B3 autoOn exported, 'not explicitly false'")
 i = js.find("function _setAuto(node, on)")
 _need(i > 0 and '} else { e[AUTO_KEY] = false; delete e.takes; }' in js[i:i + 700], "B3 off stores an explicit false")
-_need('true, (v) => _setAuto(node, v), "auto");' in js, "B3 the checkbox defaults to on")
-_need("if (st.autoChk) st.autoChk.checked = autoOn(editOf(node));" in js, "B3 the checkbox mirrors autoOn")
+# v1163 (Frank 18.10.: "nicht new Track, sondern Replace"): the checkbox became an explicit choice
+# "new render -> new track | replace" -- the same two modes, the same default (a missing key = on = new track)
+_need('export const AUTO_CHOICES = [["track", "new track"], ["replace", "replace"]];' in js
+      and 'autoChk.addEventListener("change", () => _setAuto(node, autoChk.value === "track"));' in js,
+      "B3 the choice: new track (first, the default) | replace -> _setAuto")
+_need('if (st.autoChk) st.autoChk.value = autoOn(editOf(node)) ? "track" : "replace";' in js, "B3 the choice mirrors autoOn")
 j = js.find("async function _autoTrack1(node, rel, scene, nFiles)")
 body = js[j:j + 1400]
 _need("if (!autoOn(e)) return;" in body, "B3 _autoTrack1 gates on autoOn")

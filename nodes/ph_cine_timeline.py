@@ -646,7 +646,7 @@ async def handle_scenes(request):
         return web.json_response({"folder": "", "scenes": [], "whole": None, "error": "%s: %s" % (type(e).__name__, e)})
 
 
-def register_clip(project, scene, ref, primary=False):
+def register_clip(project, scene, ref, primary=False, run_files=None):
     """v1034: the editor saw a run of scene `scene` (0 = the whole timeline)
     write the clip `ref` ({filename, subfolder, type}) -- list it in the
     project's stack. Only files of type "output" under output/. -> rel path."""
@@ -657,7 +657,7 @@ def register_clip(project, scene, ref, primary=False):
         raise ValueError("no filename")
     sub = str(ref.get("subfolder", "") or "")
     full = os.path.join(_output_dir(), sub, name)
-    return A.register(project_folder(project), int(scene), full, primary=bool(primary))
+    return A.register(project_folder(project), int(scene), full, primary=bool(primary), run_files=run_files)
 
 
 async def handle_register(request):
@@ -666,7 +666,7 @@ async def handle_register(request):
     try:
         body = await request.json()
         rel = register_clip(body.get("project", ""), body.get("scene", 0), body.get("file"),
-                            primary=bool(body.get("primary")))
+                            primary=bool(body.get("primary")), run_files=body.get("run_files"))
     except Exception as e:
         return web.json_response({"error": "%s" % e})
     print("[PLS] Cine stack: scene %s <- %s%s" % (body.get("scene"), rel,
@@ -812,7 +812,10 @@ def edit_plan(model, edit, strips=True):
         # a take is only pinned while "new render -> new track" is on
         want = (ed.get("takes") or {}).get(str(k)) if ed.get("auto_track", True) is not False else None   # v1080: on by default
         i = rels.index(want) if want in rels else 0
-        item = {"k": k, "takes": rels, "take": i, "path": None, "view": None, "strip": None, "name": None}
+        item = {"k": k, "takes": rels, "take": i, "path": None, "view": None, "strip": None, "name": None,
+                # v1165: V1 shows a clip that replaced an earlier run's (the green NEW)
+                "replaced": bool(i == 0 and rels and A.replaced(folder, k, rels, rels[0],
+                                                                 stem=os.path.basename(T.clip_prefix(model, k))))}
         if cands:
             path = cands[i]
             try:

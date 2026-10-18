@@ -1303,10 +1303,24 @@ segments for you; **"prompt the run will produce"** shows the text the encoder
 will receive, byte for byte. The chip at the foot estimates the tokens.
 
 **The tracks.** After a run, its clip lands on **V1 / A1** — picture and
-sound — read from where the Save wrote it. With **new render → new track** on,
-every further run opens a track on top (V2, V3 …) at V1's height, and V1 keeps
-its clip; **takes → tracks** turns the older runs into tracks too. Each track
-shows its real frames and its waveform.
+sound — read from where the Save wrote it. **new render →** picks what a further
+run does: **new track** (the default) opens a track on top (V2, V3 …) at V1's
+height and V1 keeps its clip; **replace** puts the new run in V1 in place of the
+clip of its scene (the old files stay on disk). A V1 clip that replaced an
+earlier run carries a small green **NEW**. **takes → tracks** turns the older
+runs into tracks too. Each track shows its real frames and its waveform.
+
+**Scenes, ticked.** From two scenes on, every scene has a tick on the Scenes row:
+**render ticked scenes** queues only the ticked ones, in order — e.g. scenes 2–5
+in one go after a change. A scene that *carries* starts on the last frame of the
+newest clip of the scene before, so in one go each ticked scene starts on the
+one that was just rendered.
+
+**The monitor** takes the shape of the clip (a portrait clip is shown portrait,
+never squeezed) and follows the node's width; **Space** plays and pauses while
+the timeline node is selected (never while you type in a field). The node keeps
+a floor width of 760 px when you narrow it; the columns shrink instead of
+spilling out.
 
 | On a track | What it does |
 |---|---|

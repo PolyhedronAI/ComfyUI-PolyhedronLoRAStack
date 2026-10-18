@@ -295,7 +295,7 @@ def main():
                 return False
         extra["_MuteInfoLogs"] = _Mute
         extra["inspect"] = __import__("inspect")
-        ns = _lift_helpers(src + "\n" + _read(PROG), ["_sigma_tail", "_vae_frame_law", "_snap_to",
+        ns = _lift_helpers(src + "\n" + _read(PROG), ["_sigma_tail", "_vae_frame_law", "_snap_to", "_dit_patch",
                                  "_joint_verdict", "_patch_count", "_joint_refine",
                                  "_sigma_on_grid", "_LATENT_CACHE", "_latent_cache_get", "_latent_cache_put",
                                  "_Phase", "_phase_plan", "_rates_load", "_rates_learn",
@@ -359,7 +359,9 @@ def main():
                 calls.append(("decode", lat.shape))
                 t_ = lat.shape[2]
                 return _T((1, (t_ - 2) // 5 * 17 + 5, lat.shape[3] * 16, lat.shape[4] * 16, 3), "px")
-        model = types.SimpleNamespace(patches={"a": 1, "b": 2}, model_options={})
+        # v1164: Core's H3 transformer patchifies (1, 2, 2) -- the joint grid is VAE x patch = /32
+        model = types.SimpleNamespace(patches={"a": 1, "b": 2}, model_options={},
+                                      model=types.SimpleNamespace(diffusion_model=types.SimpleNamespace(patch_size=(1, 2, 2))))
         frames = _T((22, 1075, 1882, 3), "frames")
         audio = _T((1, 32, 300), "audio")
         latent = {"samples": _Nested([_T((1, 24, 7, 48, 84), "vid0"), audio])}
@@ -378,11 +380,11 @@ def main():
         _need(k["latent"].tensors[1] is audio,
               "%s: B1 the audio stream must be the WIRED one, untouched" % NAME)
         vid = k["latent"].tensors[0]
-        _need(vid.shape == (1, 24, 7, 67, 117),
-              "%s: B1 the video stream is the re-encoded, /16-snapped clip: got %s" % (NAME, vid.shape))
+        _need(vid.shape == (1, 24, 7, 66, 116),
+              "%s: B1 the video stream is the re-encoded, /32-snapped clip (even latent sides): got %s" % (NAME, vid.shape))
         enc = [c for c in calls if c[0] == "encode"]
-        _need(enc and enc[0][1][1:3] == (1072, 1872),
-              "%s: B1 the encode must see the snapped canvas, got %s" % (NAME, enc))
+        _need(enc and enc[0][1][1:3] == (1056, 1856),
+              "%s: B1 the encode must see the snapped canvas (/32), got %s" % (NAME, enc))
         m = k["mask"]
         _need(m is not None and getattr(m, "is_nested", False), "%s: B1 'keep' needs a nested mask" % NAME)
         if m is not None and getattr(m, "is_nested", False):
@@ -396,7 +398,7 @@ def main():
         _need(not any(c[0] == "KSampler" for c in calls), "%s: B2 with a curve no KSampler schedule is built" % NAME)
         _need(info["steps_run"] == 4 and abs(info["start_sigma"] - 0.30) < 1e-9,
               "%s: B2 info reports 4 steps from 0.30, got %s" % (NAME, info))
-        _need(out.shape == (22, 1072, 1872, 3), "%s: B1 output frames [N,H,W,3], got %s" % (NAME, out.shape))
+        _need(out.shape == (22, 1056, 1856, 3), "%s: B1 output frames [N,H,W,3], got %s" % (NAME, out.shape))
         _need("enc:joint" in clock.measured and "step:joint" in clock.measured and "dec:joint" in clock.measured,
               "%s: B1 the clock hears encode, step and decode of the joint stage" % NAME)
 
