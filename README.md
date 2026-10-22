@@ -18,7 +18,7 @@ Installed as one custom-node pack — the node names, the package id
 
 ---
 
-> **Handbook:** [`docs/Polyhedron_Suite_Documentation_v392.pdf`](docs/Polyhedron_Suite_Documentation_v392.pdf)
+> **Handbook:** [`docs/Polyhedron_Suite_Documentation_v393.pdf`](docs/Polyhedron_Suite_Documentation_v393.pdf)
 > -- every node, with model notes for MiniMax H3, WAN 2.2 and the other families.
 
 # ⬡ Polyhedron Media Loader & ⬡ Polyhedron Save
@@ -876,6 +876,22 @@ template renders, as it ships, in one run (click for the film, picture and
 sound; drop the `.mp4` on the canvas and the workflow loads from it):
 
 [![The fox, a frame of the template's run: the close-up, golden rim light, amber eyes](assets/fox_h3_run.jpg)](assets/fox_h3_run.mp4)
+
+The five Cine Timeline templates from the table above, each as it rendered in
+one run (click a picture for the clip with sound; every clip carries its
+template, so dropping the `.mp4` on the canvas loads the workflow):
+
+| T2V | REFS | KEYFRAMES |
+|---|---|---|
+| [![fox_t2v: three shots from text only](assets/fox_t2v.jpg)](assets/fox_t2v.mp4) | [![fox_refs: three reference pictures as @image_1..3](assets/fox_refs.jpg)](assets/fox_refs.mp4) | [![fox_keyframes: a first frame and two guides](assets/fox_keyframes.jpg)](assets/fox_keyframes.mp4) |
+| **CONTINUE** (the film, both scenes) | **CONTINUE_REFS** (scene 2) | |
+| [![fox_continue: scene 2 continues scene 1](assets/fox_continue_film.jpg)](assets/fox_continue_film.mp4) | [![fox_continue_refs: scene 2 with three references](assets/fox_continue_refs.jpg)](assets/fox_continue_refs.mp4) | |
+
+Reference photos used by REFS, KEYFRAMES and CONTINUE_REFS (Wikimedia Commons):
+"Vulpes vulpes ssp fulvus 26568101" by Joanne Redwood (CC0); "Vulpes Vulpes,
+Island Beach State Park, NJ 04" by peggycadigan (CC BY 2.0); "Vulpes vulpes
+(32846612491)" by xulescu_g (CC BY-SA 2.0). The photos are not shipped; links
+and licences in [`docs/third_party/fox_reference_photos.md`](docs/third_party/fox_reference_photos.md).
 
 
 - **⓪ Cine Timeline** holds the film. The fixed parts of the prompt sit in the

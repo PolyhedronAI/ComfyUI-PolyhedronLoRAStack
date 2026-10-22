@@ -1,3 +1,35 @@
+# v393 -- 3.93.0: the live monitor cuts on the frame
+
+**Ctrl+F5** (no node, widget or route change). Carries everything of v392 below -- an install from v391 gets both.
+
+## Cine Timeline -- the live monitor
+
+At a cut the monitor could show one frame of the clip that the film leaves out (the grid overhang past the cut)
+before the next scene took over. At a scene that continues the one before (motion carry), the next scene goes on
+from the frame before it -- the same moment twice, a stutter at the seam. The export was always clean.
+
+- The monitor's clock counts the frame the clip on screen shows (it ran half a frame behind it).
+- A clip that already shows a frame past its piece is not drawn; the monitor keeps its last picture until the next
+  piece is there.
+
+Measured in the browser with two barcoded clips: the frame past the cut in 4 of 5 runs before, in none of 12 after.
+Guard `test_v1214_live_seam`.
+
+## Handbook
+
+`docs/Polyhedron_Suite_Documentation_v393.pdf` (116 pages): Part VII shows the two picture modes on the timeline
+(Keyframes with its anchors, Reference with its `@image` tags) and the CONTINUE film after both runs.
+Part VII names the three reference photos (authors and licences).
+
+## The five fox templates, rendered
+
+`assets/fox_t2v`, `fox_refs`, `fox_keyframes`, `fox_continue_film`, `fox_continue_refs` (`.mp4` + poster `.jpg`):
+one run of each template, shown in the README under Example workflows. Picture and sound are the renders as
+they came out (not re-encoded); the embedded workflow is the template as shipped in `example_workflows/`.
+Reference photos: `docs/third_party/fox_reference_photos.md`.
+
+---
+
 # v392 -- 3.92.0: the H3 film chain complete -- scenes that continue, cuts that stay cuts, a restore pass
 
 **Restart ComfyUI, then Ctrl+F5.** 47 nodes: six are new (below), none renamed or removed. Widgets are only

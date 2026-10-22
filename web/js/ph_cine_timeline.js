@@ -3018,6 +3018,9 @@ function _pictureVideos(node, t) {
 }
 /* v1172: can the picture at t be drawn as it is (every video it needs has a decoded picture and is not seeking)? */
 export function pictureReady(vs) { return vs.every((x) => x && x.readyState >= 2 && !x.seeking); }
+/* v1214: a playing piece whose video already shows a frame past its material (the clock has not reached the cut
+ * yet) -- the monitor keeps its last picture instead of showing what the film leaves out */
+export function pastOut(sg, v) { return !!(sg && v && !v.paused && v.currentTime * FPS >= sg.src_out); }
 function _playerDraw(node) {
     const st = node._plsTl, pl = st.player, ctx = pl.canvas.getContext("2d");
     const W = pl.canvas.width, H = pl.canvas.height;
@@ -3025,7 +3028,8 @@ function _playerDraw(node) {
     // as black -- the monitor keeps the last picture it showed until the new one is there
     if (!st.exact && pl.shown && st.plan && st.plan.plan) {
         const tq = Math.min(pl.t || 0, filmLen(st.plan) / FPS - 0.5 / FPS);
-        if (!pictureReady(_pictureVideos(node, tq).map((x) => x.v))) { _playerLabel(node); return; }
+        const pv = _pictureVideos(node, tq);
+        if (!pictureReady(pv.map((x) => x.v)) || (pv.length === 1 && pastOut(pv[0].sg, pv[0].v))) { _playerLabel(node); return; }
     }
     pl.shown = true;
     ctx.globalAlpha = 1; ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
@@ -3084,7 +3088,11 @@ export const PREROLL = 0.75, DRIFT_MAX = 0.25;      // v1172: seconds
 export function masterTime(sg, v) {
     if (!sg || !v || v.paused || v.seeking || v.readyState < 3) return null;
     const sp = Number(sg.speed) || 1;
-    const t = (sg.film_in + (sg.hold_head || 0) + (v.currentTime * FPS - 0.5 - sg.src_in) / sp) / FPS;
+    // v1214 (Frank 22.10.: a "Hacker" at a motion-carried seam, live only): a playing video shows frame
+    // floor(currentTime * FPS) -- the clock counts that frame, not half a frame behind it. The half frame kept the film
+    // in the old piece while its video already showed the frame after the cut (the grid overhang), and the next scene
+    // then continued from the frame before: the same moment twice.
+    const t = (sg.film_in + (sg.hold_head || 0) + (v.currentTime * FPS - sg.src_in) / sp) / FPS;
     if (!(t >= sg.film_in / FPS - 1 / FPS && t <= sg.film_out / FPS + 1 / FPS)) return null;
     return t;
 }
