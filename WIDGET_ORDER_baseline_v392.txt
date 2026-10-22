@@ -22,6 +22,9 @@ ULSClipStore
 ULSEmptyLatent	latent_type,width,height,length,batch_size,noise_type,noise_seed,noise_strength,duration_seconds
 ULSFastUpscale	size_mode,upscale_by,width,height,resize_method,device,divisible_by,per_batch,mute_staging_logs,keep_proportion,crop_position,pad_color
 ULSFilter	exposure,temperature,tint,contrast,gamma,shadows,highlights,saturation,vibrance,hue_shift,lut_name,lut_strength,sharpen_amount,sharpen_radius,preset,auto_mode,sharpen_threshold,detail_amount
+ULSFreeVRAM	value,mode
+ULSH3LatentUpscale	upscaler,size_mode,scale,width,height,megapixels,align,temporal_chunking,free_vram_first
+ULSH3SemanticBridge	adapter,alpha,magnitude_match
 ULSImagePickFrame	frame_index,mode,count
 ULSInspector	
 ULSInt	value,preset_config
@@ -33,15 +36,19 @@ ULSLoadUpscaleModel	model_name
 ULSLoadVAE	vae_name,precision
 ULSMediaInfo	fps
 ULSMediaLoader	media_ref,frame_load_cap,frame_skip,force_fps,batch_config,proc_config,keep_input_fps,on_empty
-ULSMiniMaxContinue	mode,context_frames,with_audio,anchor_frame
-ULSMiniMaxReference	prompt,ref_image_size,megapixels_1,megapixels_2,megapixels_3,megapixels_4,megapixels_5,megapixels_6,megapixels_7,megapixels_8,megapixels_9,tags
+ULSMiniMaxAudioLock	strength,start_frame,after
+ULSMiniMaxContinue	mode,context_frames,with_audio,anchor_frame,audio_context,hold,release_frames
+ULSMiniMaxDriftControl	taper_frames,prefix_frames
+ULSMiniMaxKeyframes	prompt,frame_fit,tags
+ULSMiniMaxReference	prompt,ref_image_size,megapixels_1,megapixels_2,megapixels_3,megapixels_4,megapixels_5,megapixels_6,megapixels_7,megapixels_8,megapixels_9,tags,ref_noise
+ULSMiniMaxSecondPassHold	context_frames,release_frames,freeze_audio,sigmas
 ULSModelSwitch	select,model_1,model_2,model_3,model_4,model_5,model_6
 ULSMusicAudioEncode	strength,start,length,source
 ULSMusicPrompt	caption,lyrics,seconds,seed,cfg_scale,top_k,caption_mix
 ULSMusicSave	project,name,format,tiled_decode,tile_size,overlap
 ULSNag	nag_scale,nag_alpha,nag_tau,start_percent,end_percent
 ULSNote	title,text
-ULSPowerUpscale	dual_moe,upscale_by,denoise,steps,cfg,upscale_by_low,denoise_low,steps_low,cfg_low,seed,sampler_name,scheduler,tile_size,tile_overlap,sigma_shift,sampler_low,scheduler_low,result_preview,process_preview,mute_staging_logs,resize_method,per_batch,vae_tiling,pixel_stage,final_upscale_by,sigma_shift_low,refine_order,audio_stream
+ULSPowerUpscale	dual_moe,upscale_by,denoise,steps,cfg,upscale_by_low,denoise_low,steps_low,cfg_low,seed,sampler_name,scheduler,tile_size,tile_overlap,sigma_shift,sampler_low,scheduler_low,result_preview,process_preview,mute_staging_logs,resize_method,per_batch,vae_tiling,pixel_stage,final_upscale_by,sigma_shift_low,refine_order,audio_stream,pixel_speed,restore_color,restore_overlap,restore_frames,restore_model,restore_order
 ULSReferenceBoard	board
 ULSResolveInspector	analysis_depth,max_layers,device
 ULSRoughCutGate	after_step,timeout

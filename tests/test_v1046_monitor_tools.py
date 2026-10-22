@@ -54,7 +54,7 @@ fld = js[js.index("function _field("):]
 _need("root.append(topBar, headRow, refsRow, work, state, tools, film, scroller, bar, status, prev, pop);" in fld and "work.append(left, sndRow, stack);" in fld, "M1 the monitor on top, the toolbar over the tracks")
 _need("r1.append(play, ptime);" in fld and "r2.append(exactBtn, live, join);" in fld and 'stack.dataset.pls = "monitor";' in fld,
       "M1 the monitor: picture, play, time, exact preview, live, export -- nothing else")
-_need("tools.append(splitBtn, healBtn, delBtn, linkBtn, typeBtn, snapSel, sep(), resetBtn, cutsBtn, tailLab,\n        sep(), autoLab, restLab, takesBtn);" in fld,
+_need("tools.append(splitBtn, healBtn, delBtn, linkBtn, typeBtn, snapSel, sep(), resetBtn, cutsBtn, tailLab,\n        sep(), autoLab, restLab, takesBtn, clearBtn);" in fld,   # AMENDED v1200: + x tracks (v1198)
       "M1 the toolbar: the editing tools, the E4 switches (v1047: the span moved to the FILM row; v1153: + V/A by type)")
 # AMENDED v1150: the toolbar is a section, fitted to its rows (TOOLS_H at least)
 _need("export const TOOLS_H = 40, TOOLS_MAX = 140, AUTO_KEY = \"auto_track\", RESTORE_KEY = \"pls_cine_restore\";" in js
@@ -123,8 +123,11 @@ _need("if (on) {\n        e[AUTO_KEY] = true;" in js and "} else { e[AUTO_KEY] =
 # v1088 (DECLARED): the track goes to THIS run's timeline (run.node), still in its project only
 _need("if (n && projectName(_model(n)) === run.project) {" in js and "const n = tlById(run.node);" in js
       and "if (!autoOn(e)) return;" in js, "M3 a registered run becomes a track when the switch is on (its project only)")
-_need(".filter((rel, i) => i !== (c.take || 0) && !have.has(rel)).reverse();" in js and "_sceneAt(node, c.k)" in js,
-      "M3 takes -> tracks: every older take not yet a track, oldest first, at its scene's start")
+# AMENDED v1200 (v1198, Frank 21.10.: 47 tracks): takes -> tracks = ONE track per render, the oldest render first (the
+# newest ends on top), each run's clip at its scene's start, what V1 shows or a track has skipped (test_v1198_one_track)
+_need("const plan = takePlan(R.renders, skip);" in js and "const at = _sceneAt(node, r.k);" in js and "return out.reverse();" in js
+      and "skip.add(c.takes[c.take || 0]);" in js,
+      "M3 takes -> tracks: every older render not yet on a track, oldest first, each clip at its scene's start")
 # v1082 (DECLARED): the wipe keeps the settings (wipeEdit), not {}
 # v1088 (DECLARED): the memory is per workflow + node (seenKeyOf), not per node id
 _need("if (this.properties && this.properties[RESTORE_KEY] === false && !_SEEN.has(seenKey)) this.properties[EDIT_KEY] = wipeEdit(this.properties[EDIT_KEY]);" in js

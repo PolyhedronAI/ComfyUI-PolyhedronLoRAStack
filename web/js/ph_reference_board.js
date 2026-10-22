@@ -210,7 +210,7 @@ function _card(node, entries, i) {
     for (const [label, fn] of [["\u25B2", () => _save(node, moveEntry(_entries(node), i, -1))],
                                ["\u25BC", () => _save(node, moveEntry(_entries(node), i, +1))],
                                ["\u2715", () => { const all = _entries(node); all.splice(i, 1); _save(node, all); }]]) {
-        const b = _el("button", "background:#2a2a2a;color:#ccc;border:1px solid #444;border-radius:3px;font-size:10px;cursor:pointer;padding:0 4px;", label);
+        const b = _el("button", "background:linear-gradient(#34476a,#2a3a57);color:#e8eefb;border:1px solid #4d6898;border-radius:3px;font-size:10px;cursor:pointer;padding:0 4px;", label);
         b.addEventListener("click", () => { fn(); _render(node); });
         ctl.appendChild(b);
     }

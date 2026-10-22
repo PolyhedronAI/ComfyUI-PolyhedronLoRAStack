@@ -508,23 +508,25 @@ def main():
               "%s: B3 the decision must measure the latent's streams, not trust the wire" % NAME)
         # F2: the ui payload
         _need('"pls_pu_verdict": [_verdict]' in seg, "%s: F2 the verdict rides in ui.pls_pu_verdict" % NAME)
-        _need('"pls_pu_path": ["joint" if _joint is not None else "tile"]' in seg,
+        _need('"pls_pu_path": ["joint" if _joint is not None else "tile"]' in seg,   # AMENDED v1199: the restore is a stage next to the refine
               "%s: F2 (v1008) the path rides along -- the frontend must not parse the text" % NAME)
         _need("print(f\"[PLS] Power Upscale: {_verdict}\")" in seg, "%s: F2 the verdict is also printed" % NAME)
 
     # ---- W1: INPUT_TYPES tail == JS canon tail ------------------------------
     _it = src[src.index("def INPUT_TYPES"):src.index("RETURN_TYPES")]
     it_tail = re.findall(r'^\s{16}"([a-z_0-9]+)": \(', _it[:_it.index('"optional": {')], re.M)
-    _need(it_tail[-3:] == ["sigma_shift_low", "refine_order", "audio_stream"],
-          "%s: W1 required must END on sigma_shift_low, refine_order, audio_stream -- got %s" % (NAME, it_tail[-3:]))
+    # v1186: slots 26..28 by POSITION -- widgets appended after them (pixel_speed) keep these slots
+    _si = it_tail.index("sigma_shift_low") if "sigma_shift_low" in it_tail else -1
+    _need(_si >= 0 and it_tail[_si:_si + 3] == ["sigma_shift_low", "refine_order", "audio_stream"],
+          "%s: W1 required carries sigma_shift_low, refine_order, audio_stream in a row (later appends follow) -- got %s" % (NAME, it_tail[_si:_si + 3]))
     opt = src[src.index('"optional": {', src.index("def INPUT_TYPES")):src.index("RETURN_TYPES")]
     _need('"latent": ("LATENT"' in opt and '"sigmas": ("SIGMAS"' in opt,
           "%s: W1 latent and sigmas are OPTIONAL inputs (no widgets_values slot)" % NAME)
     canon = re.search(r"const ORDER_CANON = \[(.*?)\];", js, re.S).group(1)
     canon = re.sub(r"//[^\n]*", "", canon)   # a commented-out entry is no entry
     names = re.findall(r'"([a-z_0-9]+)"', canon)
-    _need(names[-3:] == ["sigma_shift_low", "refine_order", "audio_stream"],
-          "%s: W1 JS ORDER_CANON must end the same way, got %s" % (NAME, names[-3:]))
+    _need(names[26:29] == ["sigma_shift_low", "refine_order", "audio_stream"] and names[-1] == it_tail[-1],
+          "%s: W1 JS ORDER_CANON carries the same slots (26-28 with control_after_generate) and ends like INPUT_TYPES, got %s / %s" % (NAME, names[26:29], names[-1]))
     _need("refine_order" not in re.search(r"const DUAL_ONLY = \[(.*?)\];", js, re.S).group(1),
           "%s: W1 refine_order is not a DUAL_ONLY twin" % NAME)
 

@@ -50,6 +50,8 @@ FOLDERS = {
     "polyhedron_music": "ULS_MUSIC_HOME",
     # v1095: the recommended text model (Music Lyrics, later the Timeline's script) -- Core's folder
     "text_encoders": "ULS_TEXT_HOME",
+    # v392 (internal v1193): Core's folder for the H3 latent upscaler, served by the door too.
+    "latent_upscale_models": "ULS_LATENT_UPSCALE_HOME",
 }
 
 _registered = set()

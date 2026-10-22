@@ -1,0 +1,112 @@
+# v392 -- 3.92.0: the H3 film chain complete -- scenes that continue, cuts that stay cuts, a restore pass
+
+**Restart ComfyUI, then Ctrl+F5.** 47 nodes: six are new (below), none renamed or removed. Widgets are only
+APPENDED (MiniMax Reference `ref_noise`; Power Upscale `pixel_speed` and the restore dials), old workflows load and
+run unchanged; baselines NODE_IDS and WIDGET_ORDER v392.
+
+## Six new nodes -- the H3 chain of the fox templates
+
+- **⬡ Polyhedron MiniMax Continue** -- a scene that continues the one before: its last frames and their sound held
+  in the AV latent (from the timeline's `tail` / `tail_audio`); pictures placed between first and last frame come in
+  as guides (the timeline's `anchors`).
+- **⬡ Polyhedron MiniMax Keyframes** -- first / last frame anchors for fl2va (`<Picture n>`; the timeline writes
+  the official alignment line into the prompt).
+- **⬡ Polyhedron MiniMax Audio Lock** -- a given sound track held, the picture made to it.
+- **⬡ Polyhedron MiniMax Drift Control** -- the held start of a continued scene masked anew at every step.
+- **⬡ Polyhedron H3 Latent Upscale** -- the learned 3D latent upscaler on the first pass's latent (LBH-123-AI, MIT).
+- **⬡ Polyhedron MiniMax Second Pass Hold** -- the second pass of a continued scene keeps its join at full size.
+
+Third-party code and its licences ship in `docs/third_party/` (MIT, Apache-2.0). No weights ship; the model door
+offers the H3 latent upscaler (659 MB, pinned) when the node runs and the file is missing.
+
+## Five templates
+
+`example_workflows/polyhedron_minimax_h3_fox_t2v`, `_refs`, `_keyframes`, `_continue`, `_continue_refs`: the fox as
+text only, with three reference pictures, with three keyframes, in two clips where the second continues the first,
+and those two clips with the three reference pictures. The original `polyhedron_minimax_h3_text_to_video` stays;
+two of its groups are fitted to their nodes again (the timeline and the Reference grew). Neutral
+upscale (Universal Neutral, light sharpening after the interpolation), the timeline's cuts wired into the
+Interpolate. Audio Lock and Second Pass ship bypassed in all five, Drift Control in both CONTINUE templates. The reference pictures
+are not shipped -- load any three photos (the note in group ② says which loader takes which).
+
+## ⬡ Polyhedron Cine Timeline
+
+- **Continuation with motion and sound.** `carry_mode` gains **motion**: a scene that carries begins with the last
+  frames of the scene before -- 5, 22 or 39 film frames (`head_frames`) -- and their sound. Two new outputs,
+  `tail` and `tail_audio`, hand them on; the scene is compiled that much longer, the later shots move back by the
+  head, and the film leaves the repeated frames out at the seam.
+- **`cuts` output** (output 12, appended): the times of the cuts inside the clip this run renders, as the compiled
+  scene places them. Wire it into the Interpolate (below).
+- **Tracks:** one track per render, clips between tracks, *takes -> tracks* per render; NEW marks the latest render;
+  clean cuts in the film and a monitor that does not flicker; one law for "how many film frames is this clip",
+  measured against ffmpeg. The fixes of the Cine audit (confirmed bugs, risks, optimisations).
+
+## ⬡ Polyhedron Interpolate
+
+- **New pin `cuts`** (appended after `video`), from the timeline: around each cut the timeline asked for (+-0.25 s)
+  the pair where the picture really jumps is held instead of interpolated -- no ghost dissolve at a cut, no threshold
+  to guess. Fast motion raises a whole window and is not held; a painted dissolve has no single jump and is
+  interpolated. `interp_info` names where each cut was found.
+- **`cut_guard` defaults to 0.1** (was 0 = off) for clips without a timeline. Saved workflows keep their own value.
+
+## ⬡ Polyhedron Power Upscale
+
+- **Restore path** (`restore_model`, default **off**): a restoration model such as Core's SeedVR2 family runs next
+  to the refine (`restore_order`, `restore_color`, `restore_overlap`, `restore_frames`). The four SeedVR2 files
+  (Comfy-Org's repack, Apache-2.0) are offered by the model door only when one is picked; it clears the card first,
+  keeps a temporal floor, steps down on out-of-memory, learns its VAE tile rung per card and size, and reports a plan
+  with estimates and heartbeats.
+- **`pixel_speed`**: how the pixel upscale model runs, with an fp16-aware tile estimate; the console names the pixel
+  model that really runs the final pass; the final canvas lands even (no odd edge for the video encoder); a carried
+  scene survives the joint refine (pins re-encoded, the canvas on the model's patch grid).
+- With a curve on `sigmas` the refine reads neither `steps` nor `scheduler` -- it starts at sigma = denoise and runs
+  every curve point below it. Those four dials now hide while a curve is wired, and `denoise` names what it buys:
+  "denoise · 2 steps on the curve". The count comes from the run's own function (new route `POST /pls/pu_sigma_run`
+  in the sigma route module); a slow check keeps it true in both renderers (no draw hook -- the node paints nothing).
+
+## ⬡ Polyhedron Media Loader
+
+- "Load from where it is" never copies into `input`. A drop whose path the browser hides, and that is not found in a
+  recently used folder, opens the folder picker (its 📁 button is the native dialog) instead of falling back to a copy.
+
+## ⬡ Polyhedron MiniMax Reference
+
+- `ref_noise` (appended, default 0.001 = Core's behaviour, bit for bit): how much noise the reference pictures carry
+  into the model -- higher is a looser hold.
+
+## Also
+
+- ⬡ Polyhedron Attention: SageAttention's Triton kernels address with 32 bits; a call that would pass 2^31 elements
+  is handed to the model's own backend before the launch (said once), the rest of the run stays on sage.
+- Download offers appear only when the node really needs the file now; buttons are tinted so they read as buttons.
+
+## Model door
+
+Three sets now: `rife` (Interpolate), `restore` (Power Upscale, four optional files) and `h3_latent_upscale` (H3
+Latent Upscale, one file). Every row https, sha256-pinned, sized; a line under the node offers exactly the files it
+needs now -- nothing while it is bypassed, an optional file only while it is picked.
+
+## Guards
+
+New: `test_v1170_new_corner`, `test_v1184_sage_int32`, `test_v1185_head_frames`, `test_v1190_new_is_latest`,
+`test_v1195_film_frames`, `test_v1198_one_track`, `test_v1201_ref_noise`, `test_v1211_cuts`,
+`test_v1212_pu_curve_steps` (route read from `ph_sigma_routes.py`), `test_v1160_routes_served`; for the H3 chain and
+the restore path `test_v964_minimax_keyframes`, `test_v965_core_sprung`, `test_v1017_h3_prompt`, `test_v1022_field_floor_js`,
+`test_v1048_h3_quality` (Q6 re-grounded: only H3 Latent Upscale of its module is registered here),
+`test_v1049_carry`, `test_v1084_rest_of_table`, `test_v1178_av_mask`, `test_v1179_drift`, `test_v1180_pass_hold`,
+`test_v1186_pixel_speed`, `test_v1194_restore`, `test_v1199_restore_pick`, `test_v1202_line_verdict`,
+`test_v1203_wire_report`, `test_v1205_even_canvas`, `test_v1206`-`test_v1210` (restore). RE-GROUNDED with the reason
+in the file: `test_v365_public_build` (47 node ids; the door serves exactly rife, restore, h3_latent_upscale, each set
+owned by a registered node, no import of a module this build does not ship). Brought to the
+internal state: the Cine guards v1034-v1165, `test_v1016_minimax_ref_all_inputs`, `test_v791_interpolate_video`
+(pins appended). `test_v888_hide_inactive` lifts the curve helpers next to `_applyModeState`.
+
+## Handbook and README
+
+- `docs/Polyhedron_Suite_Documentation_v392.pdf` (115 pages): new Part VII Cine Timeline, Part VIII Workflow
+  essentials, Part IX Model profiles and recipes; a page on how to read model notes (MiniMax H3, WAN 2.x, others) with
+  evidence marks; Part II addenda (Stack controls added since, model notes per chapter); CLIP Text Encode Search and
+  `fill {pos_N}`; Power Upscale refine order, restore, curve steps; the Interpolate's cuts. Parts I and II are carried
+  over unchanged except the pin-zone sentence and the version.
+- README: the pin zone never copies; the Interpolate's cuts; scenes that continue and the timeline's new outputs;
+  refine order, restore and curve steps on the Power Upscale; the six H3 nodes; the five templates; the handbook link.

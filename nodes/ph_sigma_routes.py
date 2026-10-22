@@ -15,8 +15,12 @@ comes from the SAME function the run uses, so the picture cannot drift):
                                      would use, or the run's refusal text
   * POST /pls/sigma_curve_preview -- Sigma Curve / Dual Sigma Curve -> their
                                      drawn curve (web/js/ph_sigma_curves.js)
+  * POST /pls/pu_sigma_run        -- v392: how many steps the Power Upscale's
+                                     refine runs on a wired curve at a denoise
+                                     (web/js/ph_power_upscale.js; answered by
+                                     the run's own _sigma_run)
 
-NO LAN LOCK NEEDED: none of the three takes a path, reads a file or writes
+NO LAN LOCK NEEDED: none of the four takes a path, reads a file or writes
 one. They take numbers and preset names and answer with numbers.
 """
 
@@ -99,15 +103,45 @@ async def handle_sigma_presets_get(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "presets": out})
 
 
+async def handle_pu_sigma_run_post(request: web.Request) -> web.Response:
+    """v1212: how many steps the Power Upscale's refine RUNS on a wired curve.
+
+    With a curve on its sigmas pin the node reads neither steps nor scheduler:
+    the refine starts at sigma = denoise and runs every curve point below it.
+    The node shows that count next to its denoise dial. Same rule as the sigma
+    previews: the frontend asks, the answer comes from the function the run
+    uses (_sigma_run), so the label cannot drift from the run.
+    Body: {sigmas: [...], denoise: [d, ...]}
+    Reply: {ok, runs: [{denoise, steps, run, how, on_grid}, ...]}"""
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+    try:
+        from .ph_power_upscale import _sigma_run, _sigma_on_grid
+        curve = [float(v) for v in (data.get("sigmas") or [])]
+        if len(curve) < 2:
+            return web.json_response({"ok": False, "error": "no curve"})
+        runs = []
+        for d in (data.get("denoise") or []):
+            run, how = _sigma_run(curve, float(d))
+            runs.append({"denoise": float(d), "steps": max(0, len(run) - 1), "run": run, "how": how,
+                         "on_grid": bool(_sigma_on_grid(curve, float(d)))})
+        return web.json_response({"ok": True, "runs": runs})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)})
+
+
 _SIGMA_ROUTES = (
     ("GET",  "/pls/sigma_presets",       handle_sigma_presets_get),
     ("POST", "/pls/sigma_preview",       handle_sigma_preview_post),
     ("POST", "/pls/sigma_curve_preview", handle_sigma_curve_preview_post),
+    ("POST", "/pls/pu_sigma_run",        handle_pu_sigma_run_post),   # v392 (internal v1212)
 )
 
 
 def register_sigma_routes() -> int:
-    """Register the three routes under the bare path AND the /api alias.
+    """Register the four routes under the bare path AND the /api alias.
     Duplicate registrations are swallowed per route (a reload must never abort
     startup). Returns the number of paths added."""
     added = 0

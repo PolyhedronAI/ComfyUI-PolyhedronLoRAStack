@@ -40,16 +40,51 @@ REFUSES by name unless Core has MiniMaxH3AddGuide.
 
 Outputs: positive (guides appended), latent (passed through), overlap (the
 frames clip n+1 re-renders from clip n -> Seam Fix trim_head), info.
+
+v1176 -- THE SOUND'S OWN WINDOW (Cine context continuation; the idea from the
+H3 Motion Context notes, GPL -- read, not copied): `audio_context` frames of
+clip n's sound, pinned so that they END where the pinned picture ends (at the
+join) and reach backwards -- a separate audio-only guide at frame
+overlap - audio_context. 0 = as before: the sound under the whole picture
+window from frame 0 (Core's Add Guide, frame for frame). A multiple of 3 is
+a whole number of audio latent frames (a pixel frame is 5/3 of one), so the
+window is pinned at exactly the width asked; another value is widened to the
+next multiple of 3. Their measured balance on music chains: 18 (longer holds
+the sound closer but dulls it at every join, shorter lets it wander).
+K2 cuts the last audio_context/24 s of tail_audio (exact to the sample); K2L
+cuts the clip's audio latent BY TIME and names the sub-step offset of that cut
+(a 17k+5 clip ends on a third of an audio step, so the cut can be up to half a
+step, 12.5 ms, off -- said in the info, not hidden).
+
+v1178 -- HOLD IN THE LATENT (`hold`; the "hard context" of the Motion Context
+notes / Easy Media, GPL: read, not copied; the library is ph_av_mask): besides
+the guide, the context is COPIED to the start of the run's own latent -- the
+picture's tokens and the sound under them -- and held by a noise mask: locked,
+then released over `release_frames` (picture, whole tokens nearest to it) and 4 audio
+latent frames (sound, 100 ms) INSIDE the window, so the new clip grows out of
+the old one instead of only being told about it. The `latent` output then
+carries the copy and the mask: wire it into the sampler. "guide only" = as
+before, the latent passes through untouched. Core master runs the held rows as
+clean context; the pinned Core would only blend them back (said) -- Continue
+needs master for its guides anyway.
+v1182 (the audit): the HOLD keeps the sound under the WHOLE picture window (22
+frames = 37 audio frames, cut by time like K2L's guide), not the guide's own
+sound window -- `audio_context` shapes the guide only. The v1178 changelog said
+"the same cut as the guide's"; that held only with audio_context 0.
 """
 
 
 import node_helpers
 
+from . import ph_av_mask as AM
 from . import uls_latent_math as M
 
-FRAME_RESCALE = 5.0 / 3.0       # audio latent frames per pixel frame (Core model.py)
+FRAME_RESCALE = AM.FRAME_RESCALE   # audio latent frames per pixel frame (Core model.py) -- v1183: one truth (ph_av_mask)
 CHUNK_TOKENS = 5                # 17 frames -> 5 tokens (Core vae.py)
 MODES = ["K2L latent context (no VAE)", "K2 motion context (frames)", "anchor only"]
+HOLDS = ["guide only", "guide + hold in the latent"]   # v1178
+AUDIO_RELEASE = 4               # v1178: audio latent frames (100 ms) the held sound is released over
+AUDIO_GRID = 3                  # pixel frames per whole number of audio latent frames (3 * 5/3 = 5)
 
 
 # --------------------------------------------------------------------------
@@ -99,6 +134,31 @@ def audio_window(clip_frames, frames, audio_t):
     clip of clip_frames, by time on Core's shared axis."""
     start = int(round((clip_frames - frames) * FRAME_RESCALE))
     return max(0, min(start, audio_t)), audio_t
+
+
+def audio_frames(n, overlap):
+    """v1176: the sound window in pixel frames -> (frames, audio latent frames, guide index).
+    0 = None (the sound rides under the picture window, Add Guide parity). Else widened to the 3-frame
+    grid, at most the picture window, pinned to END at the join: the guide sits at frame overlap - frames."""
+    n, overlap = int(n), int(overlap)
+    if n <= 0 or overlap < AUDIO_GRID:
+        return None
+    n = -(-n // AUDIO_GRID) * AUDIO_GRID                # up to the grid
+    n = min(n, overlap // AUDIO_GRID * AUDIO_GRID)      # never past the picture window
+    steps = int(round(n * FRAME_RESCALE))
+    return n, steps, overlap - n
+
+
+def audio_tail_cut(clip_frames, frames, clip_audio_t):
+    """v1176: the last `frames` pixel frames of a clip's audio latent, by time -> (start, end, offset_ms).
+    The window ends at the clip's end (clip_frames * 5/3 audio latent frames on Core's axis); its start is
+    rounded to a whole latent frame, and the error of that rounding is named in ms (one step = 25 ms)."""
+    steps = int(round(frames * FRAME_RESCALE))
+    t_end = clip_frames * FRAME_RESCALE
+    t0 = t_end - frames * FRAME_RESCALE
+    start = int(round(t0))
+    start = max(0, min(start, int(clip_audio_t) - steps))
+    return start, start + steps, (start - t0) * 25.0
 
 
 def _parts(latent):
@@ -178,7 +238,7 @@ class ULSMiniMaxContinue:
                 "latent": ("LATENT", {"tooltip":
                     "The run's H3 AV latent (Polyhedron Empty Latent, 'MiniMax "
                     "H3 AV'). Size and length come from it; it is passed on "
-                    "unchanged."}),
+                    "unchanged unless `hold` copies the context into it."}),
                 "mode": (MODES, {"default": MODES[0], "tooltip":
                     "K2L: continue from clip n's OWN latent (Chain Source "
                     "clip_latent) -- no VAE round trip. K2: from its decoded "
@@ -195,6 +255,22 @@ class ULSMiniMaxContinue:
                     "tooltip": "Where the `anchor` input goes: its (first) "
                     "frame lands here. Negative counts from the end, -1 = the "
                     "last frame. Ignored without an anchor."}),
+                "audio_context": ("INT", {"default": 0, "min": 0, "max": 362,
+                    "tooltip": "How far back clip n's SOUND reaches, in frames, pinned to end at the "
+                               "join (where the picture window ends). 0 = the sound under the whole picture "
+                               "window from frame 0 (Core's Add Guide). Multiples of 3 land exactly on the "
+                               "audio grid (others are widened). 18 holds a soundtrack well across a join; "
+                               "longer holds it closer but dulls it a little at every join."}),
+                "hold": (HOLDS, {"default": HOLDS[0], "tooltip":
+                    "guide only: the end of clip n is a guide (as before), the latent passes through. "
+                    "guide + hold in the latent: the same end is ALSO copied to the start of this run's latent "
+                    "(picture and sound) and held by a noise mask, then released -- a harder join. Wire the "
+                    "`latent` output into the sampler."}),
+                "release_frames": ("INT", {"default": 16, "min": 0, "max": 64, "step": 4, "tooltip":
+                    "With hold: over how many of the held frames the picture is released again, counted back from "
+                    "the join (rounded to whole tokens -- a token is 1 or 4 frames; the info says how many frames it "
+                    "came to); the frames before them stay locked. 0 = held hard up to the join. The sound is "
+                    "released over its last 100 ms."}),
             },
             "optional": {
                 "vae": ("VAE", {"tooltip": "Video VAE -- needed for K2 and for "
@@ -230,8 +306,8 @@ class ULSMiniMaxContinue:
                    "Refuses on the pinned Core, which anchors only first/last "
                    "frames.")
 
-    def build(self, positive, latent, mode, context_frames, with_audio, anchor_frame,
-              vae=None, audio_vae=None, clip_latent=None, tail=None,
+    def build(self, positive, latent, mode, context_frames, with_audio, anchor_frame, audio_context=0,
+              hold="guide only", release_frames=16, vae=None, audio_vae=None, clip_latent=None, tail=None,
               tail_audio=None, anchor=None, anchors=None):
         tag = "[PLS] MiniMax Continue"
         # v1051: nothing to add (anchor only, no anchor, no timeline guides) =
@@ -259,6 +335,7 @@ class ULSMiniMaxContinue:
         target_audio = int(audio_t.shape[-1])
 
         guides, lines, overlap = [], [], 0
+        hold_v = hold_a = z_full = None
         lines.append("MiniMax Continue: target %dx%d, %d frames (%.2f s), mode %s"
                      % (width, height, frame_count, frame_count / 24.0, mode.split(" (")[0]))
 
@@ -283,7 +360,15 @@ class ULSMiniMaxContinue:
             kf = {"resolved_frame_index": 0, "latent": cv[:, :, start:].clone()}
             line = "K2L: last %d frame(s) of clip n (tokens %d..%d of %d) at frame 0, no VAE" % (
                 n, start, start + n_tok - 1, int(cv.shape[2]))
-            if with_audio and len(cp) > 1:
+            aw = audio_frames(audio_context, n)
+            if with_audio and len(cp) > 1 and aw is not None:
+                ca = cp[1]
+                af, steps, at = aw
+                a0, a1, off = audio_tail_cut(clip_frames, af, int(ca.shape[-1]))
+                sound = {"resolved_frame_index": at, "audio_latent": ca[..., a0:a1].clone()}
+                line += (" + sound: its last %d frame(s) (audio latent %d..%d, %d steps) at frame %d, ending at "
+                         "the join; the cut is %+.1f ms off clip n's end (the audio grid)" % (af, a0, a1 - 1, steps, at, off))
+            elif with_audio and len(cp) > 1:
                 ca = cp[1]
                 a0, a1 = audio_window(clip_frames, n, int(ca.shape[-1]))
                 a = ca[..., a0:a1]
@@ -295,34 +380,67 @@ class ULSMiniMaxContinue:
             elif with_audio:
                 line += " -- clip n has no audio latent, no sound carried"
             guides.append(kf)
+            if with_audio and len(cp) > 1 and aw is not None:
+                guides.append(sound)
             lines.append(line)
             overlap = n
+            hold_v = kf["latent"]
+            if hold.startswith("guide +") and with_audio and len(cp) > 1:   # v1183: only when a hold reads it
+                h0, h1, _hoff = audio_tail_cut(clip_frames, n, int(cp[1].shape[-1]))
+                hold_a = cp[1][..., h0:h1].clone()
 
         elif mode.startswith("K2 "):
-            if tail is None or int(tail.shape[0]) < 5:
-                raise ValueError(tag + ": K2 needs `tail` with 5 frames or more "
-                                 "(Clip Chain Source tail, tail_frames 22)")
-            if vae is None:
-                raise ValueError(tag + ": K2 encodes the frames -- wire `vae`")
-            n = snap_guide(min(int(context_frames), int(tail.shape[0])))
-            resolve_index(0, frame_count, n)
-            frames = _resize(tail[-n:], width, height)
-            kf = {"resolved_frame_index": 0, "latent": vae.encode(frames)}
-            line = "K2: last %d frame(s) of clip n at frame 0 (VAE encode)" % n
-            if with_audio and tail_audio is not None:
-                if audio_vae is None:
-                    raise ValueError(tag + ": the sound needs `audio_vae` "
-                                     "(or switch with_audio off)")
-                z, rt = _encode_audio(audio_vae, _last_seconds(tail_audio, n / 24.0))
-                if rt > target_audio:
-                    z = z[..., :target_audio].clone()
-                kf["audio_latent"] = z
-                line += " + sound (%d audio latent frames)" % z.shape[-1]
-            elif with_audio:
-                line += " -- no tail_audio wired, no sound carried"
-            guides.append(kf)
-            lines.append(line)
-            overlap = n
+            if tail is None and tail_audio is None:
+                # v1176: the timeline hands out no tail for a scene that is not carried (scene 1, a cut) --
+                # this run starts free; said, and the anchors below still go in
+                lines.append("K2: no tail -- nothing to continue from (the first clip, or a scene the timeline does "
+                             "not carry); this clip starts free, overlap 0")
+            else:
+                if tail is None or int(tail.shape[0]) < 5:
+                    raise ValueError(tag + ": K2 needs `tail` with 5 frames or more "
+                                     "(Clip Chain Source tail, tail_frames 22)")
+                if vae is None:
+                    raise ValueError(tag + ": K2 encodes the frames -- wire `vae`")
+                n = snap_guide(min(int(context_frames), int(tail.shape[0])))
+                resolve_index(0, frame_count, n)
+                frames = _resize(tail[-n:], width, height)
+                kf = {"resolved_frame_index": 0, "latent": vae.encode(frames)}
+                line = "K2: last %d frame(s) of clip n at frame 0 (VAE encode)" % n
+                aw = audio_frames(audio_context, n)
+                sound = None
+                if with_audio and tail_audio is not None and aw is not None:
+                    if audio_vae is None:
+                        raise ValueError(tag + ": the sound needs `audio_vae` "
+                                         "(or switch with_audio off)")
+                    af, steps, at = aw
+                    z, rt = _encode_audio(audio_vae, _last_seconds(tail_audio, af / 24.0))
+                    z = z[..., :steps].clone() if z.shape[-1] > steps else z
+                    sound = {"resolved_frame_index": at, "audio_latent": z}
+                    line += (" + sound: the last %d frame(s) of tail_audio (%d audio latent frames) at frame %d, "
+                             "ending at the join" % (af, z.shape[-1], at))
+                elif with_audio and tail_audio is not None:
+                    if audio_vae is None:
+                        raise ValueError(tag + ": the sound needs `audio_vae` "
+                                         "(or switch with_audio off)")
+                    z, rt = _encode_audio(audio_vae, _last_seconds(tail_audio, n / 24.0))
+                    z_full = z                    # v1183: the hold below reuses this encoding (the same window)
+                    if rt > target_audio:
+                        z = z[..., :target_audio].clone()
+                    kf["audio_latent"] = z
+                    line += " + sound (%d audio latent frames)" % z.shape[-1]
+                elif with_audio:
+                    line += " -- no tail_audio wired, no sound carried"
+                guides.append(kf)
+                if sound is not None:
+                    guides.append(sound)
+                lines.append(line)
+                overlap = n
+                hold_v = kf["latent"]
+                if hold.startswith("guide +") and with_audio and tail_audio is not None and audio_vae is not None:
+                    # v1183: the guide already encoded the same last n/24 s when audio_context is 0 -- one encode
+                    hz = z_full if z_full is not None else _encode_audio(audio_vae, _last_seconds(tail_audio, n / 24.0))[0]
+                    steps_n = AM.audio_steps(n)
+                    hold_a = hz[..., :steps_n].clone() if hz.shape[-1] > steps_n else hz
 
         # v1023: the timeline's anchors, then the single `anchor` -- the same
         # rules for both (AddGuide's snap, index and fit)
@@ -343,16 +461,43 @@ class ULSMiniMaxContinue:
                 line += "  WARN: inside the context (frames 0..%d) -- two guides on the same frames" % (overlap - 1)
             lines.append(line)
 
-        # exactly AddGuide's append: the list of the FIRST entry, set on all
-        keyframes = list(positive[0][1].get("minimax_keyframes", [])) + guides
-        out = node_helpers.conditioning_set_values(positive, {"minimax_keyframes": keyframes})
+        # exactly AddGuide's append: the list of the FIRST entry, set on all (v1176: nothing to append -- the
+        # conditioning passes unchanged)
+        if guides:
+            keyframes = list(positive[0][1].get("minimax_keyframes", [])) + guides
+            out = node_helpers.conditioning_set_values(positive, {"minimax_keyframes": keyframes})
+        else:
+            out = positive
 
+        lat_out = latent
+        if hold.startswith("guide +"):
+            if hold_v is None:
+                lines.append("hold: nothing to hold -- no context in this run (the latent passes through)")
+            else:
+                rel, rel_f = AM.tokens_back(int(hold_v.shape[2]), release_frames)
+                lat_out, rep = AM.hold_prefix(latent, hold_v, hold_a, video_release=rel,
+                                              audio_release=AUDIO_RELEASE, tag=tag)
+                hv = rep["video"]
+                line = ("hold: the context is copied to the start of the latent -- picture %d token(s) (frames 0..%d): "
+                        "%d locked, %d released over its last %d frame(s) (%s)"
+                        % (hv["tokens"], overlap - 1, hv["locked"], hv["release"], rel_f,
+                           " ".join("%.2f" % x for x in hv["values"][hv["locked"]:]) or "-"))
+                if rep["audio"]:
+                    ha = rep["audio"]
+                    line += ("; sound %d audio frame(s) (%.2f s, under the whole picture window%s): %d locked, %d released"
+                             % (ha["steps"], ha["seconds"], "" if not int(audio_context) else
+                                "; the guide's sound window is audio_context %d" % int(audio_context),
+                                ha["locked"], ha["release"]))
+                elif with_audio:
+                    line += "; no sound held (no audio context in this run)"
+                lines.append(line)
+                lines.append("  " + AM.core_line() + "; wire `latent` into the sampler")
         if overlap:
             lines.append("overlap: clip n+1 re-renders its first %d frame(s) from clip n "
                          "-> Seam Fix trim_head %d" % (overlap, overlap))
         info = "\n".join(lines)
         print("[PLS] " + info.replace("\n", "\n[PLS]   "))
-        return (out, latent, int(overlap), info)
+        return (out, lat_out, int(overlap), info)
 
 
 NODE_CLASS_MAPPINGS = {"ULSMiniMaxContinue": ULSMiniMaxContinue}

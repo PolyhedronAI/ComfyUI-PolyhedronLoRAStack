@@ -72,14 +72,16 @@ def read_list(folder):
         return {}
 
 
-def register(folder, k, full_path, keep=20, primary=False, run_files=None):
+def register(folder, k, full_path, keep=20, primary=False, run_files=None, sweep=None):
     """Add a clip to the list for scene k (0 = whole). The clip must be a
     video file INSIDE output/ (_root: OUTPUT_ROOT, else the folder's parent). -> the stored rel path.
     v1050: primary=True marks it THE clip of its run (the editor picks it at
     the run's end: the Save wired to clip_prefix, else the run's last video)
     -- it then leads the scene's takes (see _order).
     v1165: with primary, run_files (the run's clips, rel to output/) go into the scene's run history -- which
-    files belong to WHICH run, so the editor can say a newer run replaced the clip V1 showed (see replaced)."""
+    files belong to WHICH run, so the editor can say a newer run replaced the clip V1 showed (see replaced).
+    v1190: sweep = the RENDER the run belongs to (one Run press = one sweep over its scenes; the frontend stamps
+    it) -- the green NEW means "came in with the latest render" (see is_new)."""
     root = _root(folder)
     full = os.path.realpath(full_path)
     if not (full == root or full.startswith(root + os.sep)):
@@ -102,7 +104,10 @@ def register(folder, k, full_path, keep=20, primary=False, run_files=None):
             import time
             prim[k] = {"rel": rel, "at": time.time()}
             files = sorted(set([str(x).replace("\\", "/") for x in (run_files or []) if isinstance(x, str)] + [rel]))
-            hist = [h for h in runs.get(k, []) if h["rel"] != rel] + [{"rel": rel, "files": files, "at": prim[k]["at"]}]
+            entry = {"rel": rel, "files": files, "at": prim[k]["at"]}
+            if sweep is not None:
+                entry["sweep"] = float(sweep)
+            hist = [h for h in runs.get(k, []) if h["rel"] != rel] + [entry]
             runs[k] = hist[-int(keep):]
         _write_list(folder, lst, prim, runs)
     return rel
@@ -212,12 +217,40 @@ def read_runs(folder):
     out = {}
     for k, v in (d.get("runs") or {}).items():
         try:
-            hist = [{"rel": str(h["rel"]), "files": [str(x) for x in (h.get("files") or [])], "at": float(h.get("at") or 0)}
+            hist = [dict({"rel": str(h["rel"]), "files": [str(x) for x in (h.get("files") or [])], "at": float(h.get("at") or 0)},
+                         **({"sweep": float(h["sweep"])} if isinstance(h.get("sweep"), (int, float)) else {}))
                     for h in v if isinstance(h, dict) and isinstance(h.get("rel"), str)]
             out[int(k)] = hist
         except (TypeError, ValueError):
             continue
     return out
+
+
+def sweep_of(h):
+    """The render a history entry belongs to: its sweep stamp, else (an entry from before v1190) its own time."""
+    return float(h.get("sweep", h.get("at") or 0))
+
+
+def latest_sweep(runs):
+    """The newest render across every place of the project (0 when there is no history)."""
+    return max((sweep_of(h) for hist in runs.values() for h in hist), default=0.0)
+
+
+def is_new(folder, k, shown):
+    """v1190 (Frank 20.10.: "zwei neue Clips sind hinzugekommen - die sollten als NEW markiert werden ... die drei
+    anderen laufen erst, sind aber trotzdem mit NEW markiert, das ist falsch"): the clip `shown` (rel) is NEW when
+    it came in with the LATEST render of the project -- its run's sweep is the newest sweep of any place. A clip
+    of an earlier render (the places the new render has not reached yet, or a place it skipped) is not, however
+    many older takes lie under it. A place rendered for the first time is NEW too (it came in). A clip without a
+    run history (a drop, a scan, a list from before v1165) is never NEW."""
+    if not shown:
+        return False
+    runs = read_runs(folder)
+    hist = [h for h in runs.get(int(k), []) if h["rel"] == shown]
+    if not hist:
+        return False
+    latest = latest_sweep(runs)
+    return latest > 0 and sweep_of(hist[-1]) >= latest
 
 
 def replaced(folder, k, takes, shown, stem=None):
@@ -312,37 +345,95 @@ def scene_takes(folder, count):
     return out
 
 
+RUN_FILES_GAP = 120.0           # seconds (v1198): files of one legacy run (no history) lie this close together
+_PICK_RE = re.compile(r"(?:^|_)scene_(\d+)(?:_|\.)", re.I)
+
+
+def render_groups(folder, count):
+    """v1198 (Frank 21.10., 47 tracks from "takes -> tracks": "da brauchen wir auch noch eine sinnvolle Sortierung"):
+    the project's RENDERS, newest first -- each the clips its runs picked, one per run, at their places.
+    -> {"renders": [{"stamp", "legacy", "runs": [{"k", "rel", "at"}]}], "extras": files left out}.
+    A run of the history (v1165+) gives its pick (rel), never the other files it wrote (a backup, a raw save); runs
+    with a sweep stamp (v1190+) group by it; runs without one group by time -- a render over the scenes queues them in
+    order, so a scene number that does not grow, or 45 minutes of quiet, starts the next render. Clips of the list
+    without any history (before v1165) become runs by their files' times (RUN_FILES_GAP), the run's pick = the file
+    named for its scene, else its newest."""
+    runs = read_runs(folder) if folder and os.path.isdir(folder) else {}
+    takes = scene_takes(folder, count) if folder and os.path.isdir(folder) else {}
+    root = _root(folder) if folder else ""
+    known, entries, extras = set(), [], 0
+    for k, hist in runs.items():
+        if k > int(count) and k != 0:
+            continue
+        for h in hist:
+            known.update(h["files"] + [h["rel"]])
+            full = os.path.realpath(os.path.join(root, h["rel"]))
+            if not os.path.isfile(full):
+                continue
+            entries.append({"k": int(k), "rel": h["rel"], "at": float(h["at"]), "sweep": h.get("sweep")})
+            extras += len([f for f in h["files"] if f != h["rel"]])
+    for k, fulls in takes.items():
+        loose = []
+        for full in fulls:
+            rel = os.path.relpath(full, root).replace(os.sep, "/") if root else full
+            if rel in known:
+                continue
+            try:
+                loose.append((os.path.getmtime(full), rel))
+            except OSError:
+                continue
+        loose.sort()
+        grp = []
+        for mt, rel in loose + [(None, None)]:
+            if grp and (mt is None or mt - grp[-1][0] > RUN_FILES_GAP):
+                named = [r for _, r in grp if (_PICK_RE.search(os.path.basename(r)) or _SCENE_RE.match(os.path.basename(r)))]
+                pick = named[-1] if named else grp[-1][1]
+                entries.append({"k": int(k), "rel": pick, "at": max(m for m, _ in grp), "sweep": None, "legacy": True})
+                extras += len(grp) - 1
+                grp = []
+            if mt is not None:
+                grp.append((mt, rel))
+    groups = {}
+    for e in entries:
+        if e["sweep"] is not None:
+            groups.setdefault(("s", e["sweep"]), []).append(e)
+    timed = sorted((e for e in entries if e["sweep"] is None), key=lambda e: e["at"])
+    cur = None
+    for e in timed:
+        if cur is None or e["k"] <= cur[-1]["k"] or e["at"] - cur[-1]["at"] > LEGACY_RUN_GAP:
+            cur = []
+            groups[("t", e["at"])] = cur
+        cur.append(e)
+    out = []
+    for (kind, stamp), lst in groups.items():
+        lst = sorted(lst, key=lambda e: (e["k"], -e["at"]))
+        seen, rs = set(), []
+        for e in lst:                  # one clip per place in a render (a scene run twice in it: the newer)
+            if e["k"] in seen:
+                continue
+            seen.add(e["k"])
+            rs.append({"k": e["k"], "rel": e["rel"], "at": e["at"]})
+        out.append({"stamp": float(stamp) if kind == "s" else min(r["at"] for r in rs), "sweep": float(stamp) if kind == "s" else None,
+                    "legacy": any(e.get("legacy") for e in lst), "runs": rs})
+    out.sort(key=lambda g: -max(r["at"] for r in g["runs"]))
+    return {"renders": out, "extras": extras}
+
+
 def scene_files(folder, count):
     """{k: {"path", "name", "mtime", "runs"}} for the scenes 1..count that
     have a rendered clip in `folder` (newest per scene), plus key 0 for the
     newest whole-timeline render. Missing scenes are simply absent.
     v1034: clips from the stack list (stack.json) count too -- the newest
-    file of a scene wins, wherever it lies under output/."""
+    file of a scene wins, wherever it lies under output/.
+    v1183: built on scene_takes (the same scan and order -- it was a second copy of it)."""
     out = {}
-    listed = _listed(folder, count) if folder and os.path.isdir(folder) else {}
-    if not folder or not os.path.isdir(folder):
-        return out
-    by = {}
-    for name in os.listdir(folder):
-        m = _SCENE_RE.match(name)
-        k = int(m.group(1)) if m else (0 if _WHOLE_RE.match(name) else None)
-        if k is None or (k > int(count) and k != 0):
+    for k, takes in scene_takes(folder, count).items():
+        first = takes[0]                                  # v1050: the primary clip leads (scene_takes' order)
+        try:
+            mt = os.path.getmtime(first)
+        except OSError:
             continue
-        by.setdefault(k, []).append(os.path.join(folder, name))
-    for k, extra in listed.items():
-        have = set(os.path.realpath(x) for x in by.get(k, []))
-        by.setdefault(k, []).extend(x for x in extra if os.path.realpath(x) not in have)
-    for k, cands in by.items():
-        timed = []
-        for full in cands:
-            try:
-                timed.append((os.path.getmtime(full), full))
-            except OSError:
-                continue
-        if timed:
-            first = _order(folder, k, timed)[0]       # v1050: the primary clip leads
-            mt = dict((f, m) for m, f in timed)[first]
-            out[k] = {"path": first, "name": os.path.basename(first), "mtime": mt, "runs": len(cands)}
+        out[k] = {"path": first, "name": os.path.basename(first), "mtime": mt, "runs": len(takes)}
     return out
 
 

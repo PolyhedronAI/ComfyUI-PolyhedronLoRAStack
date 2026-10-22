@@ -18,6 +18,9 @@ Installed as one custom-node pack — the node names, the package id
 
 ---
 
+> **Handbook:** [`docs/Polyhedron_Suite_Documentation_v392.pdf`](docs/Polyhedron_Suite_Documentation_v392.pdf)
+> -- every node, with model notes for MiniMax H3, WAN 2.2 and the other families.
+
 # ⬡ Polyhedron Media Loader & ⬡ Polyhedron Save
 
 The **Media Loader** is the pack's one-stop input node: images, image
@@ -120,8 +123,9 @@ hunting through long folders — see *Live preview on hover* in section 2.
     nothing is copied. When the drag carries the file's path (a dropped
     path text, a `file:///` URI, or the desktop client) that path is
     used directly; otherwise the file is **found again** by name, size
-    and timestamp in recently used folders. If it cannot be found, a
-    copy goes to input instead — and the node says so.
+    and timestamp in recently used folders. If it cannot be found, the
+    folder picker opens instead (its 📁 button is the native dialog) —
+    nothing is copied.
 
   The zones exist only while a drag is in flight; the node gains no
   permanent buttons. The zone under the pointer lights up, so the aim is
@@ -833,7 +837,7 @@ The same single-line pattern works for FLUX, SDXL and SD 1.5.
 
 ## Example workflows
 
-Five ready-to-load starter workflows ship in
+Ten ready-to-load starter workflows ship in
 [`example_workflows/`](example_workflows/) and appear in ComfyUI's template
 browser (**Workflow → Browse Templates**) under this pack's name once it is
 installed:
@@ -844,6 +848,11 @@ installed:
 | `polyhedron_lora_stack_ksampler_lightning` | native KSampler (Advanced), dual HIGH/LOW | Wan2.2-Lightning v1.1, 8-step preset (4/4 split, CFG 1, shift 5) |
 | `polyhedron_lora_stack_wanvideo_base` | WanVideoWrapper (kijai), dual HIGH/LOW | off |
 | `polyhedron_lora_stack_wanvideo_accelerator` | WanVideoWrapper (kijai), dual HIGH/LOW | on |
+| `polyhedron_minimax_h3_fox_t2v` | Cine Timeline, text only, three shots, one run | as the fox below; Universal Neutral upscale, interpolation with the timeline's cuts |
+| `polyhedron_minimax_h3_fox_refs` | Cine Timeline + MiniMax Reference, three pictures as `@image_1..3` | as above (ref2va) |
+| `polyhedron_minimax_h3_fox_keyframes` | Cine Timeline + MiniMax Keyframes, a first frame and two guides through MiniMax Continue | as above |
+| `polyhedron_minimax_h3_fox_continue` | Cine Timeline, two scenes in one press; scene 2 continues scene 1 (motion carry) | as above |
+| `polyhedron_minimax_h3_fox_continue_refs` | as CONTINUE, with three reference pictures in both scenes (ref2va) | as above |
 | `polyhedron_minimax_h3_text_to_video` | **Cine Timeline** → Polyhedron Sampler, MiniMax H3 (video **and** audio), upscale and interpolation branches | H3 fl2v turbo 8-step + HyperFlow 8-step on, with the matching Sigma List preset |
 
 Compact WAN 2.2 dual-noise graphs built around the Stack: a grouped canvas
@@ -1221,6 +1230,25 @@ pushes a `polyhedron.pu_tile` event and the panel draws the tile grid filling
 in. That reporting needs **no server route** — it rides on the event channel
 ComfyUI already has.
 
+**Where the refine sits.** `refine_order`: *after pixel* (default -- ESRGAN and
+the fit first, then the refine on that canvas), *before pixel* (the refine
+first, the pixel model behind the last decode, where its detail reaches the
+file untouched; on a video+audio model such as MiniMax H3 the refine then runs
+over the whole clip at the input size) or *off*.
+
+**Restore.** `restore_model` runs a restoration model (Core's SeedVR2 family:
+one step, conditioned on the picture itself, no prompt) as a stage of its own,
+before or after the refine (`restore_order`). The node loads it with its own
+VAE; the Download on the node's line offers the files from Comfy-Org's repack
+(3B int8 for a 16 GB card, 3B fp16, 7B sharp int8, the SeedVR2 VAE). `off` by
+default. `pixel_speed` picks how the ESRGAN pass runs (eager, channels_last,
+torch.compile) -- same picture, compare the ms/frame.
+
+**A curve on `sigmas`.** With a Sigma List or Sigma Curve wired, the refine
+reads neither `steps` nor `scheduler`: it starts at sigma = `denoise` and runs
+every curve point below it. The two dials hide and `denoise` names the steps
+it buys (on the H3 HyperFlow curve: 0.25 -> 1, 0.5 -> 2, 0.7 -> 3).
+
 # ⬡ Polyhedron Fast Upscale
 
 ![Fast Upscale, whole — the mask comes back scaled by the same rule as the image](assets/pu5_fast_overview.png)
@@ -1257,7 +1285,12 @@ Set a rate either as a **multiplier** (2×, 4×) or by naming `source_fps` and
 `static_skip` leaves near-identical frames alone instead of spending work on
 them; `cut_guard` stops the interpolator from inventing a smooth transition
 **across a hard cut**, which is the artefact that gives machine interpolation
-away most quickly.
+away most quickly. It is on by default (0.1: a pair that differs by more is
+held). With a Cine Timeline, wire its `cuts` output into the `cuts` pin: the
+node then looks around each cut the prompt asked for (+-0.25 s) for the one
+pair where the picture really jumps and holds it -- the model paints a cut
+close to its time, not on the frame -- while fast motion and a painted
+dissolve are left alone. `interp_info` says where each cut was found.
 
 **On the engine.** `nodes/vfi/rife_arch.py` is the MIT-licensed IFNet from
 [Practical-RIFE](https://github.com/hzwer/Practical-RIFE) (hzwer), by way of
@@ -1343,9 +1376,20 @@ run then writes `output/<date>/PH_<time>_<project>_whole_*.mp4` (or `_scene_k`),
 one folder per day, never a project folder of its own. The list of a
 project's clips lives in `input/cine_media/<project>/stack/`.
 
+**Scenes that continue.** Tick *begins on the last frame of scene k* on a
+scene's first shot and it starts where the newest clip of the scene before
+ended. `carry_mode` decides how: **pin** (the frame pinned through MiniMax
+Reference's `first_frame`), **keyframe** (the first keyframe through MiniMax
+Keyframes, with the official alignment line) or **motion** (the last 5 / 22 /
+39 frames *and their sound* as the scene's held head, through `tail` /
+`tail_audio` into MiniMax Continue -- needs ComfyUI master). The template
+`polyhedron_minimax_h3_fox_continue` renders two scenes in one press.
+
 **Outputs.** `prompt` (to the encoder), `first_frame` / `last_frame` (the
-Keyframes mode's anchors, for a keyframe node), `anchors`, `seconds` (to the
-Empty Latent's duration), `frames`, `info`, `clip_prefix`, `scene`.
+Keyframes mode's anchors, for MiniMax Keyframes), `anchors`, `seconds` (to the
+Empty Latent's duration), `frames`, `info`, `clip_prefix`, `scene`, `tail` /
+`tail_audio` (the end of the scene before, for MiniMax Continue) and `cuts`
+(where the shots change, for the Interpolate).
 
 Inputs: `refs` from a Reference Board (pictures by `@tag`), up to nine images
 (pins appear as you wire them), and an optional `storyboard` text.
@@ -1386,6 +1430,12 @@ one of them out without touching the others.
 | **⬡ Polyhedron Switch** and **Switch Inverse** | One input picked from several, or one input steered to one of several outputs. Unused branches are blocked rather than run. |
 | **⬡ Polyhedron Media Info** | Reads the numbers out of whatever media is passing through. |
 | **⬡ Polyhedron MiniMax Reference** | Builds the reference conditioning a MiniMax H3 ref2v graph expects: up to 9 images (`<Picture i>`), 3 videos (`<Video k>`, with their soundtracks) and 3 audios (`<Audio j>`), each image with its own megapixel budget. Name references in the prompt as `@fox` instead of numbers (`tags` line: `fox = image_2`); the node writes the live `<Picture n>` in before the encode and checks the prompt (unknown tags stop the run by name). Optional `first_frame` pins frame 0. Pins grow with what is wired. |
+| **⬡ Polyhedron MiniMax Keyframes** | First / last frame (fl2va) conditioning for H3 with the latent from a wire; pins the first frame at 0 and the last at the final frame, stretch or cover, and reports every frame whose aspect does not match. Without an image it is a plain text run. |
+| **⬡ Polyhedron MiniMax Continue** | Continues clip n into clip n+1: its end as a guide at frame 0, with its sound on the same time axis, plus optional anchors anywhere in the new clip (the Cine Timeline's guides). Needs ComfyUI master. |
+| **⬡ Polyhedron MiniMax Audio Lock** | Holds a given sound in the sound stream of an H3 latent, so the picture is generated to it -- a music video, a voice to follow. |
+| **⬡ Polyhedron MiniMax Drift Control** | For a continued scene: the motion of the scene before carries on, the look may change. Patches the model. |
+| **⬡ Polyhedron H3 Latent Upscale** | The learned H3 latent upscaler: sample small, lift the latent here, then a short second pass at the target size. Weights (LBH-123-AI, MIT) offered by the node's Download. |
+| **⬡ Polyhedron MiniMax Second Pass Hold** | The second pass of a continued scene: puts the carried head back at full size and holds it. Between H3 Latent Upscale and the second sampler. |
 | **⬡ Polyhedron Show Text** | Shows any text that reaches it (an info output, a resolved prompt) on the canvas, sized to its content, with the Note's colour row. |
 | **⬡ Polyhedron Reference Board** | Up to 9 images, 3 videos and 3 audios as cards in one node -- tag, role, retention, budget -- instead of loose wires. Its `refs` output fills MiniMax Reference's free slots; `definitions` drafts the official subject/retention lines. Files go through ComfyUI's own upload. |
 

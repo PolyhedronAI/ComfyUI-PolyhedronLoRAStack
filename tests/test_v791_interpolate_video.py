@@ -127,7 +127,9 @@ def run_canon(mod):
                 and v[0] in ("IMAGE", "VIDEO", "MASK", "LATENT")]
     _need(req_pins == [], "required must carry no pins, has %r" % req_pins)
     opt = list(it.get("optional", {}).keys())
-    _need(opt == ["frames", "video"],
+    # v1211 AMENDED (declared): `cuts` is APPENDED behind video -- the order of the
+    # first two is the law, later pins may only follow them
+    _need(opt[:2] == ["frames", "video"] and opt == ["frames", "video", "cuts"],
           "optional pin order drifted: %r (frames must stay pin #0)" % opt)
     _need(it["optional"]["frames"][0] == "IMAGE"
           and it["optional"]["video"][0] == "VIDEO",
@@ -145,8 +147,9 @@ def run_canon(mod):
           % (row, ",".join(widgets)))
     params = list(inspect.signature(
         mod.ULSInterpolate.interpolate).parameters)
+    # v1211 AMENDED (declared): `cuts` is appended behind video, as on the pin side
     _need(params[:3] == ["self", "frames", "ckpt_name"]
-          and params[-1] == "video",
+          and params[-2:] == ["video", "cuts"],
           "signature order drifted (v788 lesson): %r" % params)
     print("[test_v791_interpolate_video] canon OK")
 

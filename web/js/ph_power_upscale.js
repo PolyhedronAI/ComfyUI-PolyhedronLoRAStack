@@ -26,7 +26,7 @@ import { setHidden, refit } from "./ph_widget_vis.js";
 // v531 doctrine: every JS file caches INDIVIDUALLY in Firefox -> self-proving banner.
 // (v548: this file never had one - which is exactly why the v547 silent no-op below
 // stayed invisible for a whole live round.)
-console.info("[PLS] ph_power_upscale.js v597 loaded");
+console.info("[PLS] ph_power_upscale.js v1212 loaded");
 
 const NODE_TYPE = "ULSPowerUpscale";
 // live only in High + Low — the stage-L dials (plan_stages ignores them in Single)
@@ -61,6 +61,9 @@ const ORDER_CANON = [
     "final_upscale_by",                   // v582 (appended - every old index keeps its slot)
     "sigma_shift_low",                    // v851 (appended - every old index keeps its slot)
     "refine_order", "audio_stream",       // v1004 appended (as h3_refine/h3_audio); v1008 renamed, same slots
+    "pixel_speed",                        // v1186 appended (every old index keeps its slot)
+    "restore_color", "restore_overlap", "restore_frames",   // v1194 appended (the restore path's three dials)
+    "restore_model", "restore_order",                        // v1199 appended (the restore picked on the node)
 ];
 // What the USER sees: every LOW twin directly under its HIGH partner (the Sampler's v494
 // pattern). Same names, permuted; everything below is index-based (widgets_values is
@@ -93,6 +96,9 @@ const DISPLAY_ORDER = [
     "result_preview", "process_preview", "mute_staging_logs", "resize_method",
     "per_batch", "vae_tiling", "pixel_stage",
     "refine_order", "audio_stream",     // v1004 appended; v1008 renamed (same slots, same values)
+    "pixel_speed",                      // v1186 appended (display is append-only too, the v585 law)
+    "restore_color", "restore_overlap", "restore_frames",   // v1194 appended
+    "restore_model", "restore_order",                        // v1199 appended (display is append-only, the v585 law)
 ];
 // ── v585 LAW (measured 2026-07-13, the hard way): the live frontend
 //    serialises widgets_values in the WIDGET (display) order, not in
@@ -217,6 +223,12 @@ const CANON_DEFAULTS = {
     26: -1.0,            // sigma_shift_low (v851: -1 = "same as high" = the old law)
     27: "after pixel",   // refine_order (v1004 as h3_refine; v1008: read by every model)
     28: "keep",          // audio_stream (v1004 as h3_audio; joint models only)
+    29: "off",           // pixel_speed (v1186: how the pixel model is run)
+    30: "lab",           // restore_color (v1194: restoration models only)
+    31: 1,               // restore_overlap (v1194)
+    32: 0,               // restore_frames (v1194: 0 = auto)
+    33: "off",           // restore_model (v1199: picked on the node)
+    34: "after refine",  // restore_order (v1199)
 };
 // v584: the numeric ranges, MIRRORED from INPUT_TYPES for the same reason
 // CANON_DEFAULTS exists - a live ComfyUI widget is not guaranteed to expose
@@ -238,13 +250,18 @@ const CANON_RANGES = {
     22: [1, 256],                        // per_batch
     25: [0.25, 8.0],                     // final_upscale_by
     26: [-1.0, 20.0],                    // sigma_shift_low (v851: -1 is the sentinel)
+    31: [0, 64],                         // restore_overlap (v1194)
+    32: [0, 16384],                      // restore_frames (v1194: 0 = auto)
 };                                       // keep in step with the python widget
 // v1005: the DOM widgets (result viewer, process pane) serialise as '' at the
 // END of widgets_values on the Vue frontend. Every permutation and every heal
 // below is written for the WIDGET part alone, so the tail is split off first
 // and put back last. Only trailing '' / null entries are taken, at most as
 // many as there are DOM widgets -- a real dial never serialises as ''.
-const DOM_TAIL = ["pls_pu_result", "pls_pu_process"];
+// v1194: the model door's line (ph_world_weights.js: addDOMWidget "pls_weights_line") is a THIRD DOM widget on this
+// node now; it serialises as null at the end. With two tails the heal kept that null in the core and scrambled every
+// dial (final_upscale_by 8, denoise 1 -- seen in the sandbox frontend before this line was added).
+const DOM_TAIL = ["pls_pu_result", "pls_pu_process", "pls_weights_line"];
 function _splitDomTail(arr) {
     if (!Array.isArray(arr)) return { core: arr, tail: [] };
     const core = arr.slice();
@@ -558,21 +575,146 @@ function _setDisabled(w, disabled) {
     return setHidden(w, disabled);
 }
 
+// v1199: the restore dials live only while a restore model is picked (the house's v888 hide, slots untouched)
+const RESTORE_ONLY = ["restore_color", "restore_overlap", "restore_frames", "restore_order"];
+
 // ── Apply the mode state: stage-L dials live only in High + Low ──────────────
 // No widget is shown/hidden and no input is added/removed, so the node never
 // resizes. model_low / upscale_model_low stay as ComfyUI created them.
 function _applyModeState(node) {
     const pill = _findWidget(node, "dual_moe");
     const dual = pill ? !!pill.value : false;
+    const wired = _curveWired(node);                               // v1212
 
     let moved = false;
     for (const name of DUAL_ONLY) {
-        if (_setDisabled(_findWidget(node, name), !dual)) moved = true;
+        const off = !dual || (wired && CURVE_UNREAD.includes(name));
+        if (_setDisabled(_findWidget(node, name), off)) moved = true;
+    }
+    for (const name of CURVE_UNREAD) {                             // v1212: the stage-H twins
+        if (DUAL_ONLY.includes(name)) continue;
+        if (_setDisabled(_findWidget(node, name), wired)) moved = true;
+    }
+    const rm = _findWidget(node, "restore_model");
+    const rOff = !rm || ["", "off"].includes(String(rm.value == null ? "off" : rm.value).trim());   // v1199
+    for (const name of RESTORE_ONLY) {
+        if (_setDisabled(_findWidget(node, name), rOff)) moved = true;
     }
 
     // v888: ONE refit per pass, and only when a row really appeared or went.
     if (moved) refit(node);
+    _curveLabels(node, wired, dual);                               // v1212
     if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
+}
+
+// ── v1212: a wired curve IS the schedule (Frank 22.10.) ──────────────────────
+// With a curve on the sigmas pin the refine reads neither steps nor scheduler
+// (the backend says so in the console): it starts at sigma = denoise and runs
+// every curve point below it. The widget still said 8 while 2 ran. So the two
+// dials hide (the v888 law -- a row that can do nothing is noise; slots and
+// values stay, #577) and the dial that DOES decide, denoise, names the steps
+// it buys. The count is ASKED (/pls/pu_sigma_run -> _sigma_run, the run's own
+// function), never worked out here. The curve itself is what the upstream
+// Sigma List / Sigma Curve already resolved for its own plot.
+const CURVE_UNREAD = ["steps", "scheduler", "steps_low", "scheduler_low"];
+const CURVE_ROUTE = "/pls/pu_sigma_run";
+
+function _curveSource(node) {
+    const inp = (node.inputs || []).find((i) => i && i.name === "sigmas");
+    if (!inp || inp.link == null || !node.graph) return null;
+    const link = node.graph.links && (node.graph.links[inp.link] || (node.graph.links.get && node.graph.links.get(inp.link)));
+    if (!link) return null;
+    return node.graph.getNodeById(link.origin_id) || null;
+}
+
+function _curveWired(node) {
+    const inp = (node.inputs || []).find((i) => i && i.name === "sigmas");
+    return !!(inp && inp.link != null);
+}
+
+function _curveValues(src) {
+    if (!src) return null;
+    const p = src._slPreview || src._scPreview;        // what the source drew from its own route
+    if (p && p.ok && Array.isArray(p.sigmas) && p.sigmas.length > 1) return p.sigmas;
+    return null;
+}
+
+// Everything the source's curve depends on -- its widgets, and what it drew.
+function _sourceKey(src) {
+    if (!src) return null;
+    return [src.id, src.type, (src.widgets || []).map((w) => w.value), _curveValues(src)];
+}
+
+// The curve the source resolves. If it has not drawn yet (the Vue renderer draws
+// lazily), a Sigma List is ASKED on its own route with its own widgets -- the
+// same request its plot makes, answered by the same resolve_sigma_request.
+async function _resolveCurve(src) {
+    const have = _curveValues(src);
+    if (have || !src || src.type !== "ULSSigmaList") return have;
+    const v = (n) => { const w = (src.widgets || []).find((x) => x.name === n); return w ? w.value : undefined; };
+    const body = JSON.stringify({ sigmas_text: String(v("sigmas_text") ?? ""), shift: Number(v("shift") ?? 1.0),
+                                  enforce_terminal_zero: v("enforce_terminal_zero") !== false,
+                                  preset: String(v("preset") ?? "custom") });
+    for (const url of ["/api/pls/sigma_preview", "/pls/sigma_preview"]) {
+        try {
+            const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+            if (!r.ok) continue;
+            const j = await r.json();
+            return (j && j.ok && Array.isArray(j.sigmas) && j.sigmas.length > 1) ? j.sigmas : null;
+        } catch (e) { /* try the next form */ }
+    }
+    return null;
+}
+
+function _setSuffix(w, suffix) {
+    if (!w) return;
+    if (w._uls_baseLabel === undefined) w._uls_baseLabel = (w.label != null) ? w.label : w.name;
+    w.label = w._uls_baseLabel + (suffix || "");
+}
+
+async function _curveLabels(node, wired, dual) {
+    const wd = _findWidget(node, "denoise"), wl = _findWidget(node, "denoise_low");
+    if (!wired) { _setSuffix(wd, ""); _setSuffix(wl, ""); node._puCurveKey = null; return; }
+    const src = _curveSource(node);
+    const ds = [Number(wd ? wd.value : 0)].concat(dual && wl ? [Number(wl.value)] : []);
+    const key = JSON.stringify([_sourceKey(src), ds]);
+    node._puCurveKey = key;
+    const sig = await _resolveCurve(src);
+    if (node._puCurveKey !== key) return;              // a newer ask is under way
+    if (!sig) {                                        // a source we cannot read before the run
+        _setSuffix(wd, " · curve sets the steps"); if (dual) _setSuffix(wl, " · curve sets the steps");
+        return;
+    }
+    let res = null;
+    for (const url of [`/api${CURVE_ROUTE}`, CURVE_ROUTE]) {
+        try {
+            const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                                         body: JSON.stringify({ sigmas: sig, denoise: ds }) });
+            if (!r.ok) continue;
+            res = await r.json();
+            break;
+        } catch (e) { /* try the next form */ }
+    }
+    if (node._puCurveKey !== key) return;              // a newer ask is under way
+    const say = (x) => (x ? (" · " + x.steps + " step" + (x.steps === 1 ? "" : "s") + " on the curve") : "");
+    if (res && res.ok && res.runs) {
+        _setSuffix(wd, say(res.runs[0]));
+        if (dual) _setSuffix(wl, say(res.runs[1]));
+    } else {
+        _setSuffix(wd, " · curve sets the steps"); if (dual) _setSuffix(wl, " · curve sets the steps");
+    }
+    if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
+}
+
+// Cheap per-frame check: the curve upstream or a denoise dial changed -> ask again.
+function _curveTick(node) {
+    if (!_curveWired(node)) { if (node._puCurveKey) _applyModeState(node); return; }
+    const wd = _findWidget(node, "denoise"), wl = _findWidget(node, "denoise_low");
+    const pill = _findWidget(node, "dual_moe");
+    const dual = pill ? !!pill.value : false;
+    const ds = [Number(wd ? wd.value : 0)].concat(dual && wl ? [Number(wl.value)] : []);
+    const key = JSON.stringify([_sourceKey(_curveSource(node)), ds]);
+    if (key !== node._puCurveKey) _applyModeState(node);
 }
 
 // ── v1004: the verdict -- show it, and hide what the joint refine never reads ──
@@ -1229,6 +1371,28 @@ app.registerExtension({
                     return rr;
                 };
             }
+            // v1199: picking a restore model shows its dials, 'off' hides them
+            const rmw = _findWidget(self, "restore_model");
+            if (rmw) {
+                const _rcb = rmw.callback;
+                rmw.callback = function () {
+                    const rr = _rcb ? _rcb.apply(this, arguments) : undefined;
+                    _applyModeState(self);
+                    return rr;
+                };
+            }
+
+            // v1212: turning a denoise dial re-asks the curve's step count
+            for (const nm of ["denoise", "denoise_low"]) {
+                const dw = _findWidget(self, nm);
+                if (!dw) continue;
+                const _dcb = dw.callback;
+                dw.callback = function () {
+                    const rr = _dcb ? _dcb.apply(this, arguments) : undefined;
+                    try { _curveTick(self); } catch (e) { /* never break a dial */ }
+                    return rr;
+                };
+            }
 
             // v546: show the widgets in DISPLAY order (twins adjacent). The SERIALISED
             // order stays canonical — configure maps in, onSerialize maps back. Fail-safe:
@@ -1237,6 +1401,11 @@ app.registerExtension({
             _reorderInputsToDisplay(self);      // fresh node: no links yet, nothing to repair
 
             _applyModeState(self);
+            // v1212/v1213: a slow key check keeps the curve label true in BOTH renderers
+            // (no draw hook, see v921); cleared in onRemoved (the v624 leak law)
+            self._puCurveTimer = setInterval(() => {
+                try { if (self.graph) _curveTick(self); } catch (e) { /* never */ }
+            }, 1500);
             _buildViewer(self);   // v549: result viewer pane (zero height until fed)
             _buildProcView(self);   // v550: process pane (zero height until fed)
             return r;
@@ -1362,9 +1531,20 @@ app.registerExtension({
             return r;
         };
 
+        // v1212: wiring or unwiring the curve flips the dials at once
+        const _onConn = nodeType.prototype.onConnectionsChange;
+        nodeType.prototype.onConnectionsChange = function () {
+            const r = _onConn ? _onConn.apply(this, arguments) : undefined;
+            try { _applyModeState(this); } catch (e) { /* never break wiring */ }
+            return r;
+        };
+        // v1213: no draw hook here -- it made the renderer scan (guard v921) read
+        // this node as hand-drawn; the 1.5 s key check below covers both renderers.
+
         const _onRemoved = nodeType.prototype.onRemoved;
         nodeType.prototype.onRemoved = function () {
             _pvStop(this);
+            if (this._puCurveTimer) { clearInterval(this._puCurveTimer); this._puCurveTimer = null; }   // v1212
             return _onRemoved ? _onRemoved.apply(this, arguments) : undefined;
         };
 

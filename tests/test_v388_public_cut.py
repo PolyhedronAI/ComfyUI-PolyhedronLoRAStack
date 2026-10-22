@@ -11,7 +11,7 @@
   B1  the Stack's group Bake stays out of this build: uls_node.js and uls_stack_dom.js hand no
       Bake callback in, and nothing calls /uls/bake_group
   T1  the Cine Timeline is registered, and every module its import hull needs ships with it
-  T2  the timeline's carrier modules register none of their own nodes
+  T2  the timeline's carrier modules register none of their own nodes (v392: Continue is a node now)
   S   the new modules are ASCII
 """
 import ast
@@ -101,7 +101,9 @@ _need(not miss, "T1 the import hull is closed (every relative import ships) %r" 
 
 registered = set(re.findall(r'NODE_CLASS_MAPPINGS\["(\w+)"\]', INIT))
 for mod, classes in (("ph_cine_chain", ("ULSClipStore", "ULSClipChainSource", "ULSSeamCheck", "ULSSeamFix", "ULSClipAssemble")),
-                     ("ph_minimax_continue", ("ULSMiniMaxContinue",)), ("ph_rough_cut_gate", ("ULSRoughCutGate",))):
+                     ("ph_rough_cut_gate", ("ULSRoughCutGate",))):
+    # v392 AMENDED (declared, Frank 22.10.: the fox templates' H3 chain goes public): ph_minimax_continue
+    # registers ULSMiniMaxContinue now -- it left this carrier list; the other carriers stay carriers
     _need(not (set(classes) & registered) and "from .nodes.%s import" % mod not in INIT,
           "T2 %s ships as a carrier only (none of its nodes registered)" % mod)
 

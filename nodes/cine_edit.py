@@ -52,6 +52,24 @@ whole graph again):
 import math
 
 FPS = 24
+
+
+def film_frames(n, fps):
+    """v1195: how many FILM frames (at FPS) a clip of n frames at `fps` becomes -- the number ffmpeg's fps filter
+    emits, which the export runs on every clip (fps=24,trim...). MEASURED against ffmpeg on 25 clips (48, 25, 30,
+    60, 120, 96, 16, 12, 23.976 fps, odd and even counts): floor(n * FPS / fps + 0.5), i.e. round HALF UP.
+    Python's round() rounds half to EVEN -- and an interpolated clip (2(N-1)+1 frames at 2x fps) lands on .5 every
+    time: 281 at 48 fps gave 140 instead of 141, the export held a picture at every seam of Frank's neon film
+    (20.10.). One law, one place; clip_info and every reader count by it."""
+    n = int(n)
+    fps = float(fps) if fps else float(FPS)
+    if n <= 0 or fps <= 0:
+        return 0
+    if abs(fps - FPS) < 0.01:
+        return n
+    return max(1, int(math.floor(n * FPS / fps + 0.5)))
+
+
 MIN_SEG = 2          # frames: the shortest piece
 SPEED_MIN, SPEED_MAX = 0.25, 4.0
 PIECE_MAX = FPS * 60 * 60     # v1082: a piece longer than an hour of frames is a stored error, not a cut
@@ -147,6 +165,18 @@ def clean_edit(e):
         out["auto_track"] = False           # v1080: OFF is the explicit state; a missing key means ON
     elif e.get("auto_track"):
         out["auto_track"] = True            # v1046: new render -> new track (V1's take pinned)
+    # v1198 (Frank 21.10.: "die anderen Teile dann auch auf dem EINEN neuen Track, damit sie alle zusammenbleiben"):
+    # the third choice of "new render ->" -- every scene of ONE render lands on ONE new track (render_tracks = the
+    # render's sweep stamp -> its track id)
+    if e.get("auto_mode") == "render" and out.get("auto_track") is not False:
+        out["auto_mode"] = "render"
+    if isinstance(e.get("render_tracks"), dict):
+        rt = {}
+        for k, v in list(e["render_tracks"].items())[-RENDER_TRACKS_MAX:]:
+            if isinstance(k, str) and k and isinstance(v, str) and v:
+                rt[k[:40]] = v[:40]
+        if rt:
+            out["render_tracks"] = rt
     if _num(e.get("span")) is not None and float(e["span"]) > 0:
         out["span"] = min(float(e["span"]), SPAN_MAX)   # v1047: the film's length, up to an hour
     lay = clean_layers(e.get("layers"))
@@ -157,6 +187,22 @@ def clean_edit(e):
 
 # --------------------------------------------------------------- v1043 the layers
 LAYER_KINDS = ("base", "file", "render", "empty")
+MORE_MAX = 64               # v1198: the extra files of one track (a render's scenes on one track)
+RENDER_TRACKS_MAX = 32
+
+
+def _clean_src(x):
+    """v1198: one extra file of a track -> {kind, path, at} or None (kind file / render, at = film frame it was laid)."""
+    if not isinstance(x, dict) or x.get("kind") not in ("file", "render"):
+        return None
+    path = x.get("path")
+    if not isinstance(path, str) or not path:
+        return None
+    o = {"kind": x["kind"], "path": path}
+    at = _num(x.get("at"))
+    if at is not None and at >= 0:
+        o["at"] = int(at)
+    return o
 
 
 def clean_layers(v):
@@ -164,7 +210,7 @@ def clean_layers(v):
     top one). Exactly one "base" entry: the render layer, whose pieces stay
     in edit.pieces (the v1037 form -- an old edit is a stack of one). Every
     other layer is one source file and its own pieces (k 0 = that file, GAP
-    = empty). -> a list, or [] when there is nothing but the base."""
+    = empty); v1198: plus optional MORE files (k 1.. = more[0..]). -> a list, or [] when there is nothing but the base."""
     if not isinstance(v, list):
         return []
     out, ids, base = [], set(), False
@@ -203,6 +249,14 @@ def clean_layers(v):
             ps = [_clean_piece(p) for p in (x.get("pieces") or [])]
             if not all(ps):
                 continue
+            # v1198: a track may carry MORE files -- piece k 0 = src, k i = more[i-1] (a render's scenes on one
+            # track); a piece naming a file the track does not have becomes empty
+            more = [m for m in (_clean_src(m) for m in (x.get("more") or [])[:MORE_MAX]) if m] if isinstance(x.get("more"), list) else []
+            if more:
+                L["more"] = more
+            if _num(src.get("at")) is not None and _num(src.get("at")) >= 0:
+                L["src"]["at"] = int(_num(src.get("at")))
+            ps = [p if is_gap(p) or 0 <= p["k"] <= len(more) else dict(p, k=GAP, a=GAP_A, b=GAP_A + max(1, _length(p))) for p in ps]
             # v1044: every piece deleted -- the layer stays (its row, its file;
             # the reset brings the clip back), it just shows nothing
             L["pieces"] = norm_layer(ps)
@@ -394,10 +448,24 @@ def flatten(layers, length):
 
 
 # --------------------------------------------------------------- the pieces
-def default_pieces(scene_starts, asked_seconds, frames, transitions, kinds, e, whole, warns, tails=()):
+def _seam_kind(transitions, kinds, j):
+    """The kind of the prompt's transition at boundary j (0-based: between scene j+1 and j+2): 'cut' unless a
+    blend the editor knows is set."""
+    t = transitions[j] if 0 <= j < len(transitions) and isinstance(transitions[j], dict) else {}
+    kind = str(t.get("kind", "cut") or "cut")
+    return kind if kind in kinds else "cut"
+
+
+def default_pieces(scene_starts, asked_seconds, frames, transitions, kinds, e, whole, warns, tails=(), held=None,
+                   notes=None):
     """The pieces the prompt gives (v1036 form of the edit included): one per
     scene, or the whole run. A piece's a is where it shows AT its cut -- the
-    blend into it takes the frames before (the v1036 placement)."""
+    blend into it takes the frames before (the v1036 placement).
+    v1172 (Frank 19.10.: the videos "hackeln" at the transitions): held = per scene (head, tail[, n]) -- the frozen
+    frames a render begins / ends with (measured on the clip; the carried start picture counted into head). At a
+    CUT they are left out: the scene before ends on its first frozen frame, the next begins on its first moving
+    one. Under a blend nothing is trimmed (the blend hides them). n = the frames as decoded (a container's own count
+    can be one off -- the tail is counted back from the frames that are really there)."""
     n = len(frames)
     P = [fr(s) for s in ([] if whole else scene_starts)]
     end = fr(e["end"]) if "end" in e else fr(asked_seconds)
@@ -429,7 +497,19 @@ def default_pieces(scene_starts, asked_seconds, frames, transitions, kinds, e, w
                 d = max(2, fr(tr["seconds"]))
                 d = min(d, bounds[k] - bounds[k - 1], bounds[k + 1] - bounds[k])
                 h1 = d - (d + 1) // 2 if d >= 2 else 0
-        a = slip + h1
+        th = tt = 0
+        if held and not whole and held[k]:
+            # v1181: a REPEATED head (motion context, held[k][3]) is left out at every seam kind -- under a dissolve
+            # the same 0.9 s would otherwise be blended over itself; a frozen head only at a plain cut, as before
+            repeat = len(held[k]) > 3 and bool(held[k][3])
+            if k > 0 and (repeat or _seam_kind(transitions, kinds, k - 1) == "cut"):
+                th = int(held[k][0])
+            if k < n - 1 and _seam_kind(transitions, kinds, k) == "cut":
+                tt = int(held[k][1])
+            nk = int(held[k][2]) if len(held[k]) > 2 and held[k][2] else frames[k]
+            if nk is not None:                           # a piece keeps at least MIN_SEG frames of its own
+                th = max(0, min(th, nk - tt - MIN_SEG - slip))
+        a = slip + h1 + th
         L = bounds[k + 1] - bounds[k]
         if k == n - 1 and e.get("keep_tail") and frames[k] is not None:
             L = max(L, frames[k] - a)
@@ -441,7 +521,14 @@ def default_pieces(scene_starts, asked_seconds, frames, transitions, kinds, e, w
             if k < n - 1:
                 warns.append("scene %d is shown to its last frame (its prompt reaches into the grid overhang) -- "
                              "the film's cut after it lies %d frames after the prompt's" % (k + 1, frames[k] - a - (bounds[k + 1] - bounds[k])))
-        p = {"k": 0 if whole else k + 1, "a": a, "b": a + L, "speed": 1.0}
+        b = a + L
+        if (th or tt) and frames[k] is not None:
+            nk = int(held[k][2]) if len(held[k]) > 2 and held[k][2] else frames[k]
+            b = max(a + MIN_SEG, min(b, nk - tt, frames[k]))
+            if notes is not None:
+                notes.append("scene %d: %s left out (frozen frames at a cut)" % (k + 1, " and ".join(
+                    x for x in ("the first %d" % th if th else "", "the last %d" % tt if tt else "") if x)))
+        p = {"k": 0 if whole else k + 1, "a": a, "b": b, "speed": 1.0}
         if tr:
             p["tr"] = tr
         pieces.append(p)
@@ -524,7 +611,7 @@ def audio_segments(pieces, starts, C, seams, fk, warns):
     return out
 
 
-def plan(scene_starts, asked_seconds, clips, transitions, kinds, edit=None, whole=False, tails=()):
+def plan(scene_starts, asked_seconds, clips, transitions, kinds, edit=None, whole=False, tails=(), held=None):
     """The film.
 
     scene_starts   seconds of the scene boundaries in the PROMPT (scene 2..n);
@@ -567,10 +654,14 @@ def plan(scene_starts, asked_seconds, clips, transitions, kinds, edit=None, whol
             pieces = None
     P = [fr(s) for s in ([] if whole else scene_starts)]
     if not pieces:
-        pieces, P = default_pieces(scene_starts, asked_seconds, frames, transitions, kinds, e, whole, warns, tails=tails)
+        notes = []
+        pieces, P = default_pieces(scene_starts, asked_seconds, frames, transitions, kinds, e, whole, warns, tails=tails,
+                                   held=held, notes=notes)
         source = "prompt"
+    else:
+        notes = []
     t = track(pieces, fk, kinds, warns)
-    t.update({"cuts_prompt": P, "frames": {str(k): v for k, v in fk.items()}, "source": source})
+    t.update({"cuts_prompt": P, "frames": {str(k): v for k, v in fk.items()}, "source": source, "held": notes})
     return t
 
 
@@ -963,4 +1054,4 @@ def describe(p):
             "whole" if s["k"] == 0 else "scene %d" % s["k"], s["film_in"] / float(FPS), s["film_out"] / float(FPS),
             s["src_in"] / float(FPS), s["src_out"] / float(FPS),
             "" if s["speed"] == 1.0 else "  x%.2f" % s["speed"], " + %d held" % s["hold"] if s["hold"] else ""))
-    return L + ["WARN: " + w for w in p["warnings"]]
+    return L + ["  " + h for h in p.get("held") or []] + ["WARN: " + w for w in p["warnings"]]

@@ -45,7 +45,7 @@ _need(bool(seed) and "if (all[id]) return;" in seed and "const v1 = laneHeights(
       "H1 _seedTrackH stores V1's heights for a track without one (clamped), keeps an existing one")
 
 rt = body("_renderTrack")
-_need(re.search(r"const e2 = addLayer\(e, id, r\.name\);\s*_seedTrackH\(node, id\);", rt) is not None,
+_need(re.search(r"const e2 = addLayer\(e, id, name \|\| r\.name\);\s*_seedTrackH\(node, id\);", rt) is not None,   # AMENDED v1198: a render track is named
       "H2 a run's clip / takes -> tracks: the new track is seeded (_renderTrack)")
 li = body("_loadInto")
 _need("if (id === NEW_TRACK) { id = newLayerId(e); e = addLayer(e, id); _seedTrackH(node, id); }" in li,

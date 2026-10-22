@@ -40,6 +40,16 @@ One timeline = one clip. It holds:
               "keyframe" = it is the first-frame anchor of the scene: the
                            official alignment line goes into the prompt and
                            MiniMax Keyframes presents it as <Picture 1> (fl2va)
+              "motion"   = v1176 (Cine context continuation): the last
+                           MOTION_FRAMES film frames of scene k-1 and their
+                           sound go out as tail / tail_audio (-> MiniMax
+                           Continue K2, Core master): the scene is rendered
+                           with that window as its pinned HEAD -- MOTION_FRAMES
+                           longer, every shot after the first and every anchor
+                           moved back by it -- and continues the motion and the
+                           sound. The clip on disk keeps the head; the film
+                           leaves it out (measured: its first frames that
+                           repeat the end of scene k-1).
 
   v1035 -- H3 transitions, written as text (Frank's field test 29.09.):
   shots[i].h3t     {"kind": one of H3T_NAMES, "seconds": 0.25..2,
@@ -147,9 +157,25 @@ DEFAULT = {
     "shots": [{"at": 0.0, "cut": CUTS[0], "text": ""}],
     "anchors": [], "soundscape": "", "music": "N/A", "from": "",
     "render": "whole", "active": 1, "project": "cine", "transitions": [],
-    "carry_mode": "pin", "triggers": "", "target": "fl2va",
+    "carry_mode": "pin", "triggers": "", "target": "fl2va", "head_frames": 22,
 }
-CARRY_MODES = ("pin", "keyframe")
+CARRY_MODES = ("pin", "keyframe", "motion")
+MOTION_FRAMES = 22            # v1176: the pinned head (a 17k+5 window: 0.92 s; Continue's context_frames) -- the default
+MOTION_AUDIO = 18             # v1176: how far back its sound reaches (Continue's audio_context; 3-frame grid)
+# v1185 (Frank 20.10., the render times): the head's length is the timeline's choice -- 17k+5 windows, because
+# Continue snaps a guide to them. 5 = 0.21 s (the scene grows by 17 frames: 141 + 5 = 146 -> 158), 22 = 0.92 s
+# (141 + 22 = 163 -> 175, the v1176 behaviour), 39 = 1.63 s (141 + 39 = 180 -> 192). Which length carries the
+# motion is UNMEASURED (Prompting 67, F5); the default stays 22 so every saved timeline runs as before.
+HEAD_FRAMES = (5, 22, 39)
+
+
+def motion_head(model):
+    """v1185: the pinned head's length in frames for carry_mode "motion" (model key head_frames; 22 when absent)."""
+    try:
+        h = int(model.get("head_frames", MOTION_FRAMES) or MOTION_FRAMES)
+    except (TypeError, ValueError):
+        return MOTION_FRAMES
+    return h if h in HEAD_FRAMES else MOTION_FRAMES
 # v1051: which H3 model the run feeds -- it decides what a first/last-frame
 # anchor IS. fl2va: MiniMax Keyframes shows it as <Picture n> and the prompt
 # gets the official alignment line. ref2va: MiniMax Reference pins it at frame
@@ -298,6 +324,14 @@ def validate(model, sources=None):
         errs.append("target %r is not one of %s" % (model.get("target"), "/".join(TARGETS)))
     if model.get("carry_mode", "pin") not in CARRY_MODES:
         errs.append("carry_mode %r is not one of %s" % (model.get("carry_mode"), "/".join(CARRY_MODES)))
+    if "head_frames" in model and model.get("head_frames") is not None:
+        try:
+            hf = int(model.get("head_frames"))
+        except (TypeError, ValueError):
+            hf = None
+        if hf not in HEAD_FRAMES:
+            errs.append("head_frames %r is not one of %s (17k+5 windows)"
+                        % (model.get("head_frames"), "/".join(str(h) for h in HEAD_FRAMES)))
     if model.get("render", "whole") not in RENDER_MODES:
         errs.append("render %r is not one of %s" % (model.get("render"), "/".join(RENDER_MODES)))
     elif model.get("render") in ("scene", "all"):
@@ -385,6 +419,78 @@ def with_carry_anchor(target):
     m = json.loads(json.dumps(target))
     m["anchors"] = [{"src": CARRY_SRC, "at": 0.0}] + list(m.get("anchors") or [])
     return m, True
+
+
+def with_motion_head(target, head=MOTION_FRAMES):
+    """v1176: the scene's model with a pinned head of `head` frames (carry_mode "motion"): the length grows by
+    it, Shot 1 still opens at 0 (its first frames ARE the head -- the end of the scene before), every later shot
+    and every anchor moves back by it; the last-frame anchor stays the last frame of the longer grid; an own
+    anchor on frame 0 is dropped (the head owns those frames). -> (model, notes)."""
+    hs = int(head) / float(FPS)
+    old = frames_for(target["seconds"])
+    m = json.loads(json.dumps(target))
+    m["seconds"] = float(target["seconds"]) + hs
+    m["head"] = int(head)
+    new = frames_for(m["seconds"])
+    notes = []
+    shots = sorted(m.get("shots") or [], key=lambda s: float(s.get("at", 0)))
+    for i, s in enumerate(shots):
+        if i:
+            s["at"] = float(s.get("at", 0)) + hs
+    m["shots"] = shots
+    an = []
+    for a in m.get("anchors") or []:
+        f = frame_of(a.get("at", 0), old)
+        if f == 0:
+            notes.append("motion: the anchor %s on the first frame is left out -- the pinned head owns frame 0"
+                         % a.get("src"))
+            continue
+        a["at"] = (new - 1) / float(FPS) if f == old - 1 else float(a.get("at", 0)) + hs
+        an.append(a)
+    m["anchors"] = an
+    return m, notes
+
+
+CONTEXT_HOLD_S = 2.0          # v1178: no cut before this many seconds after the join (unmeasured -- Prompting 67)
+CONTEXT_TAIL_S = 1.0          # v1178: no cut in the last second before a join the next scene continues
+FINISH_WORDS = ("finishes", "finished", "arrives", "arrived", "settles", "settled", "comes to rest", "comes to a stop",
+                "stops", "stopped", "slows", "slowing", "centered", "centred", "lands", "sits down")
+
+
+def context_notes(target, incoming, outgoing):
+    """v1178: the handoff rules of a scene that continues the one before (incoming: it has a pinned head) or is
+    continued by the next (outgoing) -- checked against the scene's shots, said in the info, never rewritten.
+    The rules (Easy Media's notes on the Motion Context chaining: hold, then change; end in motion) are
+    UNMEASURED: Prompting 67 keeps them as open checks. -> list of lines."""
+    out = []
+    shots = sorted(target.get("shots") or [], key=lambda s: float(s.get("at", 0)))
+    head = int(target.get("head", 0) or 0) / float(FPS)
+    end = float(target.get("seconds", 0))
+    if incoming:
+        lim = head + CONTEXT_HOLD_S
+        for i, s in enumerate(shots[1:], 2):
+            at = float(s.get("at", 0))
+            if at < lim - 1e-6:
+                out.append("context rule: [Shot %d] cuts at %s, %.2f s after the join -- a continued scene opens with a "
+                           "hold; a cut before %.1f s tends to come out ON TOP of the pinned head (both framings). "
+                           "Unmeasured rule (Prompting 67)" % (i, time_label(at), at - head, CONTEXT_HOLD_S))
+        if shots and len(str(shots[0].get("text", "")).strip()) < 12:
+            out.append("context rule: [Shot 1] says almost nothing -- a held head with nothing happening tends to "
+                       "freeze; give the performer a breath, a weight shift, a glance (unmeasured, Prompting 67)")
+    if outgoing:
+        for i, s in enumerate(shots[1:], 2):
+            at = float(s.get("at", 0))
+            if at > end - CONTEXT_TAIL_S + 1e-6:
+                out.append("context rule: [Shot %d] cuts at %s, inside the last %.1f s -- the next scene continues "
+                           "from these frames; a cut there hands it a fresh framing to hold (unmeasured, Prompting 67)"
+                           % (i, time_label(at), CONTEXT_TAIL_S))
+        if shots:
+            last = str(shots[-1].get("text", "")).lower()
+            hit = [w for w in FINISH_WORDS if re.search(r"\b%s\b" % re.escape(w), last)]
+            if hit:
+                out.append("context rule: the last shot ends in '%s' -- the next scene continues the motion; end IN "
+                           "motion, not at rest (unmeasured, Prompting 67)" % "', '".join(hit[:3]))
+    return out
 
 
 def scene_span(model, k):

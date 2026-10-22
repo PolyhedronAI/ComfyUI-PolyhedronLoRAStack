@@ -989,8 +989,8 @@ app.registerExtension({
             abBtn.textContent = "A/B";
             abBtn.title = "hold to show the original";
             abBtn.style.cssText =
-                "font-size:11px;padding:1px 10px;background:#333;color:#ff8c00;" +
-                "border:1px solid #555;border-radius:4px;cursor:pointer;" +
+                "font-size:11px;padding:1px 10px;background:linear-gradient(#34476a,#2a3a57);color:#ff8c00;" +
+                "border:1px solid #4d6898;border-radius:4px;cursor:pointer;" +
                 "white-space:nowrap;flex:0 0 auto;";
             const saveBtn = document.createElement("button");
             saveBtn.textContent = "Save preset";
@@ -1120,7 +1120,7 @@ app.registerExtension({
             };
             const setPicking = (on) => {
                 node._pfPicking = !!on;
-                pickBtn.style.background = on ? "#ff8c00" : "#333";
+                pickBtn.style.background = on ? "#ff8c00" : "linear-gradient(#34476a,#2a3a57)";
                 pickBtn.style.color = on ? "#111" : "#ff8c00";
                 cv.style.cursor = on ? "crosshair" : "ew-resize";
                 _pfDraw(node);

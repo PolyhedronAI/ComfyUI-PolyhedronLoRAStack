@@ -3,13 +3,16 @@
 
 Rewritten in v388 (the cut without legacy rules). What it holds:
 
-  N  the node set: 41 node ids, each registered behind its own import flag, each with a display name;
+  N  the node set: 47 node ids (v392: + the six nodes of the fox templates' H3 chain), each registered behind its own import flag, each with a display name;
      the V3 registry imports only modules this build ships and maps only registered nodes
   R  the routes: every /uls/... or /pls/... path any web/js file calls is registered by some module of
      this build (the check that would have caught the two 404s of v371-v385: the Seed's noise preview,
      the Empty Latent's presets); each route module is registered from __init__.py, under the bare
      path and the /api alias
-  W  the model door serves only the sets of this build's nodes (rife)
+  W  the model door serves only the sets of this build's nodes: rife (Interpolate), and since v392 restore
+     (Power Upscale, four optional SeedVR2 files) and h3_latent_upscale (H3 Latent Upscale) -- RE-GROUNDED in
+     v392 because both nodes ship now; still pinned: exactly these sets, every row https + sha256 + size, each
+     set owned by a registered node, no import of a module this build does not ship
   V  the version triple agrees: pyproject x.NNN.0, the banner "Polyhedron Suite  vNNN", PLUGIN_VERSION vNNN
   F  nothing of the removed legacy comes back: no install.py, no runtime pip, no standalone CLI
   S  the route modules are pure ASCII
@@ -38,7 +41,7 @@ INIT = _read("__init__.py")
 
 # --- N: the node set ------------------------------------------------------------------------------
 ids = sorted(set(re.findall(r'NODE_CLASS_MAPPINGS\["(\w+)"\]', INIT)) | set(re.findall(r'^\s+"(\w+)":\s+\w+,', INIT, re.M)))
-_need(len(ids) == 41, "N  41 node ids registered (%d)" % len(ids))
+_need(len(ids) == 47, "N  47 node ids registered (%d)" % len(ids))
 base = [l.strip() for l in open(os.path.join(ROOT, [f for f in os.listdir(ROOT) if f.startswith("NODE_IDS_baseline_v")][0]),
                                 encoding="utf-8") if l.strip() and not l.startswith("#")]
 _need(sorted(base) == ids, "N  the registered ids are exactly the NODE_IDS baseline")
@@ -72,7 +75,19 @@ for mod, fn in ROUTE_MODULES.items():
 
 # --- W: the model door ------------------------------------------------------------------------------
 WW = _read("nodes", "ph_world_weights.py")
-_need('SETS = ("rife",)' in WW and "REGISTRY = {}" in WW, "W  the model door serves the rife set only")
+_W_SETS = {"rife": "ULSInterpolate", "restore": "ULSPowerUpscale", "h3_latent_upscale": "ULSH3LatentUpscale"}
+_m = re.search(r"^SETS = \(([^)]*)\)", WW, re.M)
+_sets = tuple(x.strip().strip('"') for x in _m.group(1).split(",") if x.strip()) if _m else ()
+_need(set(_sets) == set(_W_SETS) and len(_sets) == 3, "W  the door's sets are exactly rife, restore, h3_latent_upscale (%s)" % (_sets,))
+sys.path.insert(0, os.path.join(ROOT, "nodes"))
+import ph_world_weights as _WWM  # noqa: E402
+_rows = {n: sp for n, sp in _WWM.REGISTRY.items()}
+_need(_rows and {sp["set"] for sp in _rows.values()} <= set(_W_SETS) - {"rife"},
+      "W  the static rows belong to restore / h3_latent_upscale only (rife is merged from the node)")
+_need(all(sp["url"].startswith("https://") and len(sp["sha256"]) == 64 and int(sp["bytes"]) > 0 for sp in _rows.values()),
+      "W  every row is https, sha256-pinned and sized")
+_need(all(('"%s"' % _W_SETS[st]) in INIT for st in _W_SETS), "W  every set's node is registered")
+_need(not any(m in WW for m in ("ph_da3_lib", "ph_music_clap", "ph_textgen")), "W  no import of a module this build does not ship")
 
 # --- V: the version triple --------------------------------------------------------------------------
 m = re.search(r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"', _read("pyproject.toml"), re.M)

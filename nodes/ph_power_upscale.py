@@ -249,6 +249,12 @@ def _fit_to(image, width, height, resize_method, per_batch, say=False,
 # (tile //= 2) sits behind it, so an over-large ask costs one retry, never a run.
 _ESRGAN_TILE_CAP = 1024
 _ESRGAN_OVERLAP = 32
+# v1186 (Frank 20.10., "testen wir"): how the pixel model is RUN -- same weights, same picture, fewer
+# milliseconds. 'off' is the v568 path (fp16 autocast, eager). channels_last lays the tensors NHWC, the
+# layout the tensor-core convolutions want; compile hands the module to torch.compile once per loaded model
+# (Triton; the first call pays the compile, said in the console). Neither is measured on Frank's card --
+# the summary line carries ms/frame and the mode, so an A/B is one glance.
+_PIXEL_SPEEDS = ("off", "channels_last", "compile", "compile + channels_last")
 # v565: the GPU output buffer is scale^2 times the input chunk. At 4x on a 1536
 # frame that is 453 MB PER FRAME - per_batch=8 would ask torch.empty() for 3.6 GB
 # in ONE allocation, before a single tile has run, and no tile backoff can rescue
@@ -309,12 +315,24 @@ def _model_card(um):
     return "  |  ".join(bits)
 
 
-def _say_model_wires(um_high, um_low, pixel_stage, resize_method):
-    """The line that answers 'do my upscale models actually fire?'. Never raises."""
+def _even_down(tw, th):
+    """v1205 (Frank 21.10.: the U6 test landed on 1075x1882, the save cropped it, the interpolation padded it): a
+    canvas a video encoder cannot open (an odd edge; yuv420 subsamples chroma 2x2) is landed EVEN by the pass itself --
+    rounded DOWN, i.e. exactly the size the save used to crop to. -> (tw, th, changed)."""
+    w, h = int(tw), int(th)
+    ew, eh = w - (w & 1), h - (h & 1)
+    return ew, eh, (ew, eh) != (w, h)
+
+
+def _say_model_wires(um_high, um_low, pixel_stage, resize_method, dual=False):
+    """The line that answers 'do my upscale models actually fire?'. Never raises.
+    v1203 (Frank 21.10., the neon log said "final : L wire, ESRGAN" while the H wire's model ran): the final pass takes
+    the L wire ONLY in High + Low, in Single the H wire (um_fin in upscale(): upscale_model_low if dual_moe else
+    upscale_model) -- the report says exactly that, and names the wire Single does NOT read."""
     try:
         stages_have_model = str(pixel_stage) not in ("fit only", "model final")
-        final_um = um_low if um_low is not None else um_high
-        final_wire = "L wire" if um_low is not None else ("H wire" if um_high is not None else None)
+        final_um = um_low if bool(dual) else um_high
+        final_wire = ("L wire" if bool(dual) else "H wire") if final_um is not None else None
         print("[PLS] Power Upscale: pixel models on the wires:")
         print(f"[PLS]     H wire : {_model_card(um_high)}")
         print(f"[PLS]     L wire : {_model_card(um_low)}")
@@ -326,6 +344,8 @@ def _say_model_wires(um_high, um_low, pixel_stage, resize_method):
                   f"it behind the last decode (a pixel model in front of a VAE "
                   f"round-trip is nearly worthless; behind the last one it is "
                   f"everything)")
+        if um_low is not None and not bool(dual):
+            print("[PLS]     note   : Single mode -- the L wire is NOT read (only High + Low runs its model)")
         if str(pixel_stage) == "fit only":
             print("[PLS]     final  : none -- pixel_stage='fit only' runs no model at all")
         elif final_um is None:
@@ -425,7 +445,7 @@ def _even_dial(w, h, model_scale, resize_method, dial, span=100):
 
 
 def _esrgan_resident(image, upscale_model, width, height, resize_method,
-                     per_batch, on_chunk=None, fit_s=None):
+                     per_batch, on_chunk=None, fit_s=None, speed="off"):
     """v564: the model is loaded ONCE and stays resident for the whole pass.
     v565: and the whole pass STAYS ON THE GPU.
 
@@ -486,6 +506,12 @@ def _esrgan_resident(image, upscale_model, width, height, resize_method,
     is_cuda = (getattr(device, "type", str(device)) == "cuda")
     edge = max(src_w, src_h)
     tile = max(128, edge if is_cuda else min(int(_ESRGAN_TILE_CAP), edge))
+    # v1186: the activation estimate below was calibrated in fp32 (v566) and kept its 4 bytes after v568
+    # moved the forward to fp16 autocast -- so a frame that fits in one fp16 call was cut into tiles for an
+    # fp32 spill that cannot happen. The estimate now counts the bytes the forward really writes; the grind
+    # detector and the spill watch stay behind it as before.
+    half_possible = bool(getattr(upscale_model, "supports_half", False)) and is_cuda
+    act_bytes = 2 if half_possible else 4
     need = mm.module_size(upscale_model.model)
     need += (tile * tile * 3) * image.element_size() * max(scale, 1.0) * 384.0
     need += chunk * image[0].nelement() * image.element_size()
@@ -505,10 +531,10 @@ def _esrgan_resident(image, upscale_model, width, height, resize_method,
             # upsample feature maps at output resolution (64ch, fp32, in+out).
             # This estimate separated Frank's clean 768 run from the grinding
             # 1024 run on the same 16 GB card - it has earned the job.
-            act = (tile * scale) ** 2 * 64 * 4 * 2
+            act = (tile * scale) ** 2 * 64 * act_bytes * 2
             while tile > 256 and act + chunk * out_frame > free1 * 0.85:
                 tile = max(256, tile // 2)
-                act = (tile * scale) ** 2 * 64 * 4 * 2
+                act = (tile * scale) ** 2 * 64 * act_bytes * 2
                 print(f"[PLS] Power Upscale: esrgan tile -> {tile} up front "
                       f"(activation est {act / 1e9:.1f} GB + buffers must fit "
                       f"{free1 / 1e9:.1f} GB free; spilling to system RAM is "
@@ -517,10 +543,45 @@ def _esrgan_resident(image, upscale_model, width, height, resize_method,
             print(f"[PLS] Power Upscale: vram free {free1 / 1e9:.1f}/"
                   f"{total1 / 1e9:.1f} GB after free_memory (was "
                   f"{free0 / 1e9:.1f} GB; asked {need / 1e9:.1f} GB; activation "
-                  f"est {act / 1e9:.1f} GB @ tile {tile})")
+                  f"est {act / 1e9:.1f} GB @ tile {tile}, {'fp16' if half_possible else 'fp32'} bytes)")
         except Exception:
             is_cuda = False
     upscale_model.to(device)
+    # v1186: how the model is run (see _PIXEL_SPEEDS)
+    speed = str(speed or "off")
+    if speed not in _PIXEL_SPEEDS:
+        speed = "off"
+    nhwc = "channels_last" in speed
+    want_compile = speed.startswith("compile") and is_cuda
+    run = {"fn": None, "compiled": False, "first": None, "note": ""}
+    if nhwc:
+        try:
+            upscale_model.model.to(memory_format=torch.channels_last)
+        except Exception as exc:
+            nhwc = False
+            run["note"] = "channels_last refused by the model (%s) -- NCHW" % str(exc)[:60]
+    if want_compile:
+        req = getattr(upscale_model, "size_requirements", None)
+        plain = (req is None or (int(getattr(req, "minimum", 0) or 0) <= 1
+                                 and int(getattr(req, "multiple_of", 1) or 1) <= 1
+                                 and not bool(getattr(req, "square", False))))
+        if not plain:
+            want_compile = False
+            run["note"] += " compile skipped: the model pads its input (size requirements) -- eager"
+        else:
+            fn = getattr(upscale_model, "_pls_compiled", None)
+            if fn is None:
+                try:
+                    fn = torch.compile(upscale_model.model, dynamic=None)
+                    setattr(upscale_model, "_pls_compiled", fn)
+                except Exception as exc:
+                    fn = None
+                    run["note"] += " torch.compile unavailable (%s) -- eager" % str(exc)[:60]
+            run["fn"] = fn
+            run["compiled"] = fn is not None
+    print(f"[PLS] Power Upscale: pixel model run: {speed}"
+          + (" (first call compiles -- one-off, tens of seconds)" if run["compiled"] and not hasattr(upscale_model, "_pls_compiled_warm") else "")
+          + ((" | " + run["note"].strip()) if run["note"].strip() else ""))
     # v587: the fit gets its own stopwatch. The pass total blends model forward
     # and fit into one number; whether the fit is a rounding error or a real
     # bite depends on the kernel (lanczos = per-frame CPU through comfy's
@@ -567,9 +628,41 @@ def _esrgan_resident(image, upscale_model, width, height, resize_method,
             if grind["armed"]:
                 torch.cuda.synchronize(device)
             t0c = time.monotonic()
-            if half["on"]:
+            a = a.float()
+            if nhwc:
+                a = a.contiguous(memory_format=torch.channels_last)
+            if run["compiled"]:
+                # v1186: the compiled module, under inference_mode and clamped like spandrel's __call__
+                # (no padding: compile is only taken for models without size requirements)
+                try:
+                    with torch.inference_mode():
+                        if half["on"]:
+                            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                                r = run["fn"](a)
+                        else:
+                            r = run["fn"](a)
+                    r = r.float().clamp_(0, 1)
+                    if run["first"] is None:
+                        if grind["armed"]:
+                            torch.cuda.synchronize(device)
+                        run["first"] = time.monotonic() - t0c
+                        setattr(upscale_model, "_pls_compiled_warm", True)
+                        print(f"[PLS] Power Upscale: compile: first call {run['first']:.1f}s (compile + run); "
+                              f"the calls after it are the measurement")
+                        grind["base"] = None          # the first call is not a baseline
+                        return r
+                except Exception as exc:
+                    run["compiled"] = False
+                    print(f"[PLS] Power Upscale: compiled model failed ({type(exc).__name__}: {str(exc)[:80]}) "
+                          f"-- eager for the rest of the pass")
+                    if half["on"]:
+                        with torch.autocast(device_type="cuda", dtype=torch.float16):
+                            r = upscale_model(a.float())
+                    else:
+                        r = upscale_model(a.float())
+            elif half["on"]:
                 with torch.autocast(device_type="cuda", dtype=torch.float16):
-                    r = upscale_model(a.float())
+                    r = upscale_model(a.float())   # core casts the tile to float before the model (v565 parity)
             else:
                 r = upscale_model(a.float())
             if grind["armed"]:
@@ -727,7 +820,9 @@ def _esrgan_resident(image, upscale_model, width, height, resize_method,
         calls = cu.get_tiled_scale_steps(src_w, src_h, tile_x=tile, tile_y=tile,
                                          overlap=_ESRGAN_OVERLAP)
         info = (f"resident, tile={tile} -> {calls} call/frame, "
-                f"{'fp16' if half['on'] else 'fp32'}, buffers on {device}"
+                f"{'fp16' if half['on'] else 'fp32'}, run={speed}"
+                + (" (compiled)" if run["compiled"] else (" (eager)" if speed.startswith("compile") else ""))
+                + f", buffers on {device}"
                 + (f", {spill_backoffs} spill backoff(s)"
                    if spill_backoffs else ""))
         return ((torch.cat(out, dim=0) if len(out) > 1 else out[0]),
@@ -739,7 +834,7 @@ def _esrgan_resident(image, upscale_model, width, height, resize_method,
 
 def _esrgan_pass(image, upscale_model, width, height,
                  resize_method="lanczos (cpu)", per_batch=8, on_chunk=None,
-                 final=False):
+                 final=False, speed="off"):
     """Stage pixel upscale: the wired UPSCALE_MODEL via core (spandrel), then
     an exact fit onto the /8-snapped stage canvas. v555: the fit method is
     selectable - "lanczos (cpu)" IS the v514 behaviour (byte-identical
@@ -801,7 +896,7 @@ def _esrgan_pass(image, upscale_model, width, height,
                                                        width, height,
                                                        resize_method, per_batch,
                                                        on_chunk=on_chunk,
-                                                       fit_s=fit_s)
+                                                       fit_s=fit_s, speed=speed)
     except Exception as exc:
         print(f"[PLS] Power Upscale: resident ESRGAN path unavailable "
               f"({exc!r}) - falling back to the tiled model upscale per chunk")
@@ -1895,6 +1990,12 @@ try:
 except ImportError:  # pragma: no cover - direct-run fallback, as elsewhere here
     from ph_joint_probe import (_joint_latent_parts,   # noqa: F401
                                 _joint_streams)        # noqa: F401
+# v1194: the RESTORE path -- the chain lives in ph_restore.py (v1197: Core's library); v1199: the restoration model is
+# PICKED on the node (restore_model, loaded with its own VAE) and runs next to the refine; this file decides WHEN.
+try:
+    from . import ph_restore as _RS
+except ImportError:  # pragma: no cover
+    import ph_restore as _RS
 
 
 # ── v1008: ONE refine vocabulary for EVERY model ────────────────────────────
@@ -2749,6 +2850,52 @@ class ULSPowerUpscale:
                                                                          "'keep' freezes it (denoise mask 0 -- the run's audio comes "
                                                                          "out bit-identical); 'denoise' lets the model touch it with "
                                                                          "the same sigmas as the video. Ordinary models never read it."}),
+                "pixel_speed": (list(_PIXEL_SPEEDS), {"default": "off",
+                                                      "tooltip": "How the pixel upscale model is RUN -- same weights, same "
+                                                                 "picture. 'off' = fp16 autocast, eager. 'channels_last' "
+                                                                 "lays the tensors in the layout tensor-core convolutions prefer. "
+                                                                 "'compile' hands the model to torch.compile once per loaded model "
+                                                                 "(needs Triton; the first call pays the compile, tens of seconds, "
+                                                                 "said in the console; a model that pads its input stays eager). "
+                                                                 "The summary line prints ms/frame and the mode -- compare runs, "
+                                                                 "then keep the faster one. Falls back to eager on any failure."}),
+                # v1194: the RESTORE path -- read only when a restoration model (one-step, self-conditioned,
+                # no prompt; Core's SeedVR2 family) is wired into 'model'. APPENDED, never inserted.
+                "restore_color": (list(_RS.RESTORE_COLORS), {"default": "lab",
+                                                            "tooltip": "restore_model only: how the restored frames are colour-"
+                                                                       "matched back to the frames that went in. 'lab' transfers colour in "
+                                                                       "CIELAB and keeps the detail (most faithful); 'wavelet' transfers the "
+                                                                       "low frequencies only; 'adain' matches mean/std per channel (a global "
+                                                                       "tint, fastest); 'none' = geometry alignment only. Read only while "
+                                                                       "restore_model is on."}),
+                "restore_overlap": ("INT", {"default": 1, "min": 0, "max": 64,
+                                            "tooltip": "restore_model only: latent frames shared between adjacent temporal "
+                                                       "chunks and crossfaded at the join (1 latent frame = 4 picture frames). 0 = "
+                                                       "plain cuts between chunks. Read only while restore_model is on."}),
+                "restore_frames": ("INT", {"default": 0, "min": 0, "max": 16384,
+                                           "tooltip": "restore_model only: picture frames per temporal chunk -- 0 = auto (Core's "
+                                                      "measured VRAM law decides from the free memory and the frame size, never "
+                                                      "below 5 frames -- if even 5 do not fit, the run stops with the numbers; the "
+                                                      "console says what it chose), else a 4n+1 count (1, 5, 9, 13, 17, 21 ...). "
+                                                      "Smaller chunks fit a smaller card and cost joins. Read only while restore_model is on."}),
+                # v1199 (Frank 21.10.: "Entweder holen wir uns das Modell mit in die Node ... oder extern wie bei ESRGAN"):
+                # the restoration model is PICKED here and loaded by the node with its own VAE -- the door on the node
+                # offers exactly these files. APPENDED, never inserted.
+                "restore_model": (_RS.choices(), {"default": _RS.OFF,
+                                                  "tooltip": "A RESTORATION model (one-step, conditioned on the picture itself, no "
+                                                             "prompt) run over the frames as a stage of its own -- the node loads "
+                                                             "it with its family's own VAE (both offered by the Download on the "
+                                                             "node's line). 'off' = no restore. 'model' keeps the refine model: "
+                                                             "refine and restore run in ONE node; restore_order says which comes "
+                                                             "first. A restore cannot invent structure the frames lack -- the "
+                                                             "refine can; the restore cleans and sharpens what is there."}),
+                "restore_order": (list(_RS.RESTORE_ORDERS), {"default": _RS.RESTORE_ORDERS[0],
+                                                             "tooltip": "restore_model only: 'after refine' = the restore polishes the "
+                                                                        "finished frames (the refine's corrections stay, the restore "
+                                                                        "cleans them); 'before refine' = the restore cleans the frames "
+                                                                        "first and the refine works on the clean picture (at the size "
+                                                                        "the refine runs at). With the refine off, the restore runs at "
+                                                                        "the end."}),
             },
             "optional": {
                 "image": ("IMAGE", {"tooltip": "Frame input [N,H,W,C] — stills or an unpacked video. Wire "
@@ -2782,6 +2929,14 @@ class ULSPowerUpscale:
             },
         }
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, restore_model=None):
+        """v1199: restore_model carries the house's decorated label ('file . size' / '. not installed') -- a saved pick
+        whose size changed on disk (downloaded since) is a string the list no longer offers, and Core's membership
+        check would kill the run at the door. ONLY this input is taken out of that check (every other combo of the
+        node keeps Core's); resolve() strips the label and refuses a file that truly is not there, by name."""
+        return True
+
     RETURN_TYPES = ("IMAGE", "VIDEO")
     RETURN_NAMES = ("image", "video")
     FUNCTION = "upscale"
@@ -2804,11 +2959,26 @@ class ULSPowerUpscale:
                 resize_method="lanczos (cpu)", per_batch=8, vae_tiling="Off",
                 pixel_stage="model + fit", final_upscale_by=1.0,
                 sigma_shift_low=-1.0, refine_order="after pixel", audio_stream="keep",
-                latent=None, sigmas=None):
+                latent=None, sigmas=None, pixel_speed="off",
+                restore_color="lab", restore_overlap=1, restore_frames=0,
+                restore_model=_RS.OFF, restore_order=_RS.RESTORE_ORDERS[0]):
         t_all = time.monotonic()   # v553/v567: wall clock of THIS function,
         # started before input resolve so 'total=' and the ComfyUI badge
         # disagree only by executor overhead OUTSIDE the node body.
         # v880: the cheapest check in the node, and it runs FIRST.
+        # v1199: the RESTORE stage is picked on the node (restore_model) and runs NEXT TO the refine; 'model' is the
+        # refine model. A restoration model wired into 'model' is refused with the way to the pick (one way only).
+        if _RS.restore_family(model) is not None:
+            raise ValueError("\u2b21 Power Upscale: the model on 'model' is a RESTORATION model -- pick it in 'restore_model' "
+                             "instead (the node loads it with its own VAE). 'model' takes the REFINE model.")
+        _rs_paths = _RS.resolve(restore_model)          # None = off; a missing file is refused here, before any work
+        _restore = None
+        if _rs_paths is not None:
+            _RS.chunk_plan(restore_frames)              # a bad count is refused before any work
+            _restore = str(restore_order) if str(restore_order) in _RS.RESTORE_ORDERS else _RS.RESTORE_ORDERS[0]
+            print("\u2b21 Power Upscale: restore stage ON -- %s (%s), %s; chunks %s, overlap %d latent frame(s), colour %s."
+                  % (os.path.basename(_rs_paths[0]), os.path.basename(_rs_paths[1]), _restore,
+                     "auto" if int(restore_frames) <= 0 else "%d frames" % int(restore_frames), int(restore_overlap), str(restore_color)))
         _joint = _joint_streams(model, model_low)
         if _joint is None:
             _reject_none_conditioning(positive, negative)
@@ -2905,6 +3075,11 @@ class ULSPowerUpscale:
         # pixel model is wired (or pixel_stage='fit only'), so the canvas the
         # user dialled (final_upscale_by) is still the canvas he gets.
         _tile_off = (_joint is None and _order == "off")
+        # v1199: WHERE the restore stage runs -- 'before refine' only while a refine runs (else at the end, said)
+        _rs_refine_on = _joint_on if _joint is not None else not _tile_off
+        _rs_before = (_restore == "before refine") and _rs_refine_on
+        if _restore == "before refine" and not _rs_refine_on:
+            print("[PLS] Power Upscale: restore_order='before refine' -- no refine runs this time; the restore runs at the end.")
         _final_delivers = (_joint is not None) or _tile_off
         _final_runs = (str(pixel_stage) == "model final") or (_joint is not None) or _tile_off
         frames, audio, frame_rate = _resolve_input(image, video)
@@ -3026,7 +3201,7 @@ class ULSPowerUpscale:
         # v580: say what is on the wires BEFORE anything derives a canvas from
         # them. "Greifen die Upscale-Modelle ueberhaupt?" must never again be a
         # question you can only answer by reading the source.
-        _say_model_wires(upscale_model, upscale_model_low, pixel_stage, resize_method)
+        _say_model_wires(upscale_model, upscale_model_low, pixel_stage, resize_method, dual=bool(dual_moe))
         _derive = (str(pixel_stage) == "model only"
                    or str(resize_method) == _NO_RESIZE)
         if _derive:
@@ -3176,6 +3351,10 @@ class ULSPowerUpscale:
             else:
                 _jr_key = _cache_key(frames, vae, None, (_hw, _hh), "input")
             _jr_hit = _latent_cache_get(_jr_key)
+            if _rs_before and _jr_hit is not None:
+                # v1199: the refine reads RESTORED frames this run -- a latent cached from unrestored ones is not theirs
+                print("[PLS] Power Upscale: joint cache not used -- the restore runs before the refine this time.")
+                _jr_hit = None
             if _jr_hit is not None:
                 print(f"[PLS] Power Upscale: joint cache HIT -- the video latent of this exact "
                       f"input{' + pixel pass' if _order == 'after pixel' else ''} is "
@@ -3189,6 +3368,17 @@ class ULSPowerUpscale:
                 clock.post("enc:joint", 1, _jr_px)
             clock.post("step:joint", _jr_steps, _jr_px)
             clock.post("dec:joint", 1, _jr_px)
+        if _restore is not None:
+            # v1210: the restore's three phases on the run clock (kinds of their own -- a restore encode is not a
+            # refine encode); the restore sets its learned estimates as priors once it knows its size
+            _rs_w, _rs_h = int(frames.shape[2]), int(frames.shape[1])
+            if _joint_on and not (_rs_before and _order != "after pixel"):
+                _rs_w, _rs_h = int(_hw), int(_hh)          # it runs on the refined canvas
+            _rs_est = _RS.learned_estimates(str(restore_model), n_frames, _rs_w, _rs_h)
+            for _k, _e in (("renc:restore", "enc"), ("rstep:restore", "step"), ("rdec:restore", "dec")):
+                clock.post(_k, 1, float(n_frames) * float(_rs_w * _rs_h))
+                if _rs_est.get(_e):
+                    clock.prior(_k, _rs_est[_e])
         clock.push()
         # v550: built ONCE - latent_rgb factors are a property of the latent
         # FAMILY, identical across a Wan expert pair. Off -> None -> zero cost.
@@ -3214,7 +3404,39 @@ class ULSPowerUpscale:
             # v885: the third door - the INPUT, before any pass has finished.
             _emit_input_preview(frames, clock=clock)
 
+        # v1199: the restore stage -- ONE call site's worth of code, run where restore_order puts it
+        _rs_info = None
+
+        def _restore_pass(frames_in, where):
+            # v1207 (Frank's U4 on v1206: 2.75 -> 4.55 GiB free after clearing, ~11 GiB held outside the model
+            # list): the refine's latent goes to the CPU before the restore -- the caller hands the frames over on
+            # the CPU too (cur = _to_host(cur) at each site), so nothing of this node's own is left on the card.
+            if _jr_info is not None and torch.is_tensor(_jr_info.get("vid_lat")):
+                _jr_info["vid_lat"] = _jr_info["vid_lat"].detach().to("cpu")
+            try:
+                from comfy.utils import ProgressBar as _PB
+                _pb = _PB(1)
+                _prog = lambda i, n: _pb.update_absolute(i, n)
+            except Exception:
+                _prog = None
+            _rm, _rv = _RS.load(_rs_paths)
+            # v1210: the restore runs on the node's clock, HUD and log mute like the joint refine; its rates are
+            # learned per restoration model (rates_key = the picked file)
+            out, info = _RS.restore(_rm, _rv, frames_in, int(seed), color=str(restore_color), overlap=int(restore_overlap),
+                                    frames_per_chunk=int(restore_frames), progress=_prog,
+                                    clock=clock, node_id=_current_node_id(), mute=bool(mute_staging_logs),
+                                    rates_key=str(restore_model))
+            info["where"] = where
+            print("[PLS] Power Upscale: restore done (%s) -- %d chunk(s) of %d frames at %dx%d, encode %.1f s, sample %.1f s, "
+                  "decode %.1f s" % (where, info["chunks"], info["frames_per_chunk"], info["size"][0], info["size"][1],
+                                     info["t_encode"], info["t_sample"], info["t_decode"]))
+            return out, info
+
         cur = frames
+        if _rs_before and not (_joint_on and _order == "after pixel"):
+            # v1199: before the refine that runs on the INPUT (tile stages, or the joint refine 'before pixel')
+            cur = _RS.to_host(cur)
+            cur, _rs_info = _restore_pass(cur, "before refine, at the input size")
         if _joint_on and _order == "before pixel":
             # v1004: refine at the INPUT size, then the pixel path grows it.
             _c = None
@@ -3225,7 +3447,7 @@ class ULSPowerUpscale:
                                           scheduler, denoise, audio_stream, clock,
                                           probe=probe, mute=mute_staging_logs, cached=_c,
                                           vae_tiling=vae_tiling)
-            if _jr_hit is None:
+            if _jr_hit is None and not _rs_before:
                 _latent_cache_put(_jr_key, _jr_info["vid_lat"], "before pixel")
             n_frames = int(cur.shape[0])
         # v1008: the tile path's books -- rates section, per-stage VRAM peaks,
@@ -3363,7 +3585,7 @@ class ULSPowerUpscale:
                           f"RAM; the ESRGAN pass is skipped ({sw}x{sh} x{int(cur.shape[0])} frames)")
                 else:
                     cur = _esrgan_pass(cur, um, sw, sh, resize_method, per_batch,
-                                       on_chunk=_on_chunk)
+                                       on_chunk=_on_chunk, speed=pixel_speed)
                     if _pc_key is not None:
                         _ok, _why = _pixel_cache_put(_pc_key, cur, st["tag"])
                         print(f"[PLS] Power Upscale: stage={st['tag']} pixel cache: "
@@ -3431,6 +3653,12 @@ class ULSPowerUpscale:
                 tw, th = int(round(fw * fby)), int(round(fh * fby))
                 if _joint_on and _order == "after pixel":
                     tw, th = _snap_to(tw, th, _jr_snap)
+                if str(resize_method) != _NO_RESIZE:
+                    _ew, _eh, _odd = _even_down(tw, th)          # v1205: never an odd edge for the encoder
+                    if _odd:
+                        print(f"[PLS] Power Upscale: final canvas {tw}x{th} has an odd edge -- landed on {_ew}x{_eh} "
+                              f"(even, the size a video save would have cropped to)")
+                        tw, th = _ew, _eh
                 if str(resize_method) == _NO_RESIZE or (tw, th) == (fw, fh):
                     print(f"[PLS] Power Upscale: final pass: no pixel model "
                           f"({'pixel_stage=fit only' if str(pixel_stage) == 'fit only' else wire + ' not wired'})"
@@ -3534,6 +3762,14 @@ class ULSPowerUpscale:
                 # recommended the number he already had. _even_dial searches the
                 # widget's own grid and asks _final_canvas - the same function
                 # this pass just used - what each candidate really produces.
+                #
+                # v1205 (Frank 21.10.: "dann ja: bau"): with a kernel the pass LANDS even itself (rounded down = the
+                # size the save cropped to); only resize_method='none' (the raw model result IS the file) keeps the note.
+                if str(resize_method) != _NO_RESIZE and ((int(tw) & 1) or (int(th) & 1)):
+                    _ew, _eh, _ = _even_down(tw, th)
+                    print(f"[PLS] Power Upscale: final canvas {int(tw)}x{int(th)} has an odd edge -- landed on "
+                          f"{_ew}x{_eh} (even, the size a video save would have cropped to; the dial stays as set)")
+                    tw, th = _ew, _eh
                 if (int(tw) & 1) or (int(th) & 1):
                     _et, _eb = int(tw) - (int(tw) & 1), int(th) - (int(th) & 1)
                     _sug = _even_dial(fw, fh, fsc, resize_method, fby)
@@ -3585,7 +3821,7 @@ class ULSPowerUpscale:
                 with _MuteInfoLogs(mute_staging_logs, label="Power Upscale"):
                     cur = _esrgan_pass(cur, um_fin, tw, th, resize_method,
                                        per_batch, on_chunk=_on_final,
-                                       final=True)
+                                       final=True, speed=pixel_speed)
                 print(f"[PLS] Power Upscale: final pass done in "
                       f"{time.monotonic() - t_fin:.1f}s -> "
                       f"{int(cur.shape[2])}x{int(cur.shape[1])} "
@@ -3593,6 +3829,10 @@ class ULSPowerUpscale:
 
         if _joint_on and _order == "after pixel":
             # v1004: the hires-fix -- the refine on the finished canvas.
+            if _rs_before:
+                # v1199: the restore cleans the finished canvas, the refine then works on the clean picture
+                cur = _RS.to_host(cur)
+                cur, _rs_info = _restore_pass(cur, "before refine, on the finished canvas")
             _c = None
             if _jr_hit is not None:
                 _c = (_jr_hit, n_frames, int(_hw), int(_hh))
@@ -3601,8 +3841,12 @@ class ULSPowerUpscale:
                                           scheduler, denoise, audio_stream, clock,
                                           probe=probe, mute=mute_staging_logs, cached=_c,
                                           vae_tiling=vae_tiling)
-            if _jr_hit is None:
+            if _jr_hit is None and not _rs_before:
                 _latent_cache_put(_jr_key, _jr_info["vid_lat"], "after pixel")
+        # v1194/v1199: the restore AFTER the refine (or with no refine running) -- over the delivered frames
+        if _restore is not None and not _rs_before:
+            cur = _RS.to_host(cur)
+            cur, _rs_info = _restore_pass(cur, "after refine" if _rs_refine_on else "no refine ran")
         # v1008: WHERE the pixel model sat this run -- the one fact behind
         # Frank's 25.09. question ("arbeiten wir doppelt?"), on the node.
         _fin_wire = upscale_model_low if bool(dual_moe) else upscale_model
@@ -3632,6 +3876,9 @@ class ULSPowerUpscale:
                                      _tile_steps, _tile_start or 0.0,
                                      (len(_curve) - 1) if _curve else 0, _where,
                                      why="refine_order=off" if _tile_off else "")
+        if _rs_info is not None:
+            # v1199: the restore is a stage NEXT TO the refine -- the line names both
+            _verdict = (_verdict + " \u00b7 " if _verdict else "") + _RS.verdict(_rs_info, _rs_info.get("where", ""))
         if _verdict:
             print(f"[PLS] Power Upscale: {_verdict}")
         video_out = _build_video(cur, audio, frame_rate) if video is not None else None

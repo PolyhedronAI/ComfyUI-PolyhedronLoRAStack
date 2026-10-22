@@ -219,7 +219,8 @@ console.log(JSON.stringify(out));
         else:
             o = json.loads(r.stdout.strip().splitlines()[-1])
             _need(o["t1"]["a"] == '{"core":[1,"","x"],"tail":["",null]}', "%s: T1 split takes only the trailing tail: %s" % (NAME, o["t1"]["a"]))
-            _need(o["t1"]["b"] == '{"core":["",""],"tail":["",""]}', "%s: T1 at most DOM_TAIL.length entries leave: %s" % (NAME, o["t1"]["b"]))
+            # v1194: DOM_TAIL has THREE entries now (the model door's line joined the node) -- of four blanks three leave
+            _need(o["t1"]["b"] == '{"core":[""],"tail":["","",""]}', "%s: T1 at most DOM_TAIL.length (3 since v1194) entries leave: %s" % (NAME, o["t1"]["b"]))
             _need(o["t1"]["c"] == '[1,"","x","",null]', "%s: T1 join restores the array" % NAME)
             _need(o["t2"] == "display-current", "%s: T2 a marked display-ordered save must read as display-current, got %r" % (NAME, o["t2"]))
             _need(o["t2c"] == "display-current", "%s: T2 ... also after padding to 29, got %r" % (NAME, o["t2c"]))

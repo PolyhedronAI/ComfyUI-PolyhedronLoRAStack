@@ -116,7 +116,8 @@ def main():
     # suddenly saw them and went red for the right reason. The regex reads
     # digits now, and the v1004 append is pinned as the TAIL it is (the
     # display law: new widgets join at the END).
-    if disp[len(DISPLAY_V852):] == ["refine_order", "audio_stream"]:
+    # v1186: later appends (pixel_speed) follow the v1004 pair -- the law is "join at the END", not "be the end"
+    if disp[len(DISPLAY_V852):len(DISPLAY_V852) + 2] == ["refine_order", "audio_stream"]:
         disp = disp[:len(DISPLAY_V852)]
     else:
         _fail("the DISPLAY tail after the v852 order must be exactly the v1004 "

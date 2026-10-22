@@ -113,16 +113,16 @@ shutil.rmtree(TMP, ignore_errors=True)
 # ---- B3 JS ---------------------------------------------------------------
 js = (ROOT / "web" / "js" / "ph_cine_timeline.js").read_text(encoding="utf-8")
 _need('export function autoOn(e) { return !(e && e[AUTO_KEY] === false); }' in js, "B3 autoOn exported, 'not explicitly false'")
-i = js.find("function _setAuto(node, on)")
+i = js.find("function _setAuto(node, mode)")   # AMENDED v1198: three modes
 _need(i > 0 and '} else { e[AUTO_KEY] = false; delete e.takes; }' in js[i:i + 700], "B3 off stores an explicit false")
 # v1163 (Frank 18.10.: "nicht new Track, sondern Replace"): the checkbox became an explicit choice
 # "new render -> new track | replace" -- the same two modes, the same default (a missing key = on = new track)
-_need('export const AUTO_CHOICES = [["track", "new track"], ["replace", "replace"]];' in js
-      and 'autoChk.addEventListener("change", () => _setAuto(node, autoChk.value === "track"));' in js,
+_need('export const AUTO_CHOICES = [["track", "new track"], ["render", "one track per render"], ["replace", "replace"]];' in js
+      and 'autoChk.addEventListener("change", () => _setAuto(node, autoChk.value));' in js,
       "B3 the choice: new track (first, the default) | replace -> _setAuto")
-_need('if (st.autoChk) st.autoChk.value = autoOn(editOf(node)) ? "track" : "replace";' in js, "B3 the choice mirrors autoOn")
-j = js.find("async function _autoTrack1(node, rel, scene, nFiles)")
-body = js[j:j + 1400]
+_need('if (st.autoChk) st.autoChk.value = autoMode(editOf(node));' in js, "B3 the choice mirrors autoOn")
+j = js.find("async function _autoTrack1(node, rel, scene, nFiles, sweep)")   # AMENDED v1198: + the sweep
+body = js[j:j + 3000]   # AMENDED v1198: the render branch made the body longer
 _need("if (!autoOn(e)) return;" in body, "B3 _autoTrack1 gates on autoOn")
 k1, k2 = body.find("if (!(e.takes && e.takes[key]))"), body.find("_renderTrack(node, rel")
 _need(0 < k1 < k2 and "e.takes[key] = rel;" in body[k1:k2] and "return;" in body[k1:k2],

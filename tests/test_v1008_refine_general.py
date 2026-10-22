@@ -289,7 +289,7 @@ def main():
           "%s: G7 the wired curve reaches every stage" % NAME)
     _need("if um is not None and st is plans[0][0]:" in up, "%s: G7 the pixel cache serves ONLY the first stage's model pass" % NAME)
     _need(up.count("vae_tiling=vae_tiling)") == 2, "%s: G7 BOTH joint call sites hand vae_tiling to the joint refine" % NAME)
-    _need('"pls_pu_path": ["joint" if _joint is not None else "tile"]' in up, "%s: G7 the ui carries the path" % NAME)
+    _need('"pls_pu_path": ["joint" if _joint is not None else "tile"]' in up, "%s: G7 the ui carries the path" % NAME)   # AMENDED v1199
     ref = src[src.index("def _joint_refine("):src.index("class ULSPowerUpscale")]
     _need("v_enc, v_dec, v_label = _vae_ops(vae, vae_tiling)" in ref and "snap = _vae_spatial(vae, _JOINT_SNAP_DEFAULT)" in ref
           and "_vae_frame_law(vae, n_in)" in ref,
@@ -298,7 +298,12 @@ def main():
     # ---- G8: widgets, tooltips, frontend ---------------------------------------
     it = src[src.index("def INPUT_TYPES"):src.index("RETURN_TYPES")]
     names = re.findall(r'^\s{16}"([a-z_0-9]+)": \(', it[:it.index('"optional": {')], re.M)
-    _need(names[-2:] == ["refine_order", "audio_stream"], "%s: G8 slots 27/28 carry the new names: %s" % (NAME, names[-2:]))
+    # v1186: the pair keeps its slots -- adjacent in INPUT_TYPES, 27/28 in the JS canon; widgets appended AFTER
+    # them (pixel_speed) are meant to be appended and do not move them
+    _ri = names.index("refine_order") if "refine_order" in names else -1
+    _canon = re.findall(r'"([a-z_0-9 +()]+)"', re.search(r"const ORDER_CANON = \[(.*?)\];", js, re.S).group(1))
+    _need(_ri >= 0 and names[_ri:_ri + 2] == ["refine_order", "audio_stream"] and _canon[27:29] == ["refine_order", "audio_stream"],
+          "%s: G8 slots 27/28 carry the new names: %s / canon %s" % (NAME, names[_ri:_ri + 2], _canon[27:29]))
     _need("h3_refine" not in re.sub(r"#[^\n]*", "", it) and "H3 refine:" not in it,
           "%s: G8 no H3-only name or tooltip prefix left in INPUT_TYPES" % NAME)
     _need("for EVERY" in it[it.index('"refine_order"'):it.index('"audio_stream"')]

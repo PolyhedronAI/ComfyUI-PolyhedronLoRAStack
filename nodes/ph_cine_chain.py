@@ -208,12 +208,14 @@ class ULSClipChainSource:
                              "the FULL path of the previous clip's video" % (path,))
         want_tail = _snap_17k5(tail_frames)
         fps_guess = 24.0
-        n_ref = max(want_tail, int(round(ref_seconds * fps_guess)) + 1)
+        # v1182: room for a clip faster than 24 fps (an interpolated take) -- the tail is resampled to H3's 24 below
+        n_ref = max(want_tail * 3, int(round(ref_seconds * fps_guess)) + 1)
         frames, fps, total, audio = C.decode_tail(path, n_ref)
         fps = fps or fps_guess
         n_ref_real = min(frames.shape[0], int(round(ref_seconds * fps)))
         imgs = torch.from_numpy(frames.astype(np.float32) / 255.0)
-        tail = imgs[-min(want_tail, imgs.shape[0]):]
+        ti = tail_indices(imgs.shape[0], fps, want_tail)
+        tail = imgs[ti]
         last = imgs[-1:]
         ref = imgs[-max(1, n_ref_real):]
 
@@ -234,9 +236,11 @@ class ULSClipChainSource:
                  "  %d frames @ %.3f fps (%.2f s), %dx%d"
                  % (total, fps, total / float(fps), frames.shape[2], frames.shape[1]),
                  "  last_frame = frame %d of %d" % (total - 1, total),
-                 "  tail = last %d frame(s)%s" % (tail.shape[0],
+                 "  tail = last %d frame(s)%s%s" % (tail.shape[0],
                      "" if tail.shape[0] == want_tail else
-                     " (asked %d, the clip is shorter)" % want_tail),
+                     " (asked %d, the clip is shorter)" % want_tail,
+                     "" if abs(fps - 24.0) <= 0.01 else
+                     " at 24 fps, resampled from its %g fps (%.2f s, as the timeline's tail)" % (fps, tail.shape[0] / 24.0)),
                  "  tail_video / tail_audio = last %.2f s%s"
                  % (ref.shape[0] / float(fps),
                     "" if tail_audio is not None else " -- the video has NO audio track"),
@@ -250,13 +254,31 @@ class ULSClipChainSource:
         info = "\n".join(lines)
         print("[PLS] " + info.replace("\n", "\n[PLS] "))
         payload = {"kind": "source", "label": "tail %d frame(s) of %s" % (tail.shape[0], os.path.basename(path)),
-                   "strip": _strip(frames[-tail.shape[0]:], "src"), "seam_at": None,
+                   "strip": _strip(frames[ti], "src"), "seam_at": None,
                    "reel": _with_posters(C.reel_items(path, _bases())), "current": path}
         return {"ui": {"pls_cine": [payload]},
                 "result": (last, tail, tail_video, tail_audio, clip_latent, info)}
 
 
 SEAM_SHOW = 8     # frames each side of the join in the strip
+
+
+def tail_indices(n, fps, want):
+    """v1182: the indices (into the last `n` decoded frames) of the last `want` frames at 24 fps -- H3's rate, the
+    one MiniMax Continue reads a tail at (the timeline's tail_frames resamples the same way since v1168). A clip at
+    24 fps keeps its own last frames; at 48 fps every second one -- 22 frames are 0.92 s, not 0.46 s."""
+    n, want = int(n), int(want)
+    if n <= 0:
+        return []
+    if abs(float(fps) - 24.0) <= 0.01 or fps <= 0:
+        return list(range(max(0, n - want), n))
+    step = float(fps) / 24.0
+    out = []
+    for j in range(want - 1, -1, -1):
+        i = n - 1 - int(round(j * step))
+        if i >= 0:
+            out.append(i)
+    return out
 
 
 class ULSSeamCheck:
@@ -479,11 +501,42 @@ def _with_posters(items):
     return items
 
 
+def reel_allowed(path, bases, locked):
+    """v1182: may the reel list the folder of `path`? Always inside ComfyUI's own folders (output/, input/, temp/);
+    anywhere else only while ComfyUI is bound to localhost (the pack's ONE LAN lock, as a clip read where it lies
+    in the timeline) -- bound beyond it, a page on the network could list and decode any folder of this machine."""
+    p = str(path or "").strip().strip('"')
+    if not p:
+        return True
+    folder = os.path.realpath(os.path.dirname(os.path.abspath(p)))
+    for _t, root in bases or []:
+        r = os.path.realpath(root)
+        if folder == r or folder.startswith(r + os.sep):
+            return True
+    return not locked
+
+
+def _reel(path):
+    return _with_posters(C.reel_items(path, _bases()))
+
+
 async def handle_cine_reel(request):
+    """GET /pls/cine/reel?path=... -> {items}. v1182: the LAN lock applies beyond ComfyUI's own folders, and the
+    listing + poster decodes run in the executor (up to 40 decodes used to block the whole server)."""
+    import asyncio
     from aiohttp import web
     path = request.rel_url.query.get("path", "")
     try:
-        items = _with_posters(C.reel_items(path, _bases()))
+        from .ph_cine_timeline import _lan_locked
+        locked = _lan_locked()
+    except Exception:
+        locked = False
+    if not reel_allowed(path, _bases(), locked):
+        return web.json_response({"items": [], "error": "listing a folder outside ComfyUI's input/ and output/ is "
+                                  "locked while ComfyUI is bound beyond localhost (--listen) -- set "
+                                  "ULS_ALLOW_LAN_BROWSE=1 to open it"})
+    try:
+        items = await asyncio.get_running_loop().run_in_executor(None, _reel, path)
     except Exception as e:
         return web.json_response({"items": [], "error": "%s: %s" % (type(e).__name__, e)})
     return web.json_response({"items": items})

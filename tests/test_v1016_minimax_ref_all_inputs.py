@@ -186,6 +186,7 @@ else:
     _fail("A1 a socket carries the wrong type")
 widget_order = [k for k in req if it["required"][k][0] in ("FLOAT", "STRING") or isinstance(it["required"][k][0], list)] \
     + [k for k in opt if it["optional"][k][0] == "FLOAT"]
+widget_order = [k for k in widget_order if k != "ref_noise"]   # AMENDED v1201: ref_noise is appended LAST (v1201 guard)
 if widget_order[-9:] == ["megapixels_%d" % n for n in range(1, 10)]:
     _ok("A1 megapixels_4..9 follow megapixels_3 in the widget order (append law)")
 else:

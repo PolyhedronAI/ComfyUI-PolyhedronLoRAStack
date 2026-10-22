@@ -136,7 +136,8 @@ fp.get_input_directory = lambda: str(inp)
 sys.modules["folder_paths"] = fp
 src_node = (ROOT / "nodes" / "ph_cine_timeline.py").read_text(encoding="ascii")
 ns = {"os": os, "A": A, "T": T}
-exec(src_node[src_node.index("def _output_dir():"):src_node.index("def stack_items")], ns)
+# AMENDED v1182: stack_items removed (with the dead /pls/cine/scenes route) -- the slice ends at register_clip
+exec(src_node[src_node.index("def _output_dir():"):src_node.index("def register_clip")], ns)
 exec(src_node[src_node.index("def register_clip"):src_node.index("async def handle_register")], ns)
 pf = ns["project_folder"]("boudoir feet")
 _need(pf == os.path.join(str(inp), "cine_media", "boudoir_feet", "stack") and A.OUTPUT_ROOT == str(out),
@@ -175,10 +176,13 @@ A.OUTPUT_ROOT = None
 # ------------------------------------------------------------------ P4
 _need(src_node.count("out = A.next_free(day_folder(), film_stem(model))") == 2 and 'os.path.join(d["folder"], "film")' not in src_node,
       "P4 both export seats write to the day folder as PH_<hhmmss>_<project>_film")
-_need("T.TRANSITIONS, out_dir=day_folder()," in src_node and "out_dir or os.path.join(folder, \"assembled\")" in
-      (ROOT / "nodes" / "cine_assemble.py").read_text(encoding="ascii"), "P4 the scene join goes to the day folder too")
+# AMENDED v1182: the /pls/cine/assemble route (the scene join that took out_dir=day_folder()) was dead and is gone;
+# the library still writes to out_dir when it is given one
+_need('"/pls/cine/assemble"' not in src_node and "out_dir or os.path.join(folder, \"assembled\")" in
+      (ROOT / "nodes" / "cine_assemble.py").read_text(encoding="ascii"), "P4 the dead join route is gone; assemble() still takes out_dir")
 ns2 = {"os": os, "T": T, "_output_dir": lambda: "/o"}
-exec(src_node[src_node.index("def day_folder():"):src_node.index("def stack_items")], ns2)
+# AMENDED v1182: stack_items removed (with the dead /pls/cine/scenes route) -- the slice ends at register_clip
+exec(src_node[src_node.index("def day_folder():"):src_node.index("def register_clip")], ns2)
 _need(ns2["day_folder"]() == os.path.join("/o", time.strftime("%Y-%m-%d"))
       and re.match(r"^PH_\d{6}_boudoir_feet_film$", ns2["film_stem"]({"project": "boudoir feet"})) is not None,
       "P4 day_folder = output/<yyyy-MM-dd>, film_stem = PH_<hhmmss>_<project>_film")

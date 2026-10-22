@@ -294,6 +294,49 @@ def _gate_verdict(mae, static_eps, cut_theta):
     return "interp"
 
 
+CUT_WINDOW_S = 0.25      # v1211: how far from the asked time the painted cut may sit
+CUT_RATIO = 3.0          # the cut pair must stand this far above its neighbours' median
+CUT_FLOOR = 0.02         # and above this MAE (a still shot's grain is not a cut)
+CUT_GUARD_DEFAULT = 0.1  # v1211: the threshold gate is ON by default (was 0 = off)
+
+
+def _cut_pairs(maes, cut_seconds, src_fps):
+    """v1211: the pairs that ARE the cuts a timeline asked for -> (set, notes).
+
+    A timeline knows WHERE it asked for a cut, the model decides where it
+    paints it: Frank's fox clip asked for 1.75 s and 3.50 s and cut between
+    frames 41|42 and 85|86 (24 fps). So each asked time opens a window of
+    +-CUT_WINDOW_S; inside it the pair with the largest difference is the cut
+    IF it stands CUT_RATIO above the median of the other pairs in the window
+    and above CUT_FLOOR. No threshold to guess, no false hold on fast motion
+    (motion raises the whole window, a cut raises one pair), and a painted
+    dissolve -- no single jump -- is left to the interpolation. Pure: lists in,
+    set out, so the guard runs it without torch."""
+    held, notes = set(), []
+    n = len(maes)
+    if n == 0 or not cut_seconds or src_fps <= 0:
+        return held, notes
+    win = max(2, int(round(CUT_WINDOW_S * src_fps)))
+    for t in cut_seconds:
+        c = int(round(float(t) * src_fps)) - 1          # pair (c, c+1): frame c+1 opens the new shot
+        if c < 0 or c >= n:
+            notes.append("cut at %.2f s lies outside these %d frames -- skipped" % (float(t), n + 1))
+            continue
+        lo, hi = max(0, c - win), min(n - 1, c + win)
+        idx = max(range(lo, hi + 1), key=lambda i: maes[i])
+        rest = sorted(maes[i] for i in range(lo, hi + 1) if i != idx)
+        med = rest[len(rest) // 2] if rest else 0.0
+        if maes[idx] >= CUT_FLOOR and maes[idx] >= CUT_RATIO * med:
+            held.add(idx)
+            notes.append("cut at %.2f s found at frames %d|%d (MAE %.3f, %.1fx its neighbours) -- held"
+                         % (float(t), idx + 1, idx + 2, maes[idx], maes[idx] / med if med > 0 else float("inf")))
+        else:
+            notes.append("cut at %.2f s: no hard cut within +-%d frames (largest MAE %.3f, %.1fx its neighbours) "
+                         "-- a painted transition or none, interpolated"
+                         % (float(t), win, maes[idx], maes[idx] / med if med > 0 else 0.0))
+    return held, notes
+
+
 def _strip_training_heads(keys):
     """Which state_dict keys survive into the inference model.
 
@@ -668,10 +711,12 @@ class ULSInterpolate:
                                "error, 0-1) are duplicated instead of interpolated. Identical "
                                "pixels cannot produce motion, only noise. 0 disables."}),
                 "cut_guard": ("FLOAT", {
-                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.005,
-                    "tooltip": "Pairs that differ by MORE than this are held, not blended. "
-                               "Interpolating across a scene cut yields a dissolve; at the seam "
-                               "of a joined sequence that is a certainty, not a risk. 0 disables."}),
+                    "default": CUT_GUARD_DEFAULT, "min": 0.0, "max": 1.0, "step": 0.005,
+                    "tooltip": "Pairs that differ by MORE than this (mean absolute difference, "
+                               "0-1) are held, not blended: interpolating across a cut paints a "
+                               "ghost dissolve. 0.1 catches a clear cut and leaves fast motion "
+                               "alone; 0 disables. With the cuts pin wired from a Cine Timeline "
+                               "the asked cuts are found on their own, whatever this says."}),
                   # APPENDED LAST on purpose: widget values restore by
                   # position (guard #577). "keep" preserves the pre-v890
                   # pass-through behaviour bit for bit.
@@ -701,6 +746,12 @@ class ULSInterpolate:
                                "wire from a Save behind a de-selected switch "
                                "carries an ExecutionBlocker that silently "
                                "disables this whole node."}),
+                # v1211: APPENDED after video (pins keep their order)
+                "cuts": ("PLS_CUTS", {
+                    "tooltip": "From the Cine Timeline's cuts output: the times its shots "
+                               "change. Around each one the node finds the pair where the "
+                               "picture really jumps and holds it, so no cut becomes a "
+                               "ghost dissolve -- no threshold to set."}),
             },
         }
 
@@ -747,8 +798,8 @@ class ULSInterpolate:
                    "the network pads to its own modulus with the black ring it was trained on, "
                    "and a ring of ours on top measured worse -- so the node warns about an "
                    "unaligned canvas instead of quietly 'fixing' it. Skips pairs that are already "
-                   "identical and holds pairs that are a scene cut, without ever changing how many "
-                   "frames come out. Names its target by frame rate rather than by multiplier. "
+                   "identical and holds pairs that are a scene cut (wire a Cine Timeline's cuts and "
+                   "it finds them by itself), without ever changing how many frames come out. Names its target by frame rate rather than by multiplier. "
                    "Measures what one pair of frames really costs on your card before it commits "
                    "to a batch size, watches the clock for driver paging the allocator cannot see, "
                    "and reports every knob the chosen model ignores. Takes a frame batch "
@@ -758,9 +809,9 @@ class ULSInterpolate:
     def interpolate(self, frames=None, ckpt_name="rife426.pth", rate_mode="multiplier",
                     multiplier=2, source_fps=16.0, target_fps=32.0,
                     precision="float32", ensemble=True, fast_mode=True,
-                    scale_factor=1.0, static_skip=0.0, cut_guard=0.0,
+                    scale_factor=1.0, static_skip=0.0, cut_guard=CUT_GUARD_DEFAULT,
                     audio_mode="keep",
-                    video=None):
+                    video=None, cuts=None):
         ckpt_name = _strip_deco(ckpt_name)  # v829: diamond+size decoration
         arch_ver = _arch_for(ckpt_name)
         mod = _modulus(arch_ver)
@@ -852,6 +903,16 @@ class ULSInterpolate:
         # the distribution; you set the dial from a number instead of a feeling.
         maes = [float(torch.mean(torch.abs(frames[p] - frames[p + 1]))) for p in range(n - 1)]
         verdicts = [_gate_verdict(m, static_skip, cut_guard) for m in maes]
+        cut_notes = []
+        if isinstance(cuts, dict) and cuts.get("seconds"):
+            held, cut_notes = _cut_pairs(maes, cuts.get("seconds"), float(source_fps))
+            for i in held:
+                verdicts[i] = "hold"
+            if cuts.get("frames") and int(cuts["frames"]) != n:
+                cut_notes.append("the timeline rendered %d frames, %d came in -- the cuts are placed by time"
+                                 % (int(cuts["frames"]), n))
+            for ln in cut_notes:
+                print("[PLS] Interpolate:   " + ln)
         n_dup = verdicts.count("dup")
         n_hold = verdicts.count("hold")
         live = [t for t in tasks if verdicts[t[0]] == "interp"]
@@ -893,9 +954,9 @@ class ULSInterpolate:
                   % mod)
         srt = sorted(maes)
         print("[PLS] Interpolate:   pair difference (MAE): min %.4f  median %.4f  max %.4f. "
-              "Set static_skip just above the min to skip frozen pairs; set cut_guard just below "
-              "the max ONLY if that max is a real cut and not just fast motion - the node cannot "
-              "tell those apart, and you can."
+              "Set static_skip just above the min to skip frozen pairs; cut_guard holds every pair "
+              "above it -- wire the Cine Timeline's cuts pin and the asked cuts are found by "
+              "their neighbourhood instead of a threshold."
               % (srt[0], srt[len(srt) // 2], srt[-1]))
         if n_dup or n_hold:
             print("[PLS] Interpolate:   gates: %d pair(s) duplicated (static), %d held (cut), "
@@ -1046,6 +1107,8 @@ class ULSInterpolate:
                    n_dup, n_hold, len(live), wall, per))
         if inert:
             info += " | inert: %s" % ",".join(sorted(inert))
+        if cut_notes:
+            info += " | " + "; ".join(cut_notes)
         print("[PLS] Interpolate: done in %s -> %d frames @ %.2f fps (%.0f ms/frame)"
               % (_fmt_clock(wall), out_count, out_fps, per))
         if fps_note:

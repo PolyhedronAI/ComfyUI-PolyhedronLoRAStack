@@ -26,13 +26,15 @@ v1028 -- the cutting room (Cine S6 / E1): the timeline may hold scenes; the
 run renders the whole timeline or ONE scene (the user's active choice in the
 node), the scene clips join the project's stack (v1152: the list in
 input/cine_media/<project>/stack/, the clips where the Saves write them --
-output/ holds only day folders), the editor shows the stack (GET /pls/cine/scenes) and joins it with transitions
-(POST /pls/cine/assemble -> nodes/cine_assemble.py, ffmpeg xfade).
+output/ holds only day folders); v1036 the stack and the join became the video track (POST /pls/cine/edit,
+POST /pls/cine/export). v1182: the v1028 routes GET /pls/cine/scenes and POST /pls/cine/assemble were no longer
+called by the editor (and the join ran ffmpeg on the event loop) -- removed; the Clip Assemble node keeps the join.
 """
 
 import hashlib
 import math
 import json
+import collections
 import os
 import re
 
@@ -90,6 +92,24 @@ def form_fill(prompt, unique_id):
     return None
 
 
+def cut_seconds(target, frames):
+    """v1211: the times (s) of the cuts INSIDE the clip this run renders --
+    every shot after the first, as the compiled target places it (a motion
+    carry has already moved them back). These are the times the prompt ASKS
+    for; the model paints a cut near them, not on the frame. The Interpolate
+    looks for the real one around each time."""
+    dur = int(frames) / float(T.FPS)
+    out = []
+    for s in target.get("shots") or []:
+        try:
+            at = float(s.get("at", 0))
+        except (TypeError, ValueError):
+            continue
+        if 0.0 < at < dur:
+            out.append(round(at, 4))
+    return sorted(set(out))
+
+
 def run(model, sources, prev=None, fill=None):
     """Validate + compile + check. -> (result dict, errors). Pure but for
     the image lookup; the route and the node both call this. v1028: compiles
@@ -102,23 +122,44 @@ def run(model, sources, prev=None, fill=None):
     target, k, n = T.resolve(model)
     want = T.carry_of(model, k)
     carry_lines, carried = [], False
+    motion = model.get("carry_mode", "pin") == "motion"
     if want and prev:
         carried = True
-        if model.get("carry_mode", "pin") == "keyframe":
+        if motion:
+            target, notes = T.with_motion_head(target, head=T.motion_head(model))   # v1185: the timeline's head length
+            carry_lines += notes
+        elif model.get("carry_mode", "pin") == "keyframe":
             target, added = T.with_carry_anchor(target)
             if not added:
                 carried = False
                 carry_lines.append("carry: scene %d has its own first-frame anchor -- that one wins" % k)
     r = T.compile_prompt(target)
+    r["cuts"] = cut_seconds(target, r["frames"])      # v1211: the cuts this clip is asked for
     r["scene"], r["scenes"], r["clip_prefix"] = k, n, T.clip_prefix(model, k)
     # v1083: in pin mode too, an own first-frame anchor wins (the info said
     # "carry", the output was the own anchor, and the frame was decoded for nothing)
-    if carried and r["first"] is not None and model.get("carry_mode", "pin") != "keyframe":
+    if carried and r["first"] is not None and model.get("carry_mode", "pin") == "pin":
         carried = False
         carry_lines.append("carry: scene %d has its own first-frame anchor -- that one wins" % k)
     r["carry"] = prev if carried else None
     r["carry_index"] = T.film_last_index(model, k - 1) if carried else None
-    if carried:
+    r["motion"] = T.motion_head(model) if (carried and motion) else 0   # v1185: 5 / 22 / 39
+    if carried and motion:
+        hd = r["motion"]
+        # v1185: the grid's real cost -- the scene grows by the head, then up to the next 17k+5
+        old_g, new_g = T.frames_for(T.scene_model(model, k)["seconds"]), r.get("frames") or T.frames_for(target["seconds"])
+        carry_lines.append("carry: scene %d CONTINUES scene %d -- its last %d film frames (to frame %d of %s) and their "
+                           "sound -> tail / tail_audio -> MiniMax Continue K2 (context_frames >= %d, audio_context %d; "
+                           "Core master). The scene is rendered %d frames longer (head %d, the grid adds %d: %d -> %d "
+                           "frames): they are its pinned head, every shot after the first moves back by %.2f s; the film "
+                           "leaves the repeated frames out"
+                           % (k, k - 1, hd, r["carry_index"] + 1, os.path.basename(prev), hd, min(T.MOTION_AUDIO, hd),
+                              new_g - old_g, hd, new_g - old_g - hd, old_g, new_g, hd / float(T.FPS)))
+        if hd > T.MOTION_FRAMES:
+            carry_lines.append("carry: head %d -- MiniMax Continue caps the window at ITS context_frames (22 in older "
+                               "workflows): set it to %d or more, else the clip is held for 22 and %d frames of the "
+                               "head render free" % (hd, hd, hd - T.MOTION_FRAMES))
+    elif carried:
         carry_lines.append("carry: scene %d begins on the frame the film shows LAST of scene %d (frame %d of %s) -> first_frame%s"
                            % (k, k - 1, r["carry_index"] + 1, os.path.basename(prev),
                               " (the first-frame anchor: alignment line in the prompt, <Picture 1> in MiniMax Keyframes)"
@@ -140,6 +181,10 @@ def run(model, sources, prev=None, fill=None):
         r["lines"].insert(0, "render: the whole timeline in one run, %d scenes inside it (hard cuts); the run's saved "
                              "clip joins the stack where your Save writes it (clip_prefix %s only if wired)"
                           % (n, r["clip_prefix"]))
+    # v1178: the handoff rules of a continued / continuing scene -- checked, said, never rewritten
+    outgoing = bool(motion and k and k < n and T.carry_of(model, k + 1))
+    if (carried and motion) or outgoing:
+        carry_lines += T.context_notes(target, carried and motion, outgoing)
     r["lines"][0:0] = carry_lines
     n_pics = 0 if target.get("target", "fl2va") == "ref2va" else \
         (1 if r["first"] is not None else 0) + (1 if r["last"] is not None else 0)
@@ -211,7 +256,7 @@ def adopt(model, storyboard, sources):
     return m, True, notes
 
 
-ADOPT_KEEPS = ("project", "triggers", "target", "carry_mode", "render", "active")
+ADOPT_KEEPS = ("project", "triggers", "target", "carry_mode", "head_frames", "render", "active")
 
 
 class ULSCineTimeline:
@@ -250,9 +295,11 @@ class ULSCineTimeline:
             "hidden": {"prompt": "PROMPT", "unique_id": "UNIQUE_ID"},
         }
 
-    RETURN_TYPES = ("STRING", "IMAGE", "IMAGE", "PLS_ANCHORS", "FLOAT", "INT", "STRING", "STRING", "INT")
+    # v1211: `cuts` APPENDED (links store their origin as a slot index)
+    RETURN_TYPES = ("STRING", "IMAGE", "IMAGE", "PLS_ANCHORS", "FLOAT", "INT", "STRING", "STRING", "INT",
+                    "IMAGE", "AUDIO", "PLS_CUTS")
     RETURN_NAMES = ("prompt", "first_frame", "last_frame", "anchors", "seconds", "frames", "info",
-                    "clip_prefix", "scene")
+                    "clip_prefix", "scene", "tail", "tail_audio", "cuts")
     FUNCTION = "build"
     CATEGORY = "Polyhedron/Cine"
     DESCRIPTION = ("One clip on a time axis: shots with their cut times, anchor "
@@ -279,7 +326,10 @@ class ULSCineTimeline:
                    "<day>/PH_<hhmmss>_<project>_whole | _scene_k. The clip lane "
                    "under the shots shows the rendered clips on their places "
                    "(takes, transitions on the seams, fine cut by dragging); "
-                   "Play previews the film in the node, export writes it.")
+                   "Play previews the film in the node, export writes it. "
+                   "A scene that carries in 'motion context' mode hands out the last 22 film frames of the "
+                   "scene before and their sound (tail / tail_audio -> MiniMax Continue K2): the clip continues the "
+                   "motion and the sound, and the film leaves its repeated first frames out.")
 
     @classmethod
     def IS_CHANGED(cls, timeline, **kwargs):
@@ -372,7 +422,28 @@ class ULSCineTimeline:
         if errs:
             raise ValueError(tag + ":\n  " + "\n  ".join(errs))
         carry_img = None
-        if r.get("carry"):
+        tail = tail_audio = None
+        if r.get("carry") and r.get("motion"):
+            # v1176: the motion context -- the last frames the FILM shows of scene k-1 (behind its own repeated head
+            # when it continued scene k-2) and their sound
+            k = int(r["scene"])
+            paths = [carry_source(model, j + 1) for j in range(1, k)]
+            idx = clip_last_shown(model, k - 1, paths)
+            idx = r["carry_index"] if idx is None else idx
+            tail = tail_frames(r["carry"], idx, r["motion"])
+            tail_audio = tail_sound(r["carry"], idx, r["motion"])
+            r["lines"].insert(1, "  tail: %d frame(s) of %s up to its film frame %d%s -- %s" % (
+                int(tail.shape[0]), os.path.basename(r["carry"]), idx + 1,
+                " (behind its repeated head)" if idx != r["carry_index"] else "",
+                "with its sound" if tail_audio is not None else "the clip has no sound"))
+            if int(tail.shape[0]) < int(r["motion"]):
+                # v1182: the scene was compiled r["motion"] frames longer with every later shot moved back by them;
+                # a shorter tail snaps Continue's guide down (5) and the film leaves out fewer -- said loudly
+                r["lines"].insert(2, "  WARN: the scene before has only %d frame(s) to carry (%d asked) -- MiniMax "
+                                     "Continue snaps its guide down, and the shots after the first sit up to %d frame(s) "
+                                     "off their places; render the scene before longer or carry 'first-frame anchor'"
+                                  % (int(tail.shape[0]), int(r["motion"]), int(r["motion"]) - int(tail.shape[0])))
+        elif r.get("carry"):
             sidx, sfps, sn = source_index(r["carry"], r["carry_index"])
             if abs(sfps - E.FPS) > 0.01:
                 r["lines"].insert(1, "carry: %s runs at %g fps (%s frames) -- film frame %d is its frame %d"
@@ -401,7 +472,8 @@ class ULSCineTimeline:
             ui["adopt"] = json.dumps(model, ensure_ascii=True)
         return {"ui": {"pls_timeline": [ui]},
                 "result": (r["prompt"], first, last, anchors, float(r["seconds"]),
-                           int(r["frames"]), info, r["clip_prefix"], int(r["scene"]))}
+                           int(r["frames"]), info, r["clip_prefix"], int(r["scene"]), tail, tail_audio,
+                           {"seconds": list(r.get("cuts") or []), "fps": float(T.FPS), "frames": int(r["frames"])})}
 
 
 async def handle_timeline_preview(request):
@@ -528,6 +600,192 @@ def frame_index(path, idx):
         shutil.rmtree(d, ignore_errors=True)
 
 
+# --------------------------------------------------------------- v1172 frozen frames at the cuts
+HELD_DIFF = 1.5      # mean grey difference (0..255, 96x54) of two frames that are one picture (measured: 0.02-0.9
+                     # for the frozen pairs of the neon film, 4.5 the least motion between two moving frames)
+CARRY_DIFF = 2.5     # the next scene's first picture vs the last one shown before it: the carried start
+EDGE_W, EDGE_H = 96, 54
+_EDGES = collections.OrderedDict()   # v1183: (path, mtime, size) -> uint8 greys, least recently used out
+EDGES_BYTES = 96 * 1024 * 1024        # v1183: the cache holds this much (uint8; it held up to 64 float32 clips)
+
+
+def film_greys(path):
+    """The clip's frames as the FILM counts them (24 fps, as the export resamples), small and grey ->
+    float32 [n, 54, 96]. Cached by (path, mtime, size) -- v1183: kept as uint8 (a quarter of the memory), at most
+    EDGES_BYTES, the least recently used out."""
+    import subprocess
+    import numpy as np
+    st = os.stat(path)
+    key = (os.path.realpath(path), st.st_mtime, st.st_size)
+    if key in _EDGES:
+        _EDGES.move_to_end(key)
+        return _EDGES[key].astype(np.float32)
+    exe = A.find_ffmpeg()
+    if not exe:
+        return None
+    r = subprocess.run([exe, "-v", "error", "-i", path, "-an", "-vf", "fps=%d,scale=%d:%d:flags=area,format=gray"
+                        % (E.FPS, EDGE_W, EDGE_H), "-f", "rawvideo", "-pix_fmt", "gray", "-"], capture_output=True, timeout=300)
+    if r.returncode != 0 or not r.stdout:
+        return None
+    a = np.frombuffer(r.stdout, np.uint8)
+    a = a[:len(a) // (EDGE_W * EDGE_H) * EDGE_W * EDGE_H].reshape(-1, EDGE_H, EDGE_W).copy()
+    _EDGES[key] = a
+    while len(_EDGES) > 1 and sum(v.nbytes for v in _EDGES.values()) > EDGES_BYTES:
+        _EDGES.popitem(last=False)
+    return a.astype(np.float32)
+
+
+def held_runs(g):
+    """(head, tail): how many frames after the first are the first picture again, and before the last the last."""
+    import numpy as np
+    if g is None or len(g) < 4:
+        return 0, 0
+    d = np.abs(np.diff(g, axis=0)).mean(axis=(1, 2))
+    head = 0
+    while head < len(d) // 2 and d[head] < HELD_DIFF:
+        head += 1
+    tail = 0
+    while tail < len(d) // 2 and d[len(d) - 1 - tail] < HELD_DIFF:
+        tail += 1
+    return head, tail
+
+
+REPEAT_WINDOWS = (5, 22, 39, 56)   # v1176: a pinned head is a guide clip -- 17k+5 frames (Continue snaps to them)
+REPEAT_DIFF = 6.0    # mean grey difference (0..255, 96x54) of a re-rendered head against the frames it repeats: the
+                     # pinned head comes back through the VAE and the codec, not bit for bit -- measured on the guard's
+                     # re-encoded neon clips 0.6-2.1; a wrong alignment of a moving shot 9-40
+
+
+REPEAT_STILL = 1.0   # v1182: mean grey difference between a head's own consecutive frames below which it is a STILL
+
+
+def repeat_head(prev, last_shown, g):
+    """v1176 (carry_mode "motion"): how many of a clip's FIRST frames repeat the end of the scene before -- the
+    frames up to `last_shown` of `prev` (grey film frames) -- the pinned head of a motion context. Tries the guide
+    lengths (5, 22, 39, 56); every length below REPEAT_DIFF fits. v1182: the LONGEST fitting length wins -- a
+    shorter window is a subset of the same aligned frames, so between 5 and 22 the minimum was a coin flip of codec
+    noise that could leave 17 repeated frames in the film. Only a STILL head (its own frames do not move) fits every
+    length for no reason -- there the shortest is left out, as before. 0 = no repeated head.
+    -> (frames, mean difference or None)."""
+    import numpy as np
+    if prev is None or g is None:
+        return 0, None
+    fits = []
+    for m in REPEAT_WINDOWS:
+        if m > len(g) - 1 or m > last_shown + 1:
+            continue
+        d = float(np.abs(g[:m].astype(np.float32) - prev[last_shown - m + 1:last_shown + 1].astype(np.float32)).mean())
+        if d < REPEAT_DIFF:
+            fits.append((m, d))
+    if not fits:
+        return 0, None
+    m, d = max(fits)
+    head = g[:m].astype(np.float32)
+    if m > 1 and float(np.abs(head[1:] - head[:-1]).mean()) < REPEAT_STILL:
+        return min(fits)
+    return m, d
+
+
+def clip_last_shown(model, k, paths):
+    """v1176: the film frame (24 fps, of its own clip) the film shows LAST of scene k (1-based) -- the asked end of
+    the scene, behind its repeated head when scene k is itself a motion context of scene k-1 (measured, recursively).
+    paths[j] = the clip of scene j+1 (None: none). -> index or None."""
+    if not k or k > len(paths) or not paths[k - 1]:
+        return None
+    idx = T.film_last_index(model, k)
+    g = film_greys(paths[k - 1])
+    if model.get("carry_mode") == "motion" and T.carry_of(model, k) and k >= 2 and paths[k - 2]:
+        pl = clip_last_shown(model, k - 1, paths)
+        if pl is not None:
+            idx += repeat_head(film_greys(paths[k - 2]), pl, g)[0]
+    return min(idx, len(g) - 1) if g is not None else idx
+
+
+def motion_seams(model):
+    """v1176: the scenes (0-based) that continue the one before as a motion context."""
+    if model.get("carry_mode") != "motion":
+        return set()
+    return set(k - 1 for k in range(2, len(T.scenes(model)) + 1) if T.carry_of(model, k))
+
+
+def tail_frames(path, last_idx, n):
+    """v1176: the film frames last_idx-n+1 .. last_idx of a clip (counted at 24 fps, as the film does) as an IMAGE
+    [n, H, W, 3] -- the motion context of the scene after it."""
+    import subprocess
+    import numpy as np
+    import torch
+    exe = A.find_ffmpeg()
+    if not exe:
+        raise ValueError("[PLS] Cine Timeline: motion context needs ffmpeg (PATH or imageio-ffmpeg)")
+    ci = clip_info(path)
+    w, h = int(ci["w"]), int(ci["h"])
+    a = max(0, int(last_idx) - int(n) + 1)
+    r = subprocess.run([exe, "-v", "error", "-i", path, "-an", "-vf", "fps=%d,select=between(n\\,%d\\,%d)" % (E.FPS, a, last_idx),
+                        "-vsync", "0", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, timeout=300)
+    if r.returncode != 0 or not r.stdout:
+        raise ValueError("[PLS] Cine Timeline: could not read the last frames of %s" % os.path.basename(path))
+    arr = np.frombuffer(r.stdout, np.uint8)
+    arr = arr[:len(arr) // (w * h * 3) * w * h * 3].reshape(-1, h, w, 3)
+    return torch.from_numpy(arr.astype(np.float32) / 255.0)
+
+
+def tail_sound(path, last_idx, n, rate=32000):
+    """v1176: the sound under the film frames last_idx-n+1 .. last_idx of a clip -> AUDIO {waveform [1, 2, L],
+    sample_rate}, or None (a clip without sound). 32 kHz, the H3 audio VAE's rate (no second resample)."""
+    import subprocess
+    import numpy as np
+    import torch
+    exe = A.find_ffmpeg()
+    if not exe or not clip_info(path).get("audio"):
+        return None
+    t1 = (int(last_idx) + 1) / float(E.FPS)
+    t0 = max(0.0, t1 - int(n) / float(E.FPS))
+    r = subprocess.run([exe, "-v", "error", "-i", path, "-vn", "-af", "atrim=start=%.6f:end=%.6f,asetpts=PTS-STARTPTS"
+                        % (t0, t1), "-ac", "2", "-ar", str(rate), "-f", "f32le", "-"], capture_output=True, timeout=300)
+    if r.returncode != 0 or not r.stdout:
+        return None
+    a = np.frombuffer(r.stdout, np.float32)
+    a = a[:len(a) // 2 * 2].reshape(-1, 2).T.copy()
+    return {"waveform": torch.from_numpy(a)[None], "sample_rate": rate}
+
+
+def held_at_cuts(paths, motion=(), prev_last=None):
+    """Per scene (head, tail, n[, repeated]) frames to leave out at a cut (None: no clip): its own frozen frames, and at the head
+    one more when its first picture is the last one shown before it (the carried start); n = its frames as decoded
+    at 24 fps (the tail counts back from them). v1176: scene k (0-based) in `motion` -- a motion context -- leaves
+    out its repeated head (repeat_head) instead, measured against prev_last[k], the frame of scene k-1's clip its
+    tail ended on (clip_last_shown)."""
+    import numpy as np
+    gs = []
+    for p in paths:
+        try:
+            gs.append(film_greys(p) if p else None)
+        except Exception:
+            gs.append(None)
+    runs = [held_runs(g) if g is not None else None for g in gs]
+    out = []
+    for k, g in enumerate(gs):
+        if g is None:
+            out.append(None)
+            continue
+        head, tail = runs[k]
+        prev = gs[k - 1] if k > 0 else None
+        if k in motion and prev is not None and runs[k - 1] is not None:
+            pl = len(prev) - 1 - runs[k - 1][1]
+            if prev_last is not None and k < len(prev_last) and prev_last[k] is not None:
+                pl = min(int(prev_last[k]), len(prev) - 1)
+            rep_n, _d = repeat_head(prev, pl, g)
+            if rep_n:
+                out.append((rep_n, tail, len(g), True))     # v1181: True = a repeated head, out at every seam kind
+                continue
+        if prev is not None and runs[k - 1] is not None:
+            last_shown = prev[len(prev) - 1 - runs[k - 1][1]]
+            if float(np.abs(g[head] - last_shown).mean()) < CARRY_DIFF:
+                head += 1
+        out.append((head, tail, len(g)))
+    return out
+
+
 REGISTER_WAIT_TRIES, REGISTER_WAIT_STEP = 6, 0.5     # v1083: 3 s for the run before's register
 
 
@@ -639,38 +897,7 @@ def film_stem(model, what="film"):
     return "PH_%s_%s_%s" % (time.strftime("%H%M%S"), T.project_name(model), what)
 
 
-def stack_items(project, count):
-    """The stack as the editor shows it: one entry per scene 1..count (None
-    when not rendered yet) + the newest whole render, with /view refs and
-    posters (the Clip Chain's own helpers)."""
-    from . import ph_cine_chain as CH
-    from . import cine_clip as C
-    folder = project_folder(project)
-    files = A.scene_files(folder, count)
-    bases = CH._bases()
-
-    def item(k):
-        f = files.get(k)
-        if not f:
-            return None
-        it = {"scene": k, "name": f["name"], "path": f["path"], "mtime": f["mtime"], "runs": f["runs"],
-              "view": C.view_ref(f["path"], bases), "latent": False, "current": False}
-        return CH._with_posters([it])[0]
-    return {"folder": folder, "scenes": [item(k) for k in range(1, int(count) + 1)], "whole": item(0)}
-
-
-async def handle_scenes(request):
-    """GET /pls/cine/scenes?project=..&count=N -> {folder, scenes: [item|null], whole}."""
-    from aiohttp import web
-    q = request.rel_url.query
-    try:
-        count = max(1, min(64, int(q.get("count", "1"))))
-        return web.json_response(stack_items(q.get("project", ""), count))
-    except Exception as e:
-        return web.json_response({"folder": "", "scenes": [], "whole": None, "error": "%s: %s" % (type(e).__name__, e)})
-
-
-def register_clip(project, scene, ref, primary=False, run_files=None):
+def register_clip(project, scene, ref, primary=False, run_files=None, sweep=None):
     """v1034: the editor saw a run of scene `scene` (0 = the whole timeline)
     write the clip `ref` ({filename, subfolder, type}) -- list it in the
     project's stack. Only files of type "output" under output/. -> rel path."""
@@ -681,7 +908,7 @@ def register_clip(project, scene, ref, primary=False, run_files=None):
         raise ValueError("no filename")
     sub = str(ref.get("subfolder", "") or "")
     full = os.path.join(_output_dir(), sub, name)
-    return A.register(project_folder(project), int(scene), full, primary=bool(primary), run_files=run_files)
+    return A.register(project_folder(project), int(scene), full, primary=bool(primary), run_files=run_files, sweep=sweep)
 
 
 async def handle_register(request):
@@ -690,7 +917,8 @@ async def handle_register(request):
     try:
         body = await request.json()
         rel = register_clip(body.get("project", ""), body.get("scene", 0), body.get("file"),
-                            primary=bool(body.get("primary")), run_files=body.get("run_files"))
+                            primary=bool(body.get("primary")), run_files=body.get("run_files"),
+                            sweep=body.get("sweep") if isinstance(body.get("sweep"), (int, float)) else None)
     except Exception as e:
         return web.json_response({"error": "%s" % e})
     print("[PLS] Cine stack: scene %s <- %s%s" % (body.get("scene"), rel,
@@ -698,23 +926,14 @@ async def handle_register(request):
     return web.json_response({"rel": rel})
 
 
-async def handle_assemble(request):
-    """POST {project, count, transitions, name} -> {path, view, lines} or {error}."""
+async def handle_renders(request):
+    """v1198: POST {project, count} -> the project's renders, newest first (cine_assemble.render_groups)."""
     from aiohttp import web
     try:
         body = await request.json()
-        folder = project_folder(body.get("project", ""))
-        out, lines = A.assemble(folder, int(body.get("count", 0)), body.get("transitions") or [],
-                                T.TRANSITIONS, out_dir=day_folder(),
-                                name=film_stem({"project": body.get("project", "")}, str(body.get("name", "") or "film")))
+        return web.json_response(A.render_groups(project_folder(body.get("project", "")), int(body.get("count") or 1)))
     except Exception as e:
         return web.json_response({"error": "%s" % e})
-    from . import ph_cine_chain as CH
-    from . import cine_clip as C
-    print("[PLS] " + "\n[PLS] ".join(lines))
-    ref = C.view_ref(out, CH._bases())
-    poster = CH._with_posters([{"path": out}])[0].get("poster")
-    return web.json_response({"path": out, "view": ref, "poster": poster, "lines": lines})
 
 
 # --------------------------------------------------------------- v1036 the video track
@@ -744,7 +963,7 @@ def clip_info(path):
             # v1043: a clip from disk may run at 25/30/60 fps -- the edit counts
             # film frames at 24 (the export resamples with fps=24 first)
             info["src_frames"] = n
-            info["frames"] = max(1, int(round(n * E.FPS / fps)))
+            info["frames"] = E.film_frames(n, fps)      # v1195: the one law (half up, as ffmpeg's fps filter counts)
     if len(_PROBES) > 256:
         _PROBES.clear()
     _PROBES[key] = info
@@ -837,9 +1056,11 @@ def edit_plan(model, edit, strips=True):
         want = (ed.get("takes") or {}).get(str(k)) if ed.get("auto_track", True) is not False else None   # v1080: on by default
         i = rels.index(want) if want in rels else 0
         item = {"k": k, "takes": rels, "take": i, "path": None, "view": None, "strip": None, "name": None,
-                # v1165: V1 shows a clip that replaced an earlier run's (the green NEW)
+                # v1165: V1 shows a clip that replaced an earlier run's; v1190: the green NEW is "came in with the
+                # latest render" -- the places that render has not reached yet keep their clip WITHOUT the mark
                 "replaced": bool(i == 0 and rels and A.replaced(folder, k, rels, rels[0],
-                                                                 stem=os.path.basename(T.clip_prefix(model, k))))}
+                                                                 stem=os.path.basename(T.clip_prefix(model, k)))),
+                "new": bool(i == 0 and rels and A.is_new(folder, k, rels[0]))}
         if cands:
             path = cands[i]
             try:
@@ -873,8 +1094,14 @@ def edit_plan(model, edit, strips=True):
                 tails.add(k)
         except Exception:
             pass
+    held = None
+    if not whole:
+        cps = [it.get("path") if c else None for it, c in zip(info, clips)]
+        mot = motion_seams(model)
+        pls = [None] + [clip_last_shown(model, k, cps) if k in mot else None for k in range(1, len(cps))]
+        held = held_at_cuts(cps, mot, pls)   # v1172; v1176 the motion heads
     p = E.plan(starts, float(model.get("seconds", 6)), clips, model.get("transitions") or [],
-               T.TRANSITIONS, edit=ed, whole=whole, tails=tails)
+               T.TRANSITIONS, edit=ed, whole=whole, tails=tails, held=held)
     sizes = set((c["w"], c["h"]) for c in clips if c)
     if len(sizes) > 1:
         p["warnings"].append("the clips differ in size %s -- the export scales to the first" % sorted(sizes))
@@ -984,22 +1211,37 @@ def stack_of(ed, p, base_clips, strips=True):
                             "has_audio": False, "track": tr, "paths": []})
         else:
             warns = []
-            try:
-                path = layer_path(L["src"])
-                ci = _layer_clip(path, strips)
-                tr = E.track(L["pieces"], {0: ci["frames"]}, T.TRANSITIONS, warns)
+            # v1198: a track's files -- k 0 = src, k i = more[i-1] (a render's scenes on one track); each read alone,
+            # a missing one names itself and leaves the others playing
+            srcs = [L["src"]] + list(L.get("more") or [])
+            cis, paths_k, errs = [], [], []
+            for i, sx in enumerate(srcs):
+                try:
+                    pth = layer_path(sx)
+                    cis.append(_layer_clip(pth, strips))
+                    paths_k.append(pth)
+                except Exception as e:
+                    cis.append(None)
+                    paths_k.append(None)
+                    errs.append(("%s" % e) if i == 0 else ("file %d: %s" % (i + 1, e)))
+            tr = E.track(L["pieces"], {i: (c["frames"] if c else None) for i, c in enumerate(cis)}, T.TRANSITIONS, warns)
+            ci = cis[0]
+            if ci:
                 row["clip"] = ci
-            except Exception as e:
-                path, ci = None, None
-                tr = E.track(L["pieces"], {0: None}, T.TRANSITIONS, warns)
-                row["error"] = "%s" % e
+            if len(srcs) > 1:
+                row["clips"] = cis
+                row["paths_k"] = paths_k
+            if errs:
+                row["error"] = "; ".join(errs)
             tr = E.shift_sound(tr, L.get("aoff", 0))     # v1153: the pair unlinked, the sound shifted
             row["plan"] = tr
             row["link"] = L.get("link", True) is not False
             row["aoff"] = int(L.get("aoff", 0) or 0)
+            used = sorted({int(s["k"]) for s in tr["segments"] if not s.get("gap")})
+            has_a = bool(used) and all(cis[k] and cis[k].get("audio") for k in used if k < len(cis))
             entries.append({"id": L["id"], "name": row["name"], "video": L["video"], "audio": L["audio"], "solo": row["solo"],
-                            "has_audio": bool(ci and ci.get("audio")), "track": tr,
-                            "paths": [None if s.get("gap") else path for s in tr["segments"]]})
+                            "has_audio": has_a if used else bool(ci and ci.get("audio")), "track": tr,
+                            "paths": [None if s.get("gap") else (paths_k[s["k"]] if 0 <= s["k"] < len(paths_k) else None) for s in tr["segments"]]})
         view.append(row)
     span = E.fr(ed["span"]) if "span" in ed else p["length"]
     film = E.stack_film(entries, span)
@@ -1103,10 +1345,10 @@ def _export_stack(model, d, preview):
             entries.append({"id": "base", "name": r["name"], "video": r["video"], "audio": r["audio"], "solo": r.get("solo"), "has_audio": has_a,
                             "track": p, "paths": [None if s.get("gap") else by_k[s["k"]]["path"] for s in p["segments"]]})
         else:
-            path = (r.get("clip") or {}).get("path")
+            pk = r.get("paths_k") or [(r.get("clip") or {}).get("path")]     # v1198: one path per file of the track
             entries.append({"id": r["id"], "name": r["name"], "video": r["video"], "audio": r["audio"], "solo": r.get("solo"),
                             "has_audio": bool(r.get("has_audio")), "track": r["plan"],
-                            "paths": [None if s.get("gap") else path for s in r["plan"]["segments"]]})
+                            "paths": [None if s.get("gap") else (pk[s["k"]] if 0 <= s["k"] < len(pk) else None) for s in r["plan"]["segments"]]})
     stack = E.stack_film(entries, film["length"])
     # the film's size: the render's first clip, else the first layer with one
     first = next((c for c in d["clips"] if c.get("w")), None) or next(
@@ -1207,9 +1449,8 @@ def register_timeline_routes():
         return 0
     n = 0
     for method, path, fn in (("POST", "/pls/cine/timeline", handle_timeline_preview),
-                             ("GET", "/pls/cine/scenes", handle_scenes),
                              ("POST", "/pls/cine/register", handle_register),
-                             ("POST", "/pls/cine/assemble", handle_assemble),
+                             ("POST", "/pls/cine/renders", handle_renders),
                              ("POST", "/pls/cine/edit", handle_edit),
                              ("POST", "/pls/cine/export", handle_export),
                              ("GET", "/pls/cine/media_dir", handle_media_dir),

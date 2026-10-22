@@ -140,18 +140,19 @@ if P is not None:
           "U1 the -> CTE route is registered")
 
 # U1 statics
+# AMENDED v1183: the preview keeps the fill it sent only when the answer is still the newest (previewSeq)
 js = (ROOT / "web" / "js" / "ph_cine_timeline.js").read_text(encoding="utf-8")
 fld = js[js.index("function _field("):]
 _need("root.append(topBar, headRow, refsRow, work, state, tools, film, scroller, bar, status, prev, pop);" in fld,
       "U1 the sections: top bar, head row, refs, work, state, toolbar, FILM, tracks, bar, status, preview")
 _need("topBar.append(modeSeg, tgt," in fld and "all, run);" in fld and 'run.style.cssText = BTN_GO;' in fld,
       "U1 the top bar: mode, length, project, render choice, render all, the big Render")
-_need("tools.append(splitBtn, healBtn, delBtn, linkBtn, typeBtn, snapSel, sep(), resetBtn, cutsBtn, tailLab,\n        sep(), autoLab, restLab, takesBtn);" in fld,   # AMENDED v1153: + V/A by type
+_need("tools.append(splitBtn, healBtn, delBtn, linkBtn, typeBtn, snapSel, sep(), resetBtn, cutsBtn, tailLab,\n        sep(), autoLab, restLab, takesBtn, clearBtn);" in fld,   # AMENDED v1153: + V/A by type; AMENDED v1198: + x tracks
       "U1 the toolbar keeps EVERY tool (cut, heal, delete, A/V linked, snap, reset, cuts->prompt, keep tail, the takes switches)")
 _need('lanes.append(_row(tc, ruler), _row(gut("Scenes"), scenes), _row(gut("Shots"), shots), _row(newHead, newLane), above,' in fld
       and "v1Row, _row(a1Head, audio), below, anchorsRow, tl);" in fld,   # AMENDED v1153
       "U1 the tracks keep every row (new track, V tracks, V1, A1, A tracks, anchors)")
-_need('toCte.dataset.pls = "tocte";' in fld and '"/pls/cine/to_form"' in js and "fill: (st.filled = fillOf(node))" in js,
+_need('toCte.dataset.pls = "tocte";' in fld and '"/pls/cine/to_form"' in js and "fill: filled }" in js and "st.filled = filled;" in js,
       "U1 -> CTE button + route; the preview sends the CTE's segments")
 _need('pop.dataset.pls = "refpop";' in fld and "st.pop.style.display = \"block\";" in js and "position:fixed" not in js,
       "U1 the refs show big on hover INSIDE the node (no floating window)")

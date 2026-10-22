@@ -118,11 +118,11 @@ _need('tick.dataset.pls = "scenetick";' in js and 'tick.addEventListener("pointe
 _need('st.all.textContent = nTick < sc.length ? "render ticked scenes (" + nTick + ")" : "render all scenes";' in js
       and '"ticked scenes, one run each (" + nTick + " of " + sc.length + ")"' in js, "K4 the button and the render choice count the ticked scenes")
 # R1
-_need('export const AUTO_CHOICES = [["track", "new track"], ["replace", "replace"]];' in js
-      and 'autoChk.addEventListener("change", () => _setAuto(node, autoChk.value === "track"));' in js
-      and 'if (st.autoChk) st.autoChk.value = autoOn(editOf(node)) ? "track" : "replace";' in js
+_need('export const AUTO_CHOICES = [["track", "new track"], ["render", "one track per render"], ["replace", "replace"]];' in js
+      and 'autoChk.addEventListener("change", () => _setAuto(node, autoChk.value));' in js
+      and 'if (st.autoChk) st.autoChk.value = autoMode(editOf(node));' in js
       and "replace: a new run REPLACES the clip of its scene in V1" in js, "R1 new track | replace: an explicit choice on _setAuto")
-j = js.find("function _setAuto(node, on)")
+j = js.find("function _setAuto(node, mode)")   # AMENDED v1198: three modes
 _need(j > 0 and "} else { e[AUTO_KEY] = false; delete e.takes; }" in js[j:j + 600], "R1 replace drops the pins: V1 follows the newest run")
 
 # P1

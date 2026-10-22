@@ -180,7 +180,8 @@ _need("def frame_at(" not in py, "F6 the seek-based frame_at is gone")
 _need("REGISTER_WAIT_TRIES, REGISTER_WAIT_STEP = 6, 0.5" in py and "for _i in range(REGISTER_WAIT_TRIES):" in py
       and "prev = carry_source(model, k0)" in py[py.find("for _i in range(REGISTER_WAIT_TRIES):"):][:400]
       and "clip registered after" in py and "starts free" in py, "F7 build() waits for the run before's register, says what happened")
-_need("tails.add(k)" in py and "T.TRANSITIONS, edit=ed, whole=whole, tails=tails)" in py, "F7 edit_plan hands the tails to plan()")
+# AMENDED v1172: plan() also gets the frozen frames at the cuts (held=held) after the tails
+_need("tails.add(k)" in py and "T.TRANSITIONS, edit=ed, whole=whole, tails=tails, held=held)" in py, "F7 edit_plan hands the tails to plan()")
 shutil.rmtree(TMP, ignore_errors=True)
 
 bad = [f for f in ("nodes/cine_timeline.py", "nodes/cine_edit.py", "nodes/ph_cine_timeline.py", "tests/test_v1083_film_truth.py")

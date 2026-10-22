@@ -126,7 +126,8 @@ _need(not [x for x in os.listdir(fox) if x.endswith(".tmp")], "A2 the list is wr
 # ------------------------------------------------------------------ A3
 # register_clip lifted from the node module: it only needs A, T and an output dir
 code = src_node[src_node.index("def register_clip"):src_node.index("async def handle_register")]
-pdef = src_node[src_node.index("def project_folder"):src_node.index("def stack_items")]
+# AMENDED v1182: stack_items removed (with the dead /pls/cine/scenes route) -- the slice ends at register_clip
+pdef = src_node[src_node.index("def project_folder"):src_node.index("def register_clip")]
 ns = {"os": os, "A": A, "T": T, "_output_dir": lambda: str(out)}
 # AMENDED v1152: project_folder lives in input/cine_media/<project>/stack/ (folder_paths names input/)
 _fp = types.ModuleType("folder_paths"); _fp.get_input_directory = lambda: str(out.parent / "input"); sys.modules["folder_paths"] = _fp

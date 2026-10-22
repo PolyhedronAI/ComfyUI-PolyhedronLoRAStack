@@ -154,6 +154,42 @@ try:
 except Exception as e:
     print(f"[PLS] ✗ Polyhedron Show Text unavailable — import failed: {e!r}")
 try:
+    from .nodes.ph_minimax_continue import ULSMiniMaxContinue   # v392: the fox templates' H3 chain
+    _MMCONT_OK = True
+except Exception as e:
+    _MMCONT_OK = False
+    print(f"[PLS] ✗ Polyhedron MiniMax Continue unavailable — import failed: {e!r}")
+try:
+    from .nodes.ph_minimax_keyframes import ULSMiniMaxKeyframes   # v392: the fox templates' H3 chain
+    _MMKEYS_OK = True
+except Exception as e:
+    _MMKEYS_OK = False
+    print(f"[PLS] ✗ Polyhedron MiniMax Keyframes unavailable — import failed: {e!r}")
+try:
+    from .nodes.ph_minimax_audio_lock import ULSMiniMaxAudioLock   # v392: the fox templates' H3 chain
+    _MMALOCK_OK = True
+except Exception as e:
+    _MMALOCK_OK = False
+    print(f"[PLS] ✗ Polyhedron MiniMax Audio Lock unavailable — import failed: {e!r}")
+try:
+    from .nodes.ph_minimax_drift import ULSMiniMaxDriftControl   # v392: the fox templates' H3 chain
+    _MMDRIFT_OK = True
+except Exception as e:
+    _MMDRIFT_OK = False
+    print(f"[PLS] ✗ Polyhedron MiniMax Drift Control unavailable — import failed: {e!r}")
+try:
+    from .nodes.ph_h3_quality import ULSH3LatentUpscale   # v392: the fox templates' H3 chain
+    _H3LUP_OK = True
+except Exception as e:
+    _H3LUP_OK = False
+    print(f"[PLS] ✗ Polyhedron H3 Latent Upscale unavailable — import failed: {e!r}")
+try:
+    from .nodes.ph_minimax_pass_hold import ULSMiniMaxSecondPassHold   # v392: the fox templates' H3 chain
+    _MMHOLD_OK = True
+except Exception as e:
+    _MMHOLD_OK = False
+    print(f"[PLS] ✗ Polyhedron MiniMax Second Pass Hold unavailable — import failed: {e!r}")
+try:
     from .nodes.ph_reference_board import ULSReferenceBoard
     _RBOARD_OK = True
 except Exception as e:
@@ -337,6 +373,25 @@ if _TIMELINE_OK:
     NODE_CLASS_MAPPINGS["ULSCineTimeline"] = ULSCineTimeline
     NODE_DISPLAY_NAME_MAPPINGS["ULSCineTimeline"] = "⬡ Polyhedron Cine Timeline"
 
+if _MMCONT_OK:
+    NODE_CLASS_MAPPINGS["ULSMiniMaxContinue"] = ULSMiniMaxContinue
+    NODE_DISPLAY_NAME_MAPPINGS["ULSMiniMaxContinue"] = "⬡ Polyhedron MiniMax Continue"
+if _MMKEYS_OK:
+    NODE_CLASS_MAPPINGS["ULSMiniMaxKeyframes"] = ULSMiniMaxKeyframes
+    NODE_DISPLAY_NAME_MAPPINGS["ULSMiniMaxKeyframes"] = "⬡ Polyhedron MiniMax Keyframes"
+if _MMALOCK_OK:
+    NODE_CLASS_MAPPINGS["ULSMiniMaxAudioLock"] = ULSMiniMaxAudioLock
+    NODE_DISPLAY_NAME_MAPPINGS["ULSMiniMaxAudioLock"] = "⬡ Polyhedron MiniMax Audio Lock"
+if _MMDRIFT_OK:
+    NODE_CLASS_MAPPINGS["ULSMiniMaxDriftControl"] = ULSMiniMaxDriftControl
+    NODE_DISPLAY_NAME_MAPPINGS["ULSMiniMaxDriftControl"] = "⬡ Polyhedron MiniMax Drift Control"
+if _H3LUP_OK:
+    NODE_CLASS_MAPPINGS["ULSH3LatentUpscale"] = ULSH3LatentUpscale
+    NODE_DISPLAY_NAME_MAPPINGS["ULSH3LatentUpscale"] = "⬡ Polyhedron H3 Latent Upscale"
+if _MMHOLD_OK:
+    NODE_CLASS_MAPPINGS["ULSMiniMaxSecondPassHold"] = ULSMiniMaxSecondPassHold
+    NODE_DISPLAY_NAME_MAPPINGS["ULSMiniMaxSecondPassHold"] = "⬡ Polyhedron MiniMax Second Pass Hold"
+
 WEB_DIRECTORY = "./web/js"
 
 # -- Routes: every group registers its own module, bare path + /api alias
@@ -399,7 +454,7 @@ _node_count = len(NODE_CLASS_MAPPINGS)
 _bridge_str = "✅" if _BRIDGE_OK else "⚠ unavailable"
 print(f"""
 ⚡ ============================================================
-   Polyhedron Suite  v391
+   Polyhedron Suite  v392
    {_node_count} Nodes  |  Bridge: {_bridge_str}
 ⚡ ============================================================
 """)

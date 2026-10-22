@@ -242,14 +242,14 @@ function injectCSS() {
 .ph-media.ph-media-mini .ph-media-prev-audio,
 .ph-media.ph-media-mini .ph-solo-toggle { display:none; }
 .ph-media.ph-media-mini .ph-media-preview { max-width:none; flex:1 1 auto; }
-.ph-mini-toggle { margin-right:auto; background:#1c1c1c; color:#bbb;
-  border:1px solid #444; border-radius:4px; font:10px system-ui,sans-serif;
+.ph-mini-toggle { margin-right:auto; background:linear-gradient(#34476a,#2a3a57); color:#e8eefb;
+  border:1px solid #4d6898; border-radius:4px; font:10px system-ui,sans-serif;
   padding:1px 6px; cursor:pointer; }
 .ph-mini-toggle:hover { color:#ff8c00; border-color:#ff8c00; }
 .ph-media-mini .ph-media-prev-lbl > span { display:none; }
-.ph-media-btn { background:#2a2a2a; border:1px solid #444; color:#ddd; border-radius:5px;
+.ph-media-btn { background:linear-gradient(#34476a,#2a3a57); border:1px solid #4d6898; color:#e8eefb; border-radius:5px;
     padding:3px 8px; cursor:pointer; white-space:nowrap; }
-.ph-media-btn:hover { background:#383838; }
+.ph-media-btn:hover { background:linear-gradient(#3e5480,#314466); }
 /* v968: the grid-order handle sits at the far right of the pager row that is
    already there — it never adds a row, and it keeps its distance from the
    page buttons so a mis-click cannot re-order the grid. */
@@ -317,10 +317,10 @@ function injectCSS() {
 .ph-media.ph-solo .ph-media-grid, .ph-media.ph-solo .ph-media-pager { display:none; }
 .ph-media.ph-solo .ph-media-preview { max-width:none; flex:1 1 auto; }
 .ph-media-prev-lbl { display:flex; align-items:center; gap:6px; }
-.ph-solo-toggle { margin-left:auto; flex:none; cursor:pointer; background:#262626; color:#bbb;
-    border:1px solid #444; border-radius:4px; font:10px/1 system-ui,sans-serif; padding:2px 6px; }
-.ph-solo-toggle:hover { color:#eee; border-color:#666; }
-.ph-media.ph-solo .ph-solo-toggle { color:#f0a030; border-color:#f0a030aa; }
+.ph-solo-toggle { margin-left:auto; flex:none; cursor:pointer; background:linear-gradient(#34476a,#2a3a57); color:#e8eefb;
+    border:1px solid #4d6898; border-radius:4px; font:10px/1 system-ui,sans-serif; padding:2px 6px; }
+.ph-solo-toggle:hover { color:#fff; border-color:#7f9cd0; }
+.ph-media.ph-solo .ph-solo-toggle { color:#111; background:#f0a030; border-color:#f0a030; }   /* v1177: ON lit amber */
 .ph-media-tile { position:relative; aspect-ratio:1/1; border:2px solid transparent; border-radius:5px;
     overflow:hidden; cursor:pointer; background:#262626; }
 .ph-media-tile.sel { border-color:#f0a030; }
@@ -375,9 +375,9 @@ video.ph-tile-video { position:absolute; inset:0; width:100%; height:100%; objec
     text-overflow:ellipsis; white-space:nowrap; }
 .ph-aud-head { display:flex; align-items:center; gap:4px; }
 .ph-aud-name { font-size:10px; color:#cfcfcf; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.ph-aud-btn { background:#2e2e2e; border:1px solid #444; color:#ddd; border-radius:3px; cursor:pointer;
+.ph-aud-btn { background:linear-gradient(#34476a,#2a3a57); border:1px solid #4d6898; color:#e8eefb; border-radius:3px; cursor:pointer;
     font-size:11px; line-height:1; padding:2px 5px; }
-.ph-aud-btn:hover { background:#383838; }
+.ph-aud-btn:hover { background:linear-gradient(#3e5480,#314466); }
 .ph-aud-src { font-size:8px; color:#8a8a92; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ph-media-prev-audio .ph-aud-prevwrap { padding:2px 4px; gap:4px; }
 .ph-media-prev-audio .ph-aud-prevwrap .ph-aud-card { width:55%; max-width:150px; }
@@ -1957,8 +1957,8 @@ class MediaLoaderUI {
             sub.textContent = maybePath
                 ? "Selects the file and pins the folder it already lives in. Nothing is copied."
                 : (hasFiles
-                    ? "Finds the file again in recently used folders and pins it there. If it cannot be found, a copy goes to input instead."
-                    : "Needs the file's path — the desktop client or a dropped path text. Without it this copies into input instead.");
+                    ? "Finds the file again in recently used folders and pins it there. If it cannot be found, the folder picker opens — nothing is copied."
+                    : "Needs the file's path — the desktop client or a dropped path text. Without it the folder picker opens — nothing is copied.");
         }
     }
 
@@ -2024,16 +2024,23 @@ class MediaLoaderUI {
                     return;
                 }
                 this._dropNote(r && r.reason === "ambiguous"
-                    ? "📌 Found the same file in several known folders — copying into input instead. Drop its path as text to pin one of them."
-                    : "📌 Your browser hides the file's path and it was not found in recently used folders — copying into input. Tip: drag the path as text (Shift+right-click → Copy as path) to pin its folder.",
+                    ? "📌 Found the same file in several known folders — nothing was copied. Pick the right one in the folder picker."
+                    : "📌 Your browser hides the file's path and it is not in a recently used folder — nothing was copied. Pick it once in the folder picker (📁 = the Windows dialog); after that its folder is known.",
                     "#e0b060");
             } catch (e) {
-                this._dropNote("📌 No path available for this drag — copying into the ComfyUI input folder instead.",
+                this._dropNote("📌 No path available for this drag — nothing was copied. Pick the file in the folder picker.",
                                "#e0b060");
             }
         } else if (wantPin && !path) {
-            this._dropNote("📌 No path available for this drag — copying into the ComfyUI input folder instead.",
+            this._dropNote("📌 No path available for this drag — nothing was copied. Pick the file in the folder picker.",
                            "#e0b060");
+        }
+        if (wantPin) {
+            // v1211 (Frank 22.10.): "load from where it is" NEVER copies into input.
+            // Every pin that found no folder ends HERE, in the picker -- its 📁
+            // button is the native dialog, which hands back the real path.
+            this._pinPick();
+            return;
         }
         if (dt.files && dt.files.length) {
             // v663 (Frank): a copy NEVER writes into whatever folder happens to be
@@ -2077,6 +2084,15 @@ class MediaLoaderUI {
         }
         this._dropNote("⚠ Nothing to drop here — no image, video or audio file was found.",
                        "#e0b060");
+    }
+
+    // v1211: the pin zone's way out when the drop carried no usable path
+    _pinPick() {
+        openFolderPicker(this.folder, (p, file) => {
+            this.setFolder(p);
+            pushRecentFolder(p);
+            if (file) this._dropSelect(file);
+        });
     }
 
     _dropSelect(name, tries = 0) {

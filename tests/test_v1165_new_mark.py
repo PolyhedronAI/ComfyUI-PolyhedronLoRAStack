@@ -1,5 +1,6 @@
 # -*- coding: ascii -*-
 """Guard v1165 -- the green NEW on a timeline clip that replaced an earlier run's clip.
+(v1190: the mark itself now means "came in with the latest render" -- isNew; replaced() stays the tooltip's word.)
 
 Frank 18.10.: "Ich haette gerne, dass man sehen kann, dass in der Timeline eine Datei ersetzt worden ist; das kann
 ein kleines gruenes NEW sein am Clip". One run writes several files of a scene (raw, upscale, interpolated) -- all of
@@ -122,8 +123,8 @@ else:
     _need(False, "J1 node.js and isReplaced are needed")
 lane = JS[JS.find("function _clipLane("):JS.find("function _clipLane(") + 12000]
 _need('nw.dataset.pls = "newmark"' in lane and "background:#4caf50" in lane and '"NEW")' in lane
-      and "!sg.missing && isReplaced(c)" in lane and "NEW: replaced" in lane,
-      "J2 the lane draws the green NEW on a replaced clip and says it in the tooltip")
+      and "!sg.missing && isNew(c)" in lane and "NEW: came in with the latest render" in lane,
+      "J2 the lane draws the green NEW (v1190: on the latest render's clip) and says it in the tooltip")
 _need("primary: true, run_files: run.rels" in JS, "J2 the register call of the run's clip sends run_files")
 _need(all(c < 128 for c in Path(__file__).read_bytes()), "S  ASCII")
 print("%s: %d check(s) failed" % (NAME, len(FAILS)) if FAILS else "%s: all checks passed" % NAME)

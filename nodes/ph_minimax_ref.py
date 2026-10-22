@@ -279,6 +279,33 @@ def ref_scale(src_w, src_h, gen_w, gen_h, mode, megapixels):
     return min(1.0, math.sqrt((float(gen_w) * float(gen_h)) / area))
 
 
+# v1201 (Frank 21.10.: "ob zusaetzlicher Noise beim Einbringen der Input-Bilder den gewuenschten Upgrade mit sich bringt
+# oder das nur Verzerrungen produziert"): Core brings every reference picture in as  a * picture + (1 - a) * noise
+# and shows the model the reference rows at a timestep of at least a (comfy/ldm/minimax/model.py, a =
+# visual_cond_noise_aug, default 0.999 -- nearly clean, "almost finished"). Core's own node offers no dial for it.
+# ref_noise = 1 - a: 0.001 = Core's default (the key is then NOT set: bit for bit the old run); more = the pictures
+# enter noisier and earlier in their own denoise -- a looser hold; 0 = perfectly clean, the tightest hold.
+REF_NOISE_DEFAULT = 0.001
+REF_NOISE_KEY = "minimax_visual_cond_noise_aug"          # the conditioning key Core's extra_conds reads
+
+
+def ref_noise_cond(cond, ref_noise, has_visual):
+    """-> (cond, line). Sets Core's visual condition noise for every picture-like condition (references, a pinned
+    first frame) when ref_noise is not Core's default; the line says what the pictures become."""
+    rn = float(ref_noise)
+    if not (0.0 <= rn <= 1.0):
+        raise ValueError("[PLS] MiniMax Reference: ref_noise must lie in 0..1 (0.001 = Core's default) -- got %r" % ref_noise)
+    if abs(rn - REF_NOISE_DEFAULT) < 1e-9:
+        return cond, None
+    if not has_visual:
+        return cond, "ref_noise %.3f -- no picture is wired, nothing to apply it to" % rn
+    a = 1.0 - rn
+    cond = node_helpers.conditioning_set_values(cond, {REF_NOISE_KEY: a})
+    return cond, ("ref_noise %.3f: every picture enters as %.3f x picture + %.3f x noise and is shown at t >= %.3f "
+                  "(Core's default: 0.001 noise) -- %s" % (rn, a, rn, a, "a TIGHTER hold than Core's" if rn < REF_NOISE_DEFAULT
+                                                             else "a looser hold: the prompt and the LoRAs get more say"))
+
+
 class ULSMiniMaxReference:
     """<Picture i> reference conditioning for MiniMax H3, latent from a wire."""
 
@@ -383,6 +410,14 @@ class ULSMiniMaxReference:
                 # v1049 (scene continuity): a SOCKET, appended -- the widget
                 # order is untouched (#577).
                 "first_frame": ("IMAGE", {"tooltip": "Pinned at pixel frame 0 of the clip, never denoised -- e.g. the Cine Timeline's first_frame when a scene CARRIES the last frame of the scene before. Next to <Picture i> references it is NOT a picture of the prompt (the references keep their numbers); alone it is presented like MiniMax Keyframes' <Picture 1>. Stretched to the canvas like Core's first frame."}),
+                # v1201: APPENDED last -- the newest widget, behind tags (#577)
+                "ref_noise": ("FLOAT", {"default": REF_NOISE_DEFAULT, "min": 0.0, "max": 1.0, "step": 0.001, "round": 0.001,
+                                        "tooltip": "How much noise the PICTURES (references, a pinned first frame) carry into "
+                                                   "the model: each enters as (1 - ref_noise) x picture + ref_noise x noise "
+                                                   "and is presented that far into its own denoise. 0.001 = the model's "
+                                                   "default (nearly clean -- the tightest practical hold). Higher = a looser "
+                                                   "hold: the prompt and LoRAs get more say, the likeness can soften or "
+                                                   "distort. 0 = perfectly clean. One value for every picture."}),
             },
         }
 
@@ -627,6 +662,10 @@ class ULSMiniMaxReference:
         if kf_list:
             cond = node_helpers.conditioning_set_values(
                 cond, {"minimax_keyframes": kf_list, "minimax_frame_count": frame_count})
+        # v1201: the pictures' noise (Core's visual condition noise) -- only when not Core's default
+        cond, rn_line = ref_noise_cond(cond, opt.get("ref_noise", REF_NOISE_DEFAULT), bool(ref_blocks or kf_list))
+        if rn_line:
+            lines.append(rn_line)
 
         header = ("[PLS] MiniMax Reference: latent %dx%d, %d frames "
                   "(%.2f s @ %d fps) | %d image(s), %d video(s), %d audio(s)"

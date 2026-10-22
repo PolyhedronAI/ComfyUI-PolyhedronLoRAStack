@@ -48,6 +48,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { setHidden, refit } from "./ph_widget_vis.js";
+import { nodeActive, watchMode } from "./ph_model_door.js";   // v1204: a bypassed sampler offers no download
 
 const NODE_TYPE = "ULSSampler";
 // live only in High + Low — the Handoff drives the split itself
@@ -509,7 +510,7 @@ function _ensureTaeToastCSS() {
         + ".pls-tae-toast p { margin:0 0 8px; color:#bbb; line-height:1.35; }"
         + ".pls-tae-toast .row { display:flex; gap:8px; }"
         + ".pls-tae-toast button { flex:1 1 0; padding:4px 6px; cursor:pointer;"
-        + " background:#2a2a2a; color:#ddd; border:1px solid #555; }"
+        + " background:linear-gradient(#34476a,#2a3a57); color:#e8eefb; border:1px solid #4d6898; }"
         + ".pls-tae-toast button.go { background:#8fff8f; color:#123;"
         + " border-color:#8fff8f; }";
     document.head.appendChild(st);
@@ -555,6 +556,7 @@ function _taeToast(title, text, goLabel, onGo) {
 // missing decoder after a dismissal does not re-warn until reload (a
 // combo is easy to wiggle -- state changes speak, wiggles do not).
 function _checkTaePreview(node, modeValue) {
+    if (!nodeActive(node)) return;            // v1204: bypassed / muted -- the decoder is not needed now
     const bare = stripMode(modeValue);
     if (!bare.includes("TAE")) return;
     // v918: taeh3 joins; longest token first (taew2_1 is a substring of lighttaew2_1)
@@ -733,6 +735,7 @@ app.registerExtension({
                 setTimeout(() => {
                     try { _checkTaePreview(self, previewMode.value); } catch (err) { }
                 }, 0);
+                watchMode(self, (n) => { try { _checkTaePreview(n, previewMode.value); } catch (err) { } });   // v1204
             }
 
             // v494: reorder the VISIBLE widgets into DISPLAY order (handoff_mode under

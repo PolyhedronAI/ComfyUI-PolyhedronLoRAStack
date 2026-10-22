@@ -162,7 +162,7 @@ def main():
           "%s: C5 the final pass is skipped on a hit, and said" % NAME)
     _need(up.count("mute=mute_staging_logs, cached=_c,") == 2, "%s: C5 BOTH call sites pass `cached`" % NAME)
     _need(up.count("_latent_cache_put(_jr_key, _jr_info[\"vid_lat\"]") == 2, "%s: C5 BOTH call sites store on a miss" % NAME)
-    _need(up.count("if _jr_hit is None:\n                _latent_cache_put(") == 2,
+    _need(up.count("if _jr_hit is None and not _rs_before:\n                _latent_cache_put(") == 2,   # AMENDED v1199: nor while the restore runs before the refine
           "%s: C5 the store happens only on a miss (never re-stores a hit)" % NAME)
     _need('_verdict += " \\u00b7 latent from cache"' in up, "%s: C5 the verdict says when the latent came from the cache" % NAME)
     # the before-pixel key must not fold in the pixel wire (it runs BEFORE it)

@@ -326,8 +326,8 @@ function _btn(label, title, onClick) {
     b.textContent = label;
     b.title = title;
     b.style.cssText = "flex:0 0 auto;width:28px;height:28px;padding:0;border-radius:5px;cursor:pointer;"
-        + "border:1px solid var(--border-color,#444);background:var(--comfy-input-bg,#222);"
-        + "color:var(--input-text,#ddd);font-size:12px;line-height:26px;";
+        + "border:1px solid #4d6898;background:linear-gradient(#34476a,#2a3a57);"
+        + "color:#e8eefb;font-size:12px;line-height:26px;";
     b.addEventListener("mousedown", (e) => e.preventDefault());   // keep the focus in the field
     b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); onClick(); });
     return b;

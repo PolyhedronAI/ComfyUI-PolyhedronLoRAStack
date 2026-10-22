@@ -133,6 +133,32 @@ let _css = false;
 let _stack = null;
 const _shown = new Set();          // file names noticed this session
 
+/* v1204 (Frank 21.10.: "Das sollte dann erscheinen, sobald man es wirklich braucht ergo: nutzen moechte ... das muss
+ * schaerfer sein ... immer auch in Hinblick auf den Malware-Download und unsere Redflags bei ComfyUI"): ONE rule for
+ * every download offer of the suite -- a node that is muted (mode 2) or bypassed (mode 4, also through its group)
+ * needs nothing, so it offers nothing: no line, no notice. When it comes back, the offer is re-checked. */
+export function nodeActive(node) {
+    const m = node ? node.mode : 0;
+    return m !== 2 && m !== 4;
+}
+const _watch = new Set();
+let _watchTimer = null;
+/* fn(node) whenever node.mode changes (bypass, mute, back) -- one quiet timer for every watched node, any renderer */
+export function watchMode(node, fn) {
+    if (!node || typeof fn !== "function") return;
+    _watch.add({ node, fn, mode: node.mode });
+    if (_watchTimer) return;
+    _watchTimer = setInterval(() => {
+        for (const e of Array.from(_watch)) {
+            if (!e.node.graph) { _watch.delete(e); continue; }
+            if (e.node.mode !== e.mode) {
+                e.mode = e.node.mode;
+                try { e.fn(e.node); } catch (x) { /* an offer never breaks the canvas */ }
+            }
+        }
+    }, 1200);
+}
+
 function ensureCss() {
     if (_css) return;
     _css = true;
@@ -146,8 +172,8 @@ function ensureCss() {
         + ".pls-door h4{margin:0 0 4px;font-size:12px;color:" + AMBER + ";}"
         + ".pls-door p{margin:0 0 8px;color:#bbb;line-height:1.35;word-break:break-word;}"
         + ".pls-door .row{display:flex;gap:8px;}"
-        + ".pls-door button{flex:1 1 0;padding:4px 6px;cursor:pointer;background:#2a2a2a;"
-        + "color:#ddd;border:1px solid #555;border-radius:3px;}"
+        + ".pls-door button{flex:1 1 0;padding:4px 6px;cursor:pointer;background:linear-gradient(#34476a,#2a3a57);"
+        + "color:#e8eefb;border:1px solid #4d6898;border-radius:3px;}"
         + ".pls-door button.go{background:#8fff8f;color:#123;border-color:#8fff8f;}"
         + ".pls-door .bar{height:6px;border-radius:3px;background:#444;overflow:hidden;margin:0 0 6px;display:none;}"
         + ".pls-door .bar i{display:block;height:100%;width:0;background:#8fff8f;}";
@@ -170,8 +196,9 @@ function stack() {
  *   after  : optional callback(path) once installed
  * Returns false when it was already shown this session or the file is there.
  */
-export function noticeMissing(m, who, after) {
+export function noticeMissing(m, who, after, node) {
     if (!m || m.installed || _shown.has(m.name)) return false;
+    if (node && !nodeActive(node)) return false;   // v1204: a bypassed / muted node asks for nothing (not marked shown)
     _shown.add(m.name);
     ensureCss();
     const box = document.createElement("div");

@@ -216,6 +216,59 @@ class PassThrough(Exception):
     to the model's own backend WITHOUT the failure warning -- a normal
     condition must not look like a broken kernel."""
 
+
+class ContextLost(RuntimeError):
+    """v1184: the CUDA context died under a kernel (an illegal memory access).
+    Nothing on this device can run after it -- not the fallback, not the next
+    node -- so the override must NOT promise one. Re-raised, said once."""
+
+
+# v1184 (Frank 20.10., Neon Lane scene 1, the joint refine at 1056x1856 x 175
+# frames: 'Triton Error [CUDA]: an illegal memory access'). SageAttention's
+# Triton quantisation kernels (quant_per_thread.py, checked at thu-ml d1a57a5)
+# address q/k/v with 32-bit offsets: offs_n * stride_seq + off_h * stride_h +
+# off_b * stride_bz + offs_k. For a q that is a view into a fused qkv buffer
+# (H3: stride_seq = 3 * heads * dim = 21504) that product passes 2^31 at
+# ~99.9k tokens and the kernel reads outside the tensor. The refine's video
+# tokens alone are 99.5k there; with text, refs and audio the run is over.
+# Checked BEFORE the launch, from the tensors' own shape and strides -- no
+# model name, no magic number but the word size: a call that does not fit
+# is passed through to the model's own backend (said once, like every
+# pass-through), the rest of the run stays on sage.
+SAGE_ADDRESS_LIMIT = 2 ** 31 - 1
+
+
+def max_element_offset(t):
+    """The largest element offset a kernel reaches inside tensor t, from its
+    shape and strides (storage_offset left out: the kernel gets the data
+    pointer). Pure arithmetic, no device access."""
+    off = 0
+    for n, s in zip(t.shape, t.stride()):
+        if n > 1:
+            off += (n - 1) * abs(int(s))
+    return off
+
+
+def sage_addressable(*tensors, limit=SAGE_ADDRESS_LIMIT):
+    """-> (ok, worst_offset). ok is False when any tensor's largest element
+    offset passes `limit` -- then sageattention's int32 Triton offsets would
+    wrap and the kernel would touch memory it does not own."""
+    worst = 0
+    for t in tensors:
+        if t is None:
+            continue
+        worst = max(worst, max_element_offset(t))
+    return worst <= limit, worst
+
+
+def is_context_lost(exc):
+    """v1184: does this exception mean the CUDA context is gone? (Text test,
+    because the error arrives as RuntimeError from Triton and as
+    torch.AcceleratorError from torch -- different classes, one meaning.)"""
+    s = str(exc).lower()
+    return ("illegal memory access" in s or "illegal address" in s
+            or "unspecified launch failure" in s or "device-side assert" in s)
+
 class Sage3NonFinite(RuntimeError):
     """v1015: the Sage 3 kernel ran and answered with NaN/Inf. Raised ONCE per
     geometry so the override reports it and falls back for this call; the
@@ -392,6 +445,14 @@ def run_sage(sage_fn, extra, q, k, v, heads, mask=None,
             raise NotImplementedError(
                 "this sageattention build takes no attn_mask")
         kw["attn_mask"] = mask
+
+    # v1184: the 32-bit address check -- BEFORE the launch (see SAGE_ADDRESS_LIMIT)
+    ok, worst = sage_addressable(q, k, v)
+    if not ok:
+        seq = q.shape[2] if layout == "HND" else q.shape[1]
+        raise PassThrough("sequence of %d tokens reaches element offset %d, past "
+                          "sageattention's 32-bit addressing (%d) -- this call on the "
+                          "model's own backend" % (int(seq), worst, SAGE_ADDRESS_LIMIT))
 
     out = sage_fn(q, k, v, **kw)
 
@@ -1096,6 +1157,22 @@ def build_override(mode, fallback=True, report=None,
                         pass
             return func(*args, **kwargs)
         except Exception as exc:
+            if is_context_lost(exc):
+                # v1184: the device is gone. The fallback below would run the
+                # same dead context and fail with a second, misleading error
+                # ('continuing on the model's own backend' was the last thing
+                # Frank's log promised before the run died). Say the truth once
+                # and let the run end here.
+                if not state["warned"]:
+                    state["warned"] = True
+                    if report is not None:
+                        try:
+                            report(ContextLost(str(exc)))
+                        except Exception:
+                            pass
+                raise ContextLost("CUDA context lost under '%s' (%s) -- restart ComfyUI; "
+                                  "no backend can run on this device until then"
+                                  % (chosen, str(exc).split("\n")[0][:120])) from exc
             if not fallback:
                 raise
             if not state["warned"]:
@@ -1643,6 +1720,15 @@ class ULSAttention:
             return (m,)
 
         def _report(exc):
+            if isinstance(exc, ContextLost):
+                # v1184: no fallback exists after this -- do not promise one
+                print("[PLS] Attention: '%s' hit an illegal memory access (%s) -- the CUDA "
+                      "context is LOST: this run ends here, and ComfyUI must be restarted "
+                      "before anything renders again" % (attention, str(exc).split("\n")[0][:100]))
+                print("[PLS]   if this came from a long sequence (a big refine), the v1184 "
+                      "address check should have passed it through -- please report the "
+                      "shape line above it.")
+                return
             print("[PLS] Attention: '%s' failed mid-run (%s: %s) -- "
                   "continuing on the model's own backend"
                   % (attention, type(exc).__name__,

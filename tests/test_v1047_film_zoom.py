@@ -94,7 +94,7 @@ console.log(JSON.stringify(o));
 _need("root.append(topBar, headRow, refsRow, work, state, tools, film, scroller, bar, status, prev, pop);" in fld and "work.append(left, sndRow, stack);" in fld, "F2 the FILM row between the toolbar and the tracks")   # AMENDED v1153
 _need('film.append(_el("span", "font-weight:bold;color:#ffd27a;letter-spacing:1px;", "FILM"), span, preset, filmInfo,' in fld
       and "zOut, zSl, zIn, zFit, viewInfo, nav);" in fld, "F2 the row: length, presets, zoom - slider + fit, view, scroll bar")   # AMENDED v1153: the slider
-_need("cutsBtn, tailLab,\n        sep(), autoLab, restLab, takesBtn);" in fld, "F2 the span left the toolbar")
+_need("cutsBtn, tailLab,\n        sep(), autoLab, restLab, takesBtn, clearBtn);" in fld, "F2 the span left the toolbar")   # AMENDED v1200: + x tracks (v1198)
 _need("scroller.appendChild(lanes);" in fld and 'const scroller = _el("div", "position:relative;overflow:hidden;flex:0 0 auto;");' in fld,
       "F2 the lanes sit in a scroller")
 _need('"position:sticky;left:0;z-index:8;"' in js, "F2 the heads are sticky")
@@ -114,7 +114,7 @@ _need('api.addEventListener("execution_cached", (ev) => {' in js and "rec.tls.se
 _need('api.addEventListener("execution_success", async (ev) => {' in js and "const pick = pickTrackFile(run.rels, run.clip_prefix);" in js
       and "await Promise.all(run.pending);" in js, "F3 ONE track per run, at its end, after every file is listed")
 _need("_autoTrack(n, j.rel" not in js, "F3 no track per Save any more")
-_need("const q = (node._plsAutoQ || Promise.resolve()).then(() => _autoTrack1(node, rel, scene, nFiles))" in js, "F3 tracks are added one after the other")
+_need("const q = (node._plsAutoQ || Promise.resolve()).then(() => _autoTrack1(node, rel, scene, nFiles, sweep))" in js, "F3 tracks are added one after the other")   # AMENDED v1200: + the sweep (v1198)
 _need("projectName(_model(n)) === run.project" in js, "F3 the project compared safe-named, like the server")
 
 # ------------------------------------------------------------------ F4

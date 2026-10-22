@@ -1,4 +1,4 @@
-# NODE_IDS baseline v389 - the strings every saved workflow stores.
+# NODE_IDS baseline v392 - the strings every saved workflow stores.
 #
 # A node_id is written into each workflow JSON as {"type": "..."}. Move it
 # and every workflow that used the node turns into a red 'missing node' box.
@@ -17,6 +17,8 @@
 # v383: + ULSReferenceBoard (38 node ids; none renamed, none removed).
 # v384: + ULSShowText, ULSSigmaList (40 node ids; none renamed, none removed).
 # v389: + ULSCineTimeline (41 node ids; none renamed, none removed).
+# v392: + ULSH3LatentUpscale, ULSMiniMaxAudioLock, ULSMiniMaxContinue, ULSMiniMaxDriftControl,
+#       ULSMiniMaxKeyframes, ULSMiniMaxSecondPassHold -- the fox templates' H3 chain (47 node ids; none renamed, none removed).
 ULSAccelerator
 ULSAnySwitch
 ULSAnySwitchInv
@@ -27,6 +29,7 @@ ULSCineTimeline
 ULSEmptyLatent
 ULSFastUpscale
 ULSFilter
+ULSH3LatentUpscale
 ULSImagePickFrame
 ULSInspector
 ULSInt
@@ -37,7 +40,12 @@ ULSLoadUpscaleModel
 ULSLoadVAE
 ULSMediaInfo
 ULSMediaLoader
+ULSMiniMaxAudioLock
+ULSMiniMaxContinue
+ULSMiniMaxDriftControl
+ULSMiniMaxKeyframes
 ULSMiniMaxReference
+ULSMiniMaxSecondPassHold
 ULSModelSwitch
 ULSNag
 ULSNote

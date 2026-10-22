@@ -12,7 +12,7 @@
  * v828 rule (filenames may legitimately contain dashes and middots).
  */
 import { app } from "../../../scripts/app.js";
-import { modelStatus, noticeMissing, stripModelLabel } from "./ph_model_door.js";
+import { modelStatus, noticeMissing, stripModelLabel, nodeActive, watchMode } from "./ph_model_door.js";
 
 /*
  * v1059: a run no longer downloads a RIFE checkpoint. When the picked one is
@@ -21,12 +21,12 @@ import { modelStatus, noticeMissing, stripModelLabel } from "./ph_model_door.js"
  */
 async function checkCkpt(node) {
     const w = (node.widgets || []).find((x) => x && x.name === "ckpt_name");
-    if (!w) return;
+    if (!w || !nodeActive(node)) return;            // v1204: bypassed / muted -- nothing is needed
     const name = stripModelLabel(w.value);
     let models = [];
     try { models = await modelStatus("rife"); } catch (e) { return; }
     const m = models.find((x) => x.name === name);
-    if (m && !m.installed) noticeMissing(m, node.title || "Polyhedron Interpolate");
+    if (m && !m.installed) noticeMissing(m, node.title || "Polyhedron Interpolate", null, node);
 }
 
 const SIZE_SUFFIX = /\s\u00b7\s[\d.,]+\s?(KB|MB|GB|TB)$/;
@@ -74,6 +74,7 @@ app.registerExtension({
                         w._plsDoorBound = true;
                     }
                     checkCkpt(this);
+                    watchMode(this, (n) => checkCkpt(n));     // v1204: re-checked when the node comes back
                 } catch (e) { /* never break the ui */ }
             }, 0);
         };

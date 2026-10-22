@@ -85,7 +85,8 @@ def main():
     if "_watch_verdict(dt_ck, t_c1, peak, free_i)" not in res:
         _fail("the spill verdict line is gone - the whole point is one line "
               "that says whether the grinding is real")
-    if "* 64 * 4 * 2" not in res:
+    # v1186: the estimate counts the bytes the forward writes (act_bytes: 2 under fp16 autocast, 4 in fp32)
+    if "* 64 * act_bytes * 2" not in res or "act_bytes = 2 if half_possible else 4" not in res:
         _fail("the upsample-map activation estimate is gone. (tile*scale)^2 * "
               "64ch * fp32 * in+out separated the clean 768 run from the "
               "grinding 1024 run on the same 16 GB card - it earned the job")

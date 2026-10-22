@@ -8,8 +8,11 @@ into the folder ComfyUI reports (ph_weights.ensure_weights: a .part file,
 size and sha256 checked, then moved into place). GET /pls/weights/status
 answers what is on disk -- no network.
 
-In this build the door serves one set: "rife", the checkpoints of
-Polyhedron Interpolate. Their pins live with the node (ph_interpolate.
+In this build the door serves three sets: "rife", the checkpoints of
+Polyhedron Interpolate, and (v392) "restore", the four optional SeedVR2 files
+of the Power Upscale's restore path (Comfy-Org's repack, Apache-2.0), and
+"h3_latent_upscale", the learned 3D upscaler of Polyhedron H3 Latent Upscale
+(LBH-123-AI, MIT) -- pinned like the rest. Their pins live with the node (ph_interpolate.
 RIFE_WEIGHTS) and are read lazily, so this module imports without torch or
 ComfyUI. (The development tree's door also serves sets of nodes that are not
 part of this release; they are not carried here.)
@@ -28,7 +31,8 @@ except ImportError:                      # flat import in the guards
     import ph_weights as PW
 
 REGISTRY = {}
-SETS = ("rife",)
+SETS = ("rife", "restore", "h3_latent_upscale")   # v392: + the Power Upscale's restore path (SeedVR2, optional)
+                                                  #        + the H3 Latent Upscale's learned upscaler (LBH-123-AI, MIT)
 PROGRESS_EVENT = "pls.weights.progress"
 _MISSING = "not installed"
 _LABEL_TAIL = re.compile(r"\s\u00b7\s[\d.,]+\s?(KB|MB|GB)(\s\u00b7\s" + _MISSING + r")?$")
@@ -37,7 +41,7 @@ _BUSY = set()
 
 def _merge_rife():
     """The RIFE checkpoints of Polyhedron Interpolate, read from the node once."""
-    if REGISTRY:
+    if any(v.get("set") == "rife" for v in REGISTRY.values()):   # v392: the restore rows are static
         return
     try:
         from . import ph_interpolate as I
@@ -47,6 +51,41 @@ def _merge_rife():
         REGISTRY[name] = {"set": "rife", "folder": "vfi", "label": "RIFE " + name.split(".")[0][4:],
                           "url": spec["url"], "bytes": spec["bytes"], "sha256": spec["sha256"],
                           "note": "Polyhedron Interpolate", "file": spec["file"]}
+
+
+# v1193 (H3 Latent Upscale): the learned 3D latent upscaler (LBH-123-AI, MIT) -- fp16, one safetensors into Core's
+# latent_upscale_models. Pin from the API listing, 20.10.2026.
+REGISTRY["minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors"] = {
+    "set": "h3_latent_upscale", "folder": "latent_upscale_models", "label": "H3 latent upscaler 3D conv v1 (fp16)",
+    "url": "https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/resolve/main/minimax_h3_latent_upscaler_3d_conv_v1/"
+           "minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors",
+    "bytes": 690592672, "sha256": "043e5a48e161610ef6c3ea974645220354d06fa618abca15f76d084812eb55c2",
+    "note": "Polyhedron H3 Latent Upscale -- the learned upscaler on the first pass's latent (LBH-123-AI, MIT)"}
+# v1194 (Power Upscale, the RESTORE path): Core's SeedVR2 family -- Comfy-Org's repack (Apache-2.0, not gated), pins
+# from the API listing 20.10.2026. ALL OPTIONAL: the Power Upscale works without them (ESRGAN + refine); the line under
+# the node stays green and offers them. The 3B int8 is the one for a 16 GB card (3.2 GB); the VAE is shared.
+_SVR = "https://huggingface.co/Comfy-Org/SeedVR2/resolve/main/"
+for _name, _sub, _bytes, _sha, _label, _note in (
+        ("seedvr2_3b_int8_convrot.safetensors", "diffusion_models", 3458259704,
+         "c3dec8bcc5916843a8a858572970597462e1f2dc598d6dfd818f6cd40f53a157", "restoration model 3B int8 (optional)",
+         "Power Upscale restore path -- SeedVR2 3B, int8 convrot (the one for a 16 GB card); into models/diffusion_models, "
+         "picked in the node's restore_model"),
+        ("seedvr2_ema_vae_fp16.safetensors", "vae", 501324814,
+         "20678548f420d98d26f11442d3528f8b8c94e57ee046ef93dbb7633da8612ca1", "restoration VAE (optional, shared)",
+         "Power Upscale restore path -- the family's own video VAE; into models/vae, the node pairs it with restore_model itself"),
+        ("seedvr2_3b_fp16.safetensors", "diffusion_models", 6784268336,
+         "98669fd2c06df5eca88baf68cd5c478775c8e61fc110e598c52b350145ea2660", "restoration model 3B fp16 (optional)",
+         "Power Upscale restore path -- SeedVR2 3B fp16 (6.3 GB: fewer frames per chunk on a 16 GB card)"),
+        ("seedvr2_7b_sharp_int8_convrot.safetensors", "diffusion_models", 8334897976,
+         "db48be2f1cc7e36b01a2aa529810f5d9c6a971edd29be225cf1b0eb18d51c366", "restoration model 7B sharp int8 (optional)",
+         "Power Upscale restore path -- SeedVR2 7B sharp, int8 (7.8 GB: stills on a 16 GB card, not clips)")):
+    REGISTRY[_name] = {"set": "restore", "folder": _sub, "label": _label, "optional": True, "url": _SVR + _sub + "/" + _name,
+                       "bytes": _bytes, "sha256": _sha, "note": _note,
+                       # v1194: the line's optional button fetches the RECOMMENDED pair first (3B int8 + VAE, 3.7 GB), the
+                       # other optional files only once those are on disk -- never 17 GB on one click
+                       "recommended": _name in ("seedvr2_3b_int8_convrot.safetensors", "seedvr2_ema_vae_fp16.safetensors")}
+for _k, _v in REGISTRY.items():
+    _v["file"] = _k
 
 
 def fmt_bytes(n):
@@ -96,7 +135,8 @@ def status(set_name=None):
             continue
         path = local_path(name)
         out.append({"name": name, "label": label(name, path), "title": spec["label"], "set": spec["set"],
-                    "outdated": "", "rebuild": False, "optional": False,
+                    "outdated": "", "rebuild": False, "optional": bool(spec.get("optional")),
+                    "recommended": bool(spec.get("recommended")),
                     "folder": spec["folder"], "installed": bool(path), "path": path or "",
                     "bytes": spec["bytes"], "size": fmt_bytes(spec["bytes"]),
                     "note": spec["note"], "dir": PW.primary_dir(spec["folder"])})

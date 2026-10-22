@@ -210,6 +210,15 @@ def _node_harness(js_path, apply_fn_name, list_const, extra_consts,
     m_link = re.search(r"function _inputLinked\(node, name\) \{[\s\S]*?\n\}", src)
     if m_link:
         parts.append(m_link.group(0))
+    # v1212 AMENDED (declared): the Power Upscale's _applyModeState also reads
+    # whether a curve is wired and labels denoise -- lift the REAL helpers when
+    # the file has them (same rule as _inputLinked above: never a stub)
+    for pat in (r"function _curveWired\(node\) \{[\s\S]*?\n\}",
+                r"function _setSuffix\(w, suffix\) \{[\s\S]*?\n\}",
+                r"async function _curveLabels\(node, wired, dual\) \{[\s\S]*?\n\}"):
+        m_c = re.search(pat, src)
+        if m_c:
+            parts.append(m_c.group(0))
     parts.append(_grab(src, r"(?:let _visMoved = false;\n\n)?function _setDisabled\(w, disabled\) \{[\s\S]*?\n\}",
                        "_setDisabled"))
     m = re.search(r"function _visChanged\(_node\) \{[\s\S]*?\n\}", src)
@@ -295,7 +304,7 @@ ok(node.sizeCalls.length === 0,
 console.log("V4 ok");
 """
     rc, out = _node_harness(os.path.join(JSDIR, "ph_power_upscale.js"),
-                            "_applyModeState", "DUAL_ONLY", [], drive,
+                            "_applyModeState", "DUAL_ONLY", ["RESTORE_ONLY", "CURVE_UNREAD"], drive,   # AMENDED v1199: the restore dials' list; v1212: the curve's
                             vis_src, node_src)
     if rc:
         _fail("upscale harness: %s" % out.strip())
@@ -369,8 +378,9 @@ def v7():
     # the upscale refits per widget instead of per pass
     n += bool(_mut(lambda s: v4(node_src=s),
                    os.path.join(JSDIR, "ph_power_upscale.js"),
-                   "        if (_setDisabled(_findWidget(node, name), !dual)) moved = true;",
-                   "        if (_setDisabled(_findWidget(node, name), !dual)) refit(node);",
+                   # v1212 AMENDED (declared): the DUAL_ONLY row now reads `off` (dual OR a wired curve)
+                   "        if (_setDisabled(_findWidget(node, name), off)) moved = true;",
+                   "        if (_setDisabled(_findWidget(node, name), off)) refit(node);",
                    "refit once per widget instead of once per pass"))
     return n
 
