@@ -450,11 +450,48 @@ if _TIMELINE_OK:
     except Exception as e:
         print(f"[PLS] ⚠ Cine Timeline routes not registered: {e}")
 
+# v394: Control Fit / Control Map / Apply Control (pose, depth, edges as control), Blend (layers, Photoshop modes,
+# clips), Transition Check (first -> last frame: motion or dissolve)
+_CONTROL_OK = False
+try:
+    from .nodes.ph_control import ULSControlFit, ULSControlMap, ULSApplyControl
+    _CONTROL_OK = True
+except Exception as _e:
+    print(f"[PolyhedronLoRAStack] Control nodes unavailable: {_e}")
+
+_BLEND_OK = False
+try:
+    from .nodes.ph_blend import ULSBlend   # v1218: up to three layers over a base, Photoshop modes, clips too
+    _BLEND_OK = True
+except Exception as _e:
+    print(f"[PolyhedronLoRAStack] ULSBlend unavailable: {_e}")
+
+_TRANSITION_OK = False
+try:
+    from .nodes.ph_transition import ULSTransitionCheck   # v1215: first -> last frame, motion or dissolve
+    _TRANSITION_OK = True
+except Exception as _e:
+    print(f"[PolyhedronLoRAStack] ULSTransitionCheck unavailable: {_e}")
+
+if _BLEND_OK:
+    NODE_CLASS_MAPPINGS["ULSBlend"] = ULSBlend
+    NODE_DISPLAY_NAME_MAPPINGS["ULSBlend"] = "\u2b21 Polyhedron Blend"
+if _TRANSITION_OK:
+    NODE_CLASS_MAPPINGS["ULSTransitionCheck"] = ULSTransitionCheck
+    NODE_DISPLAY_NAME_MAPPINGS["ULSTransitionCheck"] = "\u2b21 Polyhedron Transition Check"
+if _CONTROL_OK:
+    NODE_CLASS_MAPPINGS["ULSControlFit"] = ULSControlFit
+    NODE_DISPLAY_NAME_MAPPINGS["ULSControlFit"] = "\u2b21 Polyhedron Control Fit"
+    NODE_CLASS_MAPPINGS["ULSControlMap"] = ULSControlMap
+    NODE_DISPLAY_NAME_MAPPINGS["ULSControlMap"] = "\u2b21 Polyhedron Control Map"
+    NODE_CLASS_MAPPINGS["ULSApplyControl"] = ULSApplyControl
+    NODE_DISPLAY_NAME_MAPPINGS["ULSApplyControl"] = "\u2b21 Polyhedron Apply Control"
+
 _node_count = len(NODE_CLASS_MAPPINGS)
 _bridge_str = "✅" if _BRIDGE_OK else "⚠ unavailable"
 print(f"""
 ⚡ ============================================================
-   Polyhedron Suite  v393
+   Polyhedron Suite  v395
    {_node_count} Nodes  |  Bridge: {_bridge_str}
 ⚡ ============================================================
 """)

@@ -265,9 +265,9 @@ print(json.dumps({"v_held": float((ov[:, :, :3] - x0v[:, :, :3]).abs().max()),
                   "a_free": float((oa[..., 37:45] - x0a[..., 37:45]).abs().mean()),
                   "per_row": AM.per_row_in_source(inspect.getsource(mm)), "core_per_row": AM.core_per_row()}))
 '''.replace("sys.argv_nodes", repr(str(ROOT / "nodes")))
-CORES = [("master", os.environ.get("PLS_CORE_MASTER") or "/home/claude/core_master",
-          os.environ.get("PLS_CORE_PY") or "/home/claude/venv_master/bin/python", True),
-         ("pin", os.environ.get("PLS_CORE_PIN") or "/home/claude/core_pin", sys.executable, False)]
+CORES = [("master", os.environ.get("PLS_CORE_MASTER") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")),
+          os.environ.get("PLS_CORE_PY") or sys.executable, True),
+         ("pin", os.environ.get("PLS_CORE_PIN") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")), sys.executable, False)]
 import json  # noqa: E402
 for name, core, py, want_rows in CORES:
     if not (os.path.isfile(os.path.join(core, "comfy", "ldm", "minimax", "model.py")) and os.path.isfile(py)):

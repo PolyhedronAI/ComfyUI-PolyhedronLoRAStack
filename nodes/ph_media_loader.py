@@ -417,18 +417,11 @@ def _placeholder_media_np():
     without torch): a dark checkerboard with a thin accent border, instantly
     readable as 'no media here'. Emitted when there is nothing to load and
     on_empty=='placeholder' (Frank: the node should show/emit SOMETHING sane
-    instead of a red error when the folder / selection is simply empty)."""
-    s = _PLACEHOLDER_SIZE
-    yy, xx = np.meshgrid(np.arange(s), np.arange(s), indexing="ij")
-    checker = (((yy // 32) + (xx // 32)) % 2).astype(np.float32)
-    rgb = np.empty((s, s, 3), dtype=np.float32)
-    rgb[..., 0] = 0.10 + 0.05 * checker
-    rgb[..., 1] = 0.10 + 0.05 * checker
-    rgb[..., 2] = 0.11 + 0.05 * checker
-    b = 6
-    edge = (yy < b) | (yy >= s - b) | (xx < b) | (xx >= s - b)
-    rgb[edge] = np.array([0.90, 0.49, 0.38], dtype=np.float32)   # the pack's accent
-    return rgb
+    instead of a red error when the folder / selection is simply empty).
+    v1216: made in ONE place (uls_placeholder.make_np) -- the nodes that pin or
+    reference a picture recognise it there and refuse to render on it."""
+    from .uls_placeholder import make_np
+    return make_np()
 
 
 def _placeholder_media():

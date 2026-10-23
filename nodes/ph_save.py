@@ -301,6 +301,12 @@ class ULSSave:
                 "mask": ("MASK", {"tooltip": "Optional alpha [N,H,W] (opaque->0). Wired ALONE, "
                                   "the mask itself is saved as grayscale stills. Kept for png/webp "
                                              "stills and alpha-capable video presets (ProRes 4444)."}),
+                # v1218 (Frank 23.10.: "alle Ausgaenge so umbauen, dass wir das alles in der Save-Node reinbringen
+                # koennen"): pose keypoints (Control Map, Pose Animation, Mesh Ring Render) as OpenPose JSON
+                "keypoints": ("POSE_KEYPOINT", {"tooltip": "Optional pose keypoints (OpenPose format, one entry per "
+                                                           "frame) -- written as <name>_keypoints.json beside the "
+                                                           "picture / clip, or alone when nothing else is wired. "
+                                                           "Readable by the OpenPose tool family."}),
             },
             "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
         }
@@ -320,8 +326,14 @@ class ULSSave:
     def save(self, filename_prefix, media_kind, image_format, image_quality,
              video_preset, quality, frame_rate, autoplay, pingpong, loop_count,
              trim_to_audio, save_metadata, save_output,
-             image=None, video=None, audio=None, mask=None,
+             image=None, video=None, audio=None, mask=None, keypoints=None,
              prompt=None, extra_pnginfo=None):
+        # v1218: keypoints ride beside the media -- or alone (then only the JSON is written)
+        kp_path = None
+        if keypoints is not None:
+            kp_path = self._save_keypoints(keypoints, filename_prefix, save_output)
+            if image is None and video is None and audio is None and mask is None:
+                return {"result": (kp_path, float(_fps_of(video, frame_rate)))}
         kind = U.resolve_media_kind(
             media_kind, image is not None, video is not None, audio is not None,
             n_frames=(int(image.shape[0]) if image is not None else 1),
@@ -359,6 +371,26 @@ class ULSSave:
             out["result"] = res + (float(fps),)
             return out
         return {"result": res + (float(fps),)}
+
+    # -- keypoints (v1218) ----------------------------------------------------
+    def _save_keypoints(self, keypoints, filename_prefix, save_output):
+        """POSE_KEYPOINT (a list of OpenPose frames, or one frame dict) -> ONE JSON file
+        {"format": "openpose", "frames": [...]} in the same folder / numbering as the media."""
+        import json
+        frames = keypoints if isinstance(keypoints, (list, tuple)) else [keypoints]
+        if not frames or not all(isinstance(f, dict) for f in frames):
+            raise ValueError("Save (keypoints): expects pose keypoints -- a list of OpenPose frames.")
+        w = int(frames[0].get("canvas_width") or 0)
+        h = int(frames[0].get("canvas_height") or 0)
+        full, stem, counter, subfolder, _t = _resolve_out(filename_prefix, w, h, save_output)
+        path = os.path.join(full, f"{stem}_{counter:05d}_keypoints.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"format": "openpose", "frames": list(frames)}, fh,
+                      default=lambda o: o.tolist() if hasattr(o, "tolist") else float(o))   # numpy values
+        people = sum(len(f.get("people") or []) for f in frames)
+        print(f"[PLS] Save: {len(frames)} keypoint frame(s), {people} person detection(s) -> {subfolder}/"
+              f"{os.path.basename(path)}")
+        return path
 
     # -- image ----------------------------------------------------------------
     def _save_image(self, image, mask, image_format, image_quality,

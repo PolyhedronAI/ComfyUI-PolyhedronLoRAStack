@@ -24,7 +24,11 @@ import { setHidden } from "./ph_widget_vis.js";
    Download-Moeglichkeit ... wie bei anderen Nodes in der Suite") */
 // public build (v392): only the H3 latent upscaler and the Power Upscale's restore set are served here -- the other sets of the
 // development tree belong to nodes that are not part of this release.
-const PICK_NODES = {};
+// v394: the control line joins (Apply Control follows its pick; Control Map follows the pick its MODE reads -- pose: the
+// SDPose checkpoint, depth: the DA3 file; canny / gray / scribble / soft edges / keypoints need no model, so no line).
+const PICK_NODES = { ULSApplyControl: { widget: "control_model", set: "control" },
+                     ULSControlMap: { by: "mode", cases: [{ match: "pose", widget: "pose_model", set: "sdpose", need: "pose" },
+                                                          { match: "depth", widget: "depth_model", set: "da3", need: "depth" }] } };
 const SET_NODES = { ULSH3LatentUpscale: "h3_latent_upscale",                           // v1193: the H3 latent upscaler
                     ULSPowerUpscale: "restore" };                                      // v1194: the restore models (all optional)
 /* v1204 (Frank 21.10.: "Das sollte dann erscheinen, sobald man es wirklich braucht ergo: nutzen moechte ... das muss
@@ -46,6 +50,9 @@ export function neededModels(models, opt, value) {
     if (!opt) return req;
     if (opt.kind === "toggle") return value ? req.concat(models.filter((m) => m.optional && (opt.files || []).includes(m.name))) : req;
     const name = stripLabel(value);
+    // v1217: a node that cannot run without its pick and has NOTHING picked needs the set's own file -- offered
+    // (orange), never passed over in silence; 'off' stays a real choice
+    if (opt.required && (!name || name.startsWith("("))) return req.length ? req.slice(0, 1) : models.slice(0, 1);
     if (!name || name === "off" || name.startsWith("(")) return [];
     const pick = models.filter((m) => m.name === name);
     if (!pick.length) return [];                     // a file on disk the registry does not know: nothing to fetch
@@ -56,6 +63,9 @@ const TAIL = /\s\u00b7\s[\d.,]+\s?(KB|MB|GB)(\s\u00b7\snot installed)?$/;
 
 export function stripLabel(v) {
     return String(v == null ? "" : v).replace(TAIL, "").trim();
+    // v1217: a node that cannot run without its pick and has NOTHING picked needs the set's own file -- offered
+    // (orange), never passed over in silence; 'off' stays a real choice
+    if (opt.required && (!name || name.startsWith("("))) return req.length ? req.slice(0, 1) : models.slice(0, 1);
 }
 
 export function fmtBytes(n) {
@@ -162,16 +172,53 @@ function addLine(node) {
 const refreshLists = refreshModelLists;
 
 /* the file picked in the node's model combo (World Reconstruct / Depth: DA3; Load Text Model) */
-const pickOf = (node) => PICK_NODES[node.comfyClass || node.type];
+/* v1216: a pick may depend on another widget (Control Map: the mode) -- null = nothing needed now */
+export function resolvePick(entry, valueOf) {
+    if (!entry) return null;
+    if (!entry.by) return entry;
+    const v = String(valueOf(entry.by) == null ? "" : valueOf(entry.by));
+    return entry.cases.find((c) => v.startsWith(c.match)) || null;
+}
+export function pickWidgetNames(entry) {
+    if (!entry) return [];
+    if (!entry.by) return [entry.widget];
+    return [entry.by].concat(entry.cases.map((c) => c.widget));
+}
+const pickOf = (node) => resolvePick(PICK_NODES[node.comfyClass || node.type], (name) => {
+    const w = node.widgets && node.widgets.find((x) => x.name === name);
+    return w ? w.value : "";
+});
+/* v1217 (Frank 23.10.: "Dieses None on Disk und gruen ist missverstaendlich ... 'Aktuell sind keine Modelle vorhanden.
+ * Waehle eins aus oder lade sie ...' So was in Kurzform"): what the picked value IS, before any colour is chosen.
+ * Green ONLY for a real file on disk; nothing picked is never green.
+ *   none    nothing picked ('', '(none)', '(put ...)')         -> orange, offers the set's recommended file
+ *   missing a door file that is not on disk                    -> orange, Download that file
+ *   door    a door file on disk                                -> green, its title and size
+ *   own     a file of the folder the door does not know        -> green, "your own file"
+ *   lost    a name that is neither a door file nor in the list -> orange, "not found -- pick another"
+ * (pure: the guard drives it in node.js) */
+export function pickState(value, models, listed) {
+    const name = stripLabel(value);
+    if (!name || name.startsWith("(")) {
+        const rec = models.find((m) => m.recommended) || models.find((m) => !m.optional) || models[0] || null;
+        return { kind: "none", name: "", m: rec };
+    }
+    const base = name.split("/").pop();
+    const m = models.find((x) => x.name === name || x.name === base);
+    if (m) return { kind: m.installed ? "door" : "missing", name, m };
+    const own = (listed || []).some((v) => stripLabel(v) === name);
+    return { kind: own ? "own" : "lost", name, m: null };
+}
 async function updatePick(node) {
     const line = node.__plsWeights;
     const pk = pickOf(node);
+    if (line && !pk && !line.busy) { line.hide(); return; }   // v1216: this mode needs no model -- no line
     const w = pk && node.widgets && node.widgets.find((x) => x.name === pk.widget);
     if (!line || !w || line.busy) return;
     if (!nodeActive(node)) { line.hide(); return; }      // v1204: bypassed / muted -- nothing is needed
     const seq = line.seq = (line.seq || 0) + 1;          // v1204: only the LATEST check may draw
     const name = stripLabel(w.value);
-    if (pk.set === "da3" && !name.toLowerCase().endsWith(".safetensors")) {
+    if (pk.set === "da3" && name && !name.startsWith("(") && !name.toLowerCase().endsWith(".safetensors")) {
         line.show("DA3 package model -- installed by hand, read from models/depth_anything_3", "#999");
         return;
     }
@@ -179,23 +226,43 @@ async function updatePick(node) {
     try { models = await fetchStatus(pk.set); } catch (e) { if (seq === line.seq) line.show("model status unavailable", "#999"); return; }
     if (seq !== line.seq || line.busy) return;           // a stale answer draws nothing
     if (!nodeActive(node)) { line.hide(); return; }
-    const base = name.split("/").pop();
-    const m = models.find((x) => x.name === name || x.name === base);
-    if (!m) { line.show("\u2713 " + name + " -- on disk", "#9c9"); return; }
-    if (m.installed) {
-        line.show("\u2713 " + m.title + " on disk (" + m.size + ")", "#9c9", null, null, m.path);
+    const listed = (w.options && Array.isArray(w.options.values)) ? w.options.values : [];
+    const st = pickState(w.value, models, listed);
+    const folder = "models/" + ((models[0] && models[0].folder) || "");
+    const who = pk.need ? pk.need : "this node";
+    if (st.kind === "door") {
+        line.show("\u2713 " + st.m.title + " on disk (" + st.m.size + ")", "#9c9", null, null, st.m.path);
+        return;
+    }
+    if (st.kind === "own") {
+        line.show("\u2713 " + st.name + " on disk (your own file)", "#9c9", null, null,
+                  "Your own file from " + folder + " -- not in the pack's download list.");
+        return;
+    }
+    if (st.kind === "lost") {
+        line.show(st.name + " not found in " + folder + " -- pick another", "#e0a030", null, null,
+                  "The saved pick is not on disk (moved, renamed or deleted). Pick a file in " + pk.widget + ".");
+        return;
+    }
+    const m = st.m;
+    if (!m) {                                             // nothing picked and nothing the door could offer
+        line.show("No model picked -- " + who + " needs one. Put a file into " + folder, "#e0a030");
         return;
     }
     const after = () => { if (!line.busy) updatePick(node); };
-    // v1100: the notice waits a tick and fires only if the pick STILL names the missing file -- a
-    // loaded node is created with the combo's first entry (the recommended, uninstalled model) and
-    // gets its saved pick in onConfigure right after; the toast then named a model nobody picked
-    // (Frank, 11.10.: his qwen3vl_8b was on disk and selected, the toast asked for Qwen3.5 4B)
-    setTimeout(() => {
-        if (stripLabel(w.value) !== name || line.busy) return;
-        noticeMissing(m, node.title || "World", after, node);
-    }, 150);
-    line.show(m.title + " not installed", "#e0a030", "Download " + m.size, async () => {
+    if (st.kind === "missing") {
+        // v1100: the notice waits a tick and fires only if the pick STILL names the missing file -- a
+        // loaded node is created with the combo's first entry (the recommended, uninstalled model) and
+        // gets its saved pick in onConfigure right after; the toast then named a model nobody picked
+        // (Frank, 11.10.: his qwen3vl_8b was on disk and selected, the toast asked for Qwen3.5 4B)
+        setTimeout(() => {
+            if (stripLabel(w.value) !== name || line.busy) return;
+            noticeMissing(m, node.title || "World", after, node);
+        }, 150);
+    }
+    const text = st.kind === "none" ? "No model picked -- " + who + " needs one. Pick a file, or:"
+                                    : m.title + " not on disk --";
+    line.show(text, "#e0a030", "Download " + m.size, async () => {
         line.busy = true;
         line.prefix = "";
         follow(line, m.name);
@@ -204,13 +271,14 @@ async function updatePick(node) {
             await install(m.name);
             line.busy = false;
             refreshLists();
-            // the same file, now with its size and without the mark
+            // the same file, now with its size and without the mark -- and PICKED (v1217: also after "nothing picked")
             const fresh = (await fetchStatus(pk.set)).find((x) => x.name === m.name);
             if (fresh && w.options && Array.isArray(w.options.values)) {
                 const vals = w.options.values;
                 const at = vals.findIndex((v) => stripLabel(v) === m.name);
                 if (at >= 0) vals[at] = fresh.label; else vals.unshift(fresh.label);
                 w.value = fresh.label;
+                if (w.callback) { try { w.callback(w.value); } catch (e) { /* the label only */ } }
             }
             updatePick(node);
         } catch (e) {
@@ -219,7 +287,9 @@ async function updatePick(node) {
                       () => updatePick(node), String(e.message || e));
         }
         node.setDirtyCanvas && node.setDirtyCanvas(true, false);
-    }, "Goes to " + m.dir + " -- from huggingface.co, sha256-checked. Nothing downloads unless you click.");
+    }, "Goes to " + m.dir + " -- from huggingface.co, sha256-checked. Nothing downloads unless you click."
+       + (st.kind === "none" ? "\nThe button fetches " + m.title + " (" + m.name + ") and picks it. Or pick a file you "
+                                + "already have in " + pk.widget + " (" + folder + ")." : ""));
 }
 
 /* v1060: each set names itself and its source on the line (it said "TripoSplat" for every set) */
@@ -288,8 +358,11 @@ async function updateSet(node) {
     // v1092: a rebuild from kept files costs no download; an outdated file is named as such
     const total = miss.reduce((a, m) => a + (m.rebuild ? 0 : m.bytes), 0);
     const old = miss.filter((m) => m.outdated);
-    const text = txt.title + ": " + (old.length ? "outdated -- " + old.map((m) => m.outdated).join("; ")
-                                     : (need.length === 1 ? "not installed" : (need.length - miss.length) + " of " + need.length + " files"));
+    // v1217: nothing picked on a node that needs a pick says so (the Download then fetches the set's own file and picks it)
+    const nonePicked = !!(opt && opt.required && ow && (!stripLabel(ow.value) || stripLabel(ow.value).startsWith("(")));
+    const text = nonePicked ? "No model picked -- this node needs one. Pick a file, or:"
+        : txt.title + ": " + (old.length ? "outdated -- " + old.map((m) => m.outdated).join("; ")
+                              : (need.length === 1 ? "not installed" : (need.length - miss.length) + " of " + need.length + " files"));
     line.show(text, "#e0a030", total ? "Download " + fmtBytes(total) : "Rebuild (no download)", async () => {
         line.busy = true;
         let i = 0;
@@ -306,10 +379,12 @@ async function updateSet(node) {
             // v1199: a pick names the file it just got -- with its size now, without the mark
             if (opt && opt.kind === "pick" && ow && ow.options && Array.isArray(ow.options.values)) {
                 try {
-                    const fresh = (await fetchStatus(set)).find((x) => x.name === stripLabel(ow.value));
+                    // v1217: nothing was picked -> the file just fetched becomes the pick
+                    const want = nonePicked ? miss[0].name : stripLabel(ow.value);
+                    const fresh = (await fetchStatus(set)).find((x) => x.name === want);
                     if (fresh && fresh.installed && fresh.label) {
                         const vals = ow.options.values, at = vals.findIndex((v) => stripLabel(v) === fresh.name);
-                        if (at >= 0) vals[at] = fresh.label;
+                        if (at >= 0) vals[at] = fresh.label; else vals.unshift(fresh.label);
                         ow.value = fresh.label;
                     }
                 } catch (e) { /* the label only */ }
@@ -329,15 +404,18 @@ function setup(node, kind) {
     const sz = node.computeSize();
     node.setSize([Math.max(node.size[0], sz[0]), Math.max(node.size[1], sz[1])]);
     if (kind === "pick") {
-        const w = node.widgets && node.widgets.find((x) => x.name === pickOf(node).widget);
-        if (w && !w._plsWeightsBound) {
-            const orig = w.callback;
-            w.callback = function () {
-                const r = orig ? orig.apply(this, arguments) : undefined;
-                try { updatePick(node); } catch (e) { /* never break a pick */ }
-                return r;
-            };
-            w._plsWeightsBound = true;
+        // v1216: every widget the pick reads re-checks the line (Control Map: mode + both model combos)
+        for (const wn of pickWidgetNames(PICK_NODES[node.comfyClass || node.type])) {
+            const w = node.widgets && node.widgets.find((x) => x.name === wn);
+            if (w && !w._plsWeightsBound) {
+                const orig = w.callback;
+                w.callback = function () {
+                    const r = orig ? orig.apply(this, arguments) : undefined;
+                    try { updatePick(node); } catch (e) { /* never break a pick */ }
+                    return r;
+                };
+                w._plsWeightsBound = true;
+            }
         }
         updatePick(node);
     } else {

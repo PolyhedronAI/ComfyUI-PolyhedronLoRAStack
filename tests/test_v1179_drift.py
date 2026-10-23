@@ -207,9 +207,9 @@ print(json.dumps({"log": [[round(a, 4), round(b, 4)] for a, b in st.log], "per_r
                   "prefix_out": float((ov1[:, :, :7] - hv1[:, :, :7]).abs().max()),
                   "audio": float((oa1[..., :33] - oa0[..., :33]).abs().max())}))
 '''
-CORES = [("master", os.environ.get("PLS_CORE_MASTER") or "/home/claude/core_master",
-          os.environ.get("PLS_CORE_PY") or "/home/claude/venv_master/bin/python", True),
-         ("pin", os.environ.get("PLS_CORE_PIN") or "/home/claude/core_pin", sys.executable, False)]
+CORES = [("master", os.environ.get("PLS_CORE_MASTER") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")),
+          os.environ.get("PLS_CORE_PY") or sys.executable, True),
+         ("pin", os.environ.get("PLS_CORE_PIN") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")), sys.executable, False)]
 for name, core, py, want in CORES:
     if not (os.path.isfile(os.path.join(core, "comfy", "ldm", "minimax", "model.py")) and os.path.isfile(py)):
         print("  note  Core %s not found -- D5 %s SKIPPED (PLS_CORE_MASTER / PLS_CORE_PIN / PLS_CORE_PY)" % (name, name))

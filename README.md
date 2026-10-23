@@ -10,6 +10,7 @@
 | [Sampler](#-polyhedron-sampler) | ⬡ Polyhedron Sampler |
 | [Upscale & Interpolate](#-polyhedron-power-upscale) | ⬡ Polyhedron Power Upscale · ⬡ Polyhedron Fast Upscale · ⬡ Polyhedron Interpolate |
 | [Cine Timeline](#-polyhedron-cine-timeline) | ⬡ Polyhedron Cine Timeline |
+| [Control & checks](#-control-blend--transition-check) | ⬡ Control Fit · ⬡ Control Map · ⬡ Apply Control · ⬡ Polyhedron Blend · ⬡ Transition Check |
 | [Workflow essentials](#-workflow-essentials) | ⬡ Load Model · ⬡ Load CLIP · ⬡ Load VAE · ⬡ Load Upscale Model · ⬡ VAE Codec · ⬡ Seed · ⬡ Int · ⬡ Empty Latent · ⬡ Switch · ⬡ Switch Inverse · ⬡ Media Info · ⬡ MiniMax Reference · ⬡ Reference Board · ⬡ Note · ⬡ Show Text |
 | [Attention & grading](#-polyhedron-attention) | ⬡ Polyhedron Attention · ⬡ Polyhedron NAG · ⬡ Polyhedron Filter · ⬡ Polyhedron Audio Stretch |
 
@@ -18,7 +19,7 @@ Installed as one custom-node pack — the node names, the package id
 
 ---
 
-> **Handbook:** [`docs/Polyhedron_Suite_Documentation_v393.pdf`](docs/Polyhedron_Suite_Documentation_v393.pdf)
+> **Handbook:** [`docs/Polyhedron_Suite_Documentation_v395.pdf`](docs/Polyhedron_Suite_Documentation_v395.pdf)
 > -- every node, with model notes for MiniMax H3, WAN 2.2 and the other families.
 
 # ⬡ Polyhedron Media Loader & ⬡ Polyhedron Save
@@ -1351,6 +1352,21 @@ shot (camera, motion). **"→ CTE"** moves the fixed parts of Shot 1 into the
 segments for you; **"prompt the run will produce"** shows the text the encoder
 will receive, byte for byte. The chip at the foot estimates the tokens.
 
+**First → last frame: motion, not a dissolve.** In **Keyframes** mode a picture
+on the first frame and one on the last frame pin the clip's ends (MiniMax
+Keyframes); pictures in between are guides (MiniMax Continue). The model paints
+the way between them, and it does that well only when the two pictures share
+camera, light and background — make the last picture *from* the first (an image
+edit of it), else the model fades one into the other. The timeline's `info`
+says so whenever a run has both keyframes: describe the **way**, not the two
+pictures (first state → what visibly changes → last state), keep it to **one
+shot**, and for each guide say in the text what is seen at that moment. It warns
+when an anchor sits within the last quarter second — that is a guide, not the
+last frame — and names the second that *is* the last frame. For a motion that
+has to follow a real one, add a pose video ([Control](#-control-blend--transition-check));
+**Transition Check** then measures whether the run moved or dissolved. The
+handbook (Part X, chapter 6) walks through one such run with measurements.
+
 **The tracks.** After a run, its clip lands on **V1 / A1** — picture and
 sound — read from where the Save wrote it. **new render →** picks what a further
 run does: **new track** (the default) opens a track on top (V2, V3 …) at V1's
@@ -1416,6 +1432,60 @@ code as the run), `GET /pls/cine/scenes`, `POST /pls/cine/register`,
 
 Needs **ffmpeg** for the film strips, waveforms and the export — on the PATH,
 or the one `imageio-ffmpeg` brings. Clips are read with PyAV (`av`).
+
+---
+
+# ⬡ Control, Blend & Transition Check
+
+Five nodes for steering a video (or a picture) by another one, and for checking
+what a first -> last frame run made.
+
+**Control Fit** brings any clip or picture to the run: its length (the video
+latent grid, 17n+5), its size (fill / fit / stretch, a multiple of 32), its
+frame rate, a start and a window. A shorter clip holds its last frame or loops.
+
+**Control Map** turns the fitted frames into a control: **pose** (SDPose,
+whole body with hands), **depth** (Depth Anything 3), **canny**, **gray**,
+**scribble**, **soft edges**, or keypoints drawn as a skeleton. The `keypoints`
+output carries the pose as OpenPose data. With `preview` on the node plays the
+map itself; any Save node keeps it.
+
+**Apply Control** puts a Fun ControlNet Union on the model: `strength`, `start`
+and `end` (as a share of the steps -- an end of 0.6 leaves the last 40 % free
+for detail), `pick` for one frame of a clip. The control and first/last frame
+keyframes share one run. Needs a current ComfyUI (master).
+
+**Models through the download door.** The three files these nodes read --
+the Fun ControlNet Union (models/model_patches), the SDPose checkpoint
+(models/checkpoints) and Depth Anything 3 (models/geometry_estimation) -- are
+listed in the combos with their size; a missing one turns the node's line
+orange and offers the Download of exactly that file (https, sha256-checked,
+from huggingface.co). A run never downloads. Files placed by hand are listed
+too.
+
+**Polyhedron Blend** stacks up to three layers on a base, each with its own
+mode and opacity: the Photoshop set (normal, multiply, screen, overlay, soft
+light, difference, hue / color / luminosity ...) plus **over (black = clear)**
+for lines and skeletons on black. Pictures and clips mix freely -- a single
+picture lies over every frame, a shorter clip holds or loops. Typical use:
+depth as the base, the pose `over`, canny as `difference` -> ONE control video.
+(A blended map is common practice, not a documented input of the union
+models -- compare it with chained Apply Controls.)
+
+**Transition Check** reads a rendered first -> last frame clip: the pair
+(how far apart the two keyframes are), the clip (**MOTION**, **DISSOLVE**,
+**SNAP** -- does something move through, or is A faded into B?), where half of
+the way falls, and how close the clip's ends came to the keyframes. A report
+picture plots it.
+
+**Save + keypoints.** Polyhedron Save takes a `keypoints` input: the pose
+frames are written as `<name>_keypoints.json` (OpenPose format) beside the
+frames, or alone.
+
+**The Media Loader's placeholder is refused.** When a loader finds no file it
+sends a placeholder frame (on_empty `placeholder`); the Cine Timeline, MiniMax
+Keyframes, Reference, Continue and Control Fit now stop on it by name instead
+of rendering a checkerboard.
 
 ---
 

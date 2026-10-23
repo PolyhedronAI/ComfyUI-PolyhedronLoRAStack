@@ -32,7 +32,7 @@ def _need(c, m):
     print(("  ok    " if c else "  FAIL  ") + m)
 
 
-CORE = os.environ.get("PLS_CORE_ROOT") or "/home/claude/core_pin"
+CORE = os.environ.get("PLS_CORE_ROOT") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 sys.path.insert(0, CORE)
 sys.path.insert(0, str(ROOT / "nodes"))
 torch.set_num_threads(1)
@@ -121,7 +121,7 @@ if HAVE_CORE:
     _need(torch.equal(o4, outs["off"]) and "(eager)" in info4, "S3 a padding model is never compiled (eager)")
     _need("compile skipped: the model pads its input" in SRC, "S3 the refusal is said")
 else:
-    _need(False, "S2/S3 need Core (comfy.utils) at PLS_CORE_ROOT or /home/claude/core_pin")
+    _need(False, "S2/S3 need Core (comfy.utils) at PLS_CORE_ROOT or the ComfyUI root above this pack")
 
 # ---- S4
 tree = ast.parse(SRC)

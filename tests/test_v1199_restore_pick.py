@@ -52,7 +52,7 @@ def _need(c, m):
 
 torch.set_num_threads(2)
 torch.manual_seed(0)
-CORE = os.environ.get("PLS_CORE_ROOT") or "/home/claude/core_pin"
+CORE = os.environ.get("PLS_CORE_ROOT") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 sys.path.insert(0, CORE)
 sys.path.insert(0, str(ROOT / "nodes"))
 import comfy.cli_args  # noqa: E402

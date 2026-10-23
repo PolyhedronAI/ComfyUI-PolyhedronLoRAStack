@@ -193,6 +193,13 @@ class ULSMiniMaxKeyframes:
                 "latent_type 'MiniMax H3 AV' -- this node reads the width, "
                 "height and frame count out of it and will not guess them.")
         gen_w, gen_h, frame_count = size
+        # v1216: a keyframe that is the Media Loader's placeholder (nothing loaded) is refused by name
+        try:
+            from .uls_placeholder import refuse
+        except ImportError:  # flat import in the guards
+            from uls_placeholder import refuse
+        refuse("MiniMax Keyframes", "first_frame", first_frame)
+        refuse("MiniMax Keyframes", "last_frame", last_frame)
         first_crop, last_crop = fit_modes(frame_fit)
 
         images = []      # the Qwen presentation, in <Picture n> order
@@ -219,6 +226,16 @@ class ULSMiniMaxKeyframes:
                             "the still is squashed to the canvas" if mode == "stretch"
                             else "the edges are trimmed to the canvas"))
             lines.append(line)
+
+        # --- v1215: the pair A -> B, as the canvas will see it --------------
+        # (Transition Check's pair_check on the FITTED frames; a pair with
+        # little common ground is the one the model fades instead of moving)
+        if len(images) == 2:
+            try:
+                from .ph_transition import pair_check
+                lines.append("pair first -> last: " + pair_check(images[0], images[1])["verdict"])
+            except Exception as e:   # the report must never stop the run
+                lines.append("pair first -> last: not measured (%s)" % e)
 
         # --- v1017 (Cine C1): @tags -> live labels, before the encode -------
         slot_tags, n = {}, 0

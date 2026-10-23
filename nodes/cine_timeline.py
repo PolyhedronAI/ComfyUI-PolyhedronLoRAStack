@@ -800,6 +800,27 @@ def head_block(model):
     return "// TRIGGERS\n" + trig + ("\n// LOOK\n" + _comma(style) if style else "") + "\n"
 
 
+NEAR_END = 6          # v1215: frames (0.25 s) -- a guide this close to the end was most likely meant as the last frame
+
+
+def fl2va_rules(first, last, guides, shots, ref2va):
+    """v1215 (Frank 23.10.: first frame -> last frame, "A) model stands, B) model has sat down on a chair"): the
+    official FL2VA rules as info lines (prompting package 10_H3_OFFIZIELL.md section 2, MiniMax base-en.txt),
+    only when a run has BOTH keyframes. Nothing is written into the prompt -- the path is the user's text."""
+    if ref2va or first is None or last is None:
+        return []
+    out = ["  FL2VA (official): describe the WAY between the two pictures, not the pictures -- first-frame state "
+           "-> visible intermediate changes -> narrowing difference -> last-frame state; a pair the model cannot "
+           "connect becomes a dissolve (Transition Check measures it)"]
+    if len(shots) > 1:
+        out.append("  WARN: FL2VA with %d shots -- the official guide favours ONE shot, so the model interpolates "
+                   "the whole way; the last frame must be reached by the final [Shot %d]" % (len(shots), len(shots)))
+    for src, f in guides:
+        out.append("  FL2VA guide %s at %.2f s: the prompt cannot name it -- say in the shot text what is seen at "
+                   "that moment, in the order of the way" % (src, f / float(FPS)))
+    return out
+
+
 def compile_prompt(model):
     """-> dict(prompt, frames, seconds, first, last, guides, lines).
     Call validate() first; this assumes a valid model."""
@@ -875,6 +896,13 @@ def compile_prompt(model):
     for src, f in guides:
         lines.append("  guide: %s at frame %d (%.2f s) -> Continue anchors (Core master); "
                      "not shown to the text encoder, so the prompt does not name it" % (src, f, f / float(FPS)))
+    lines.extend(fl2va_rules(first, last, guides, shots, ref2va))
+    # v1215: an anchor meant as the last frame but placed a few frames short of it is a GUIDE (frame_of rounds;
+    # a 5 s clip has 124 frames = 5.17 s) -- said, with the second that makes it the last frame
+    for src, f in guides:
+        if last is None and not ref2va and frames - 1 - f <= NEAR_END:
+            lines.append("  WARN: %s is %d frame(s) before the last frame -- a guide, not the last keyframe; for "
+                         "the last frame put it at %s s or later" % (src, frames - 1 - f, mark((frames - 1) / float(FPS))))
     if not sound:
         lines.append("WARN: no overall_soundscape -- H3 then invents the sound")
     return {"prompt": prompt, "frames": frames, "seconds": dur,

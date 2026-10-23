@@ -457,6 +457,17 @@ class ULSCineTimeline:
             first = carry_img
         last = sources[r["last"]["src"]][:1] if r["last"] is not None else None
         anchors = [{"src": src, "frame": f, "image": sources[src][:1]} for src, f in r["guides"]]
+        # v1216: an anchor whose source is the Media Loader's placeholder (nothing loaded) stops the run by name --
+        # before a single step is sampled on a checkerboard (Frank's run PH_093901, 23.10.)
+        try:
+            from .uls_placeholder import refuse
+        except ImportError:  # flat import in the guards
+            from uls_placeholder import refuse
+        for which, a in (("first frame", r["first"]), ("last frame", r["last"])):
+            if a is not None:
+                refuse("Cine Timeline", "the %s %s" % (which, a["src"]), sources[a["src"]])
+        for a in anchors:
+            refuse("Cine Timeline", "the anchor %s" % a["src"], a["image"])
         head = []
         if adopted:
             head = ["storyboard %s taken over -- edit freely, a new storyboard replaces it" % model["from"]]

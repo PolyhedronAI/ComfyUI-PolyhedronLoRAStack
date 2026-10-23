@@ -464,6 +464,14 @@ class ULSMiniMaxReference:
         # --- what is wired, in slot order ---------------------------------
         images = [(n, opt.get("image_%d" % n)) for n in range(1, N_IMAGES + 1)]
         images = [(n, img) for n, img in images if img is not None]
+        # v1216: a reference or first frame that is the Media Loader's placeholder (nothing loaded) is refused by name
+        try:
+            from .uls_placeholder import refuse
+        except ImportError:  # flat import in the guards
+            from uls_placeholder import refuse
+        for n, img in images:
+            refuse("MiniMax Reference", "image_%d" % n, img)
+        refuse("MiniMax Reference", "first_frame", opt.get("first_frame"))
         videos = []
         orphan_tracks = []
         for n in range(1, N_VIDEOS + 1):

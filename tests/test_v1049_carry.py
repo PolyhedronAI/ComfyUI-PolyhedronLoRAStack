@@ -242,7 +242,7 @@ _need(KR.ensure(Dir) == "director" and not getattr(Dir.extra_conds, KR.MARK, Fal
       and KR.mark({"resolved_frame_index": 0}, "director").get("director_context_index") == 0,
       "C4 the Director's patch installed: ours is not stacked, its marker key is used")
 core = None
-for c in (os.environ.get("PLS_CORE_ROOT"), "/home/claude/core/ComfyUI-7a131a3a"):
+for c in (os.environ.get("PLS_CORE_ROOT"), os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))):
     if c and os.path.isfile(os.path.join(c, "comfy", "model_base.py")):
         core = c
         break

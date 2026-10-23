@@ -1,3 +1,81 @@
+# v395 -- 3.95.0: first -> last frame, documented
+
+**Ctrl+F5** (no node, widget or route change). Carries v394 below -- an install from v393 gets both.
+
+## README
+
+The Cine Timeline section has a new paragraph, *First -> last frame: motion, not a dissolve*: when the model
+paints a real way between two keyframes (same camera, light and background; the last picture made from the
+first), the official FL2VA rule the timeline's `info` repeats (describe the way, one shot, what each guide shows),
+the warning for an anchor in the last quarter second, and where a pose video and the Transition Check come in.
+
+## Handbook
+
+`docs/Polyhedron_Suite_Documentation_v395.pdf` (124 pages): Part VII, *The two picture modes*, gets the same
+rule as a note and points to Part X (chapters 5 and 6: Transition Check, and a first -> last frame run with a
+pose video, measured).
+
+---
+
+# v394 -- 3.94.0: control, blend and the first -> last frame check
+
+**ComfyUI restart** + Ctrl+F5. Five new nodes (47 -> 52), no widget of an existing node moved, no new route.
+Carries v393 below.
+
+## Control Fit, Control Map, Apply Control
+
+A clip (or a picture) steers the run: Control Fit brings it to the run's length, size and frame rate; Control
+Map turns it into pose (SDPose, whole body), depth (Depth Anything 3), canny, gray, scribble, soft edges or a
+keypoint skeleton; Apply Control puts a Fun ControlNet Union on the model (strength, start, end). The control
+and the first / last frame keyframes share one run. Needs a current ComfyUI (master).
+
+- The three model files come through the pack's download door: listed in the combos with their size, a missing
+  one turns the node's line orange and offers the Download of exactly that file (https, sha256 + size pinned,
+  huggingface.co: Comfy-Org's MiniMax H3 Fun ControlNet Union 2.0 / 1.0, Kijai's Qwen-Image 2.1 union,
+  Comfy-Org's SDPose and Depth Anything 3 repacks). A run never downloads; files placed by hand are listed too.
+- The line follows what the node needs NOW: Control Map shows the pose model in pose mode, the depth model in
+  depth mode, nothing for canny / gray / scribble / soft edges. Its states read plainly: nothing picked, not on
+  disk (with the Download), on disk from the door, your own file, a picked file that is gone.
+- The download notice closes once the file is done (it stayed on "1 KB of 1 KB" before).
+- Control Map can show the map in the node (`preview`, an animated WebP); the `keypoints` output carries the pose.
+
+## Polyhedron Blend
+
+Up to three layers on a base, each with its own mode and opacity: the Photoshop set plus `over (black = clear)`
+for lines and skeletons on black. Pictures and clips mix -- a single picture lies over every frame, a shorter
+clip holds its last frame or loops, the result has the base's length or the longest. E.g. depth + pose + canny
+as ONE control video.
+
+## Transition Check
+
+After a first -> last frame run: is the pair close enough to share a way, is the clip a MOTION, a DISSOLVE (A
+faded into B) or a SNAP, where does half of the way fall, how close did the clip's ends come to the keyframes.
+Text, a score and a report picture.
+
+## Save + keypoints, the placeholder refused
+
+- Polyhedron Save takes `keypoints` (POSE_KEYPOINT): written as `<name>_keypoints.json` (OpenPose format).
+- A Media Loader that finds no file sends its placeholder frame; the Cine Timeline (first, last frame, anchors),
+  MiniMax Keyframes, MiniMax Reference, MiniMax Continue and Control Fit now refuse it by name instead of
+  rendering the checkerboard into the clip.
+- Cine Timeline: the official FL2VA prompt rules in the info (describe the way, one shot), a warning when an
+  anchor sits in the last quarter second (with the second that IS the last frame).
+
+## Handbook
+
+`docs/Polyhedron_Suite_Documentation_v394.pdf` (124 pages): new Part X -- Control Fit, Control Map and the Save
+templates, Apply Control and the model door, Polyhedron Blend, Transition Check, and a recipe (first -> last frame
+with a pose video, measured).
+
+## Tests
+
+Guards `test_v1130_control`, `test_v1215_transition`, `test_v1216_control_door`, `test_v1217_line_preview`,
+`test_v1218_blend_save`. The Core-backed guards no longer name a machine path: they read `PLS_CORE_ROOT` (or
+`PLS_CORE_MASTER` / `PLS_CORE_PIN` / `PLS_CORE_PY`) and fall back to the ComfyUI install above the pack.
+Baselines NODE_IDS / WIDGET_ORDER v394.
+
+---
+
 # v393 -- 3.93.0: the live monitor cuts on the frame
 
 **Ctrl+F5** (no node, widget or route change). Carries everything of v392 below -- an install from v391 gets both.

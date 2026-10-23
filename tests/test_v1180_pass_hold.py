@@ -173,9 +173,9 @@ print(json.dumps({"nan_in": nan_in, "nan_param": any(bool(torch.isnan(q).any()) 
                   "audio": float((oa - x0a).abs().max()),
                   "free": float((ov[:, :, 7:] - x0v[:, :, 7:]).abs().mean())}))
 '''
-CORES = [("master", os.environ.get("PLS_CORE_MASTER") or "/home/claude/core_master",
-          os.environ.get("PLS_CORE_PY") or "/home/claude/venv_master/bin/python"),
-         ("pin", os.environ.get("PLS_CORE_PIN") or "/home/claude/core_pin", sys.executable)]
+CORES = [("master", os.environ.get("PLS_CORE_MASTER") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")),
+          os.environ.get("PLS_CORE_PY") or sys.executable),
+         ("pin", os.environ.get("PLS_CORE_PIN") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")), sys.executable)]
 for name, core, py in CORES:
     if not (os.path.isfile(os.path.join(core, "comfy", "ldm", "minimax", "model.py")) and os.path.isfile(py)):
         print("  note  Core %s not found -- P5 %s SKIPPED (PLS_CORE_MASTER / PLS_CORE_PIN / PLS_CORE_PY)" % (name, name))

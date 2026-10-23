@@ -31,7 +31,7 @@ except ImportError:                      # flat import in the guards
     import ph_weights as PW
 
 REGISTRY = {}
-SETS = ("rife", "restore", "h3_latent_upscale")   # v392: + the Power Upscale's restore path (SeedVR2, optional)
+SETS = ("rife", "restore", "h3_latent_upscale", "control", "sdpose", "da3")   # v392: + the Power Upscale's restore path (SeedVR2, optional)
                                                   #        + the H3 Latent Upscale's learned upscaler (LBH-123-AI, MIT)
 PROGRESS_EVENT = "pls.weights.progress"
 _MISSING = "not installed"
@@ -252,3 +252,80 @@ def register_weights_routes():
             except Exception as e:
                 print("[PLS] could not add route %s %s: %s" % (method, p, e))
     return n
+# v1216 (Frank 23.10., the first Control field run: "Auf jeden Fall braucht es wohl Modelle ... ausserdem muessen hier
+# wohl auch offiziell Download-Optionen mit rein"): the control line joins the door. Apply Control picks a Fun
+# ControlNet Union file in models/model_patches, Control Map's pose mode the SDPose checkpoint in models/checkpoints
+# (its depth mode the DA3 files below). Pins from the Hugging Face API listings, 23.10.2026; every repo not gated.
+# H3: Comfy-Org's repack of alibaba-pai's Fun ControlNet Union (MiniMax H3 Community License); 2.0 = 8 controls
+# (canny, depth, HED, MLSD, pose, scribble, layout, gray) + inpainting, 1.0 = the first five. The 2.0 int8 is the one
+# for a 16 GB card next to an int8 H3. Qwen-Image 2.1: Kijai's conversion of alibaba-pai's union (the image family).
+_FUN = "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/model_patches/"
+_QFUN = "https://huggingface.co/Kijai/QwenImage_experimental/resolve/main/model_patches/"
+for _name, _url, _bytes, _sha, _label, _note, _rec in (
+        ("minimax_h3_fun_controlnet_union_2.0_pruned_int8_convrot.safetensors", _FUN, 4531220608,
+         "890af58bb350f0c2f6c409b1c67ea8f4196654297d037769b72de1e6f504c612", "H3 Fun ControlNet Union 2.0 int8",
+         "Apply Control -- MiniMax H3, 8 controls + inpainting, int8 (the one for a 16 GB card; MiniMax H3 Community "
+         "License)", True),
+        ("minimax_h3_fun_controlnet_union_2.0_pruned_bf16.safetensors", _FUN, 8382288792,
+         "cd48bdc11b1f1a3b934746c898d25123754b335c13d37d5c421f8373079282b4", "H3 Fun ControlNet Union 2.0 bf16",
+         "Apply Control -- MiniMax H3, 8 controls + inpainting, bf16 (MiniMax H3 Community License)", False),
+        ("minimax_h3_fun_controlnet_union_pruned_int8_convrot.safetensors", _FUN, 2296635360,
+         "9c645c0a308c8af361efd43b409710f6f8fec0db297c29503e141a84991fed0c", "H3 Fun ControlNet Union 1.0 int8",
+         "Apply Control -- MiniMax H3, 5 controls (canny, depth, HED, MLSD, pose), int8 (MiniMax H3 Community "
+         "License)", False),
+        ("minimax_h3_fun_controlnet_union_pruned_bf16.safetensors", _FUN, 4222169456,
+         "57fe1e64928a63a55e3cd4586b55cd5d0eb4980648b6f31e5d9dac16fe7f1c48", "H3 Fun ControlNet Union 1.0 bf16",
+         "Apply Control -- MiniMax H3, 5 controls, bf16 (MiniMax H3 Community License)", False),
+        ("qwen_image_2.1_fun_controlnet_union_int8_convrot.safetensors", _QFUN, 3779298944,
+         "07aa961570ac0e03d4ca936aecd76854d077a33cde69b5092399afba01b3715d", "Qwen-Image 2.1 Fun ControlNet Union int8",
+         "Apply Control -- Qwen-Image 2.1 (image family), int8 (Kijai's conversion of alibaba-pai's union; the repo "
+         "names no licence)", True),
+        ("qwen_image_2.1_fun_controlnet_union_bf16.safetensors", _QFUN, 7550977992,
+         "1f9dea8384ba167084f39f624908f1dbf2ea8a223bb4a8108a77dafa9b55bfe1", "Qwen-Image 2.1 Fun ControlNet Union bf16",
+         "Apply Control -- Qwen-Image 2.1 (image family), bf16 (Kijai's conversion of alibaba-pai's union)", False)):
+    REGISTRY[_name] = {"set": "control", "folder": "model_patches", "label": _label, "url": _url + _name,
+                       "bytes": _bytes, "sha256": _sha, "note": _note, "recommended": _rec}
+REGISTRY["sdpose_wholebody_fp16.safetensors"] = {
+    "set": "sdpose", "folder": "checkpoints", "label": "SDPose wholebody fp16",
+    "url": "https://huggingface.co/Comfy-Org/SDPose/resolve/main/checkpoints/sdpose_wholebody_fp16.safetensors",
+    "bytes": 1916645792, "sha256": "63d01f9a7494560693b24767f4469d59c9d3266b31ff0a253e74d1e611442721",
+    "note": "Control Map pose -- whole-body keypoints from the frames (Comfy-Org's repack of teemosliang/SDPose-Wholebody, "
+            "MIT)"}
+# v394: Control Map's depth mode reads a Depth Anything 3 file (Comfy-Org's repack, models/geometry_estimation)
+_DA3 = "https://huggingface.co/Comfy-Org/Depth-Anything-3/resolve/main/geometry_estimation/"
+for _name, _label, _bytes, _sha, _note in (
+        ("depth_anything_3_small.safetensors", "DA3-Small", 137254980,
+         "9c0a53d157c5b315d4c82908a43d93eeaa3a9ac3de9d15c2b4242ef46b5508ad", "Control Map depth -- small and fast, Apache-2.0"),
+        ("depth_anything_3_base.safetensors", "DA3-Base", 541524124,
+         "418c0d2ea857e2d1215fa51baa46833f499a62eb2400ec63d337aa20d326414f", "Control Map depth, Apache-2.0"),
+        ("depth_anything_3_mono_large.safetensors", "DA3-Mono-Large", 1336748056,
+         "9b44eda5bedba5b4e125686fdb79d1db309c1b9785277576eb930f885b008f96",
+         "Control Map depth -- the sharpest single-picture depth"),
+        ("depth_anything_3_metric_large.safetensors", "DA3-Metric-Large", 1336748056,
+         "b6eac00c060931fb15a97c1ba77d2e49d866b83ff7da631289279b3c1c0c99c8", "Control Map depth -- depth in metres")):
+    REGISTRY[_name] = {"set": "da3", "folder": "geometry_estimation", "label": _label, "url": _DA3 + _name,
+                       "bytes": _bytes, "sha256": _sha, "note": _note}
+
+
+for _k, _v in REGISTRY.items():   # v394: the control / sdpose / da3 rows too
+    _v.setdefault("file", _k)
+
+
+def da3_choices(installed_names):
+    """DA3 combo (Control Map's depth mode): the files on disk first (any name), then the known ones that are
+    missing -- every entry labelled with its size."""
+    have = list(installed_names)
+    out = []
+    for n in have:
+        path = None
+        try:
+            import folder_paths
+            path = folder_paths.get_full_path("geometry_estimation", n)
+        except Exception:
+            path = None
+        out.append(label(n, path=path) if path else n)
+    bases = {os.path.basename(n.replace("\\", "/")) for n in have}
+    for name, spec in REGISTRY.items():
+        if spec["set"] == "da3" and name not in bases:
+            out.append(label(name, path=""))
+    return out

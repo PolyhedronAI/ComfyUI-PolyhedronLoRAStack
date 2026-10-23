@@ -318,6 +318,14 @@ class ULSMiniMaxContinue:
                     "last frame, no anchor; positive and latent passed through unchanged")
             print("[PLS] " + info)
             return (positive, latent, 0, info)
+        # v1216: an anchor that is the Media Loader's placeholder (nothing loaded) is refused by name
+        try:
+            from .uls_placeholder import refuse
+        except ImportError:  # flat import in the guards
+            from uls_placeholder import refuse
+        refuse("MiniMax Continue", "anchor", anchor)
+        for a in anchors or []:
+            refuse("MiniMax Continue", "the anchor %s" % a.get("src", "?"), a.get("image"))
         if not core_has_guides():
             raise ValueError(
                 tag + ": this Core has no MiniMaxH3AddGuide -- it places H3 "

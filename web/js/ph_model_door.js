@@ -234,9 +234,37 @@ export function noticeMissing(m, who, after, node) {
     box.appendChild(row);
     stack().appendChild(box);
 
-    let off = null;
-    const close = () => { if (off) off(); try { box.remove(); } catch (e) { /* gone */ } };
+    /* v1217 (Frank 23.10.: the model was complete, the line green, the notice still said "1 KB of 1 KB ...
+     * downloading ..." and never closed): a download started on the NODE LINE only fed this box its progress -- the
+     * finish ran in this box's own click handler alone, and the server's last two events ("done" 1/1, "error" 0/0)
+     * were drawn as more progress. Now the box ends on whatever ends the download: its own click, the line's
+     * install (onInstalled), the server's "done" / "error" event -- once. */
+    let off = null, offDone = null, ended = false;
+    const close = () => { if (off) off(); if (offDone) offDone(); try { box.remove(); } catch (e) { /* gone */ } };
+    const finish = (path) => {
+        if (ended) return;
+        ended = true;
+        p.textContent = "\u2713 Installed: " + (path || m.dir);
+        h.textContent = "\u2713 " + m.title + " installed";
+        go.style.display = "none";
+        no.textContent = "Close";
+        bar.style.display = "none";
+        refreshModelLists();
+        if (after) { try { after(path); } catch (e) { /* caller */ } }
+        setTimeout(close, 6000);
+    };
+    const fail = (msg) => {
+        if (ended) return;
+        bar.style.display = "none";
+        h.textContent = "\u26a0 " + m.title + ": download failed";
+        p.textContent = msg;
+        go.disabled = false;
+        go.textContent = "Retry";
+    };
     const showBar = (done, total, phase) => {
+        if (ended) return;
+        if (phase === "done") { finish(""); return; }
+        if (phase === "error") { fail("The download stopped -- the node's line names the reason; Retry tries again."); return; }
         bar.style.display = "block";
         go.disabled = true;
         go.textContent = phase === "verify" ? "checking sha256 ..." : phase === "convert" ? "converting ..." : "downloading ...";
@@ -245,25 +273,14 @@ export function noticeMissing(m, who, after, node) {
         if (total) p.textContent = fmtBytes(done) + " of " + fmtBytes(total) + " -> " + m.dir;
     };
     off = onProgress(m.name, showBar);
+    offDone = onInstalled((name, path) => { if (name === m.name) finish(path); });
     no.onclick = close;
     go.onclick = async () => {
         showBar(0, m.bytes, "start");
         try {
-            const path = await installModel(m.name);
-            p.textContent = "\u2713 Installed: " + path;
-            h.textContent = "\u2713 " + m.title + " installed";
-            go.style.display = "none";
-            no.textContent = "Close";
-            bar.style.display = "none";
-            refreshModelLists();
-            if (after) { try { after(path); } catch (e) { /* caller */ } }
-            setTimeout(close, 6000);
+            finish(await installModel(m.name));
         } catch (e) {
-            bar.style.display = "none";
-            h.textContent = "\u26a0 " + m.title + ": download failed";
-            p.textContent = String((e && e.message) || e);
-            go.disabled = false;
-            go.textContent = "Retry";
+            fail(String((e && e.message) || e));
         }
     };
     // the same file being fetched from the node line: mirror it

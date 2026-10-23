@@ -12,13 +12,17 @@
 ULSAccelerator	engine_config
 DYNAMIC	ULSAnySwitch
 ULSAnySwitchInv	select,input
+ULSApplyControl	strength,start,end,pick
 ULSAttention	attention,fallback,attention_first,first_steps,attention_last,last_steps,sparse_time_window,sparse_sink,live_check
 ULSAudioStretch	mode,pitch,fps,target_seconds,factor,trim_to_target
+ULSBlend	mode_1,opacity_1,mode_2,opacity_2,mode_3,opacity_3,length,at_the_end,preview
 DYNAMIC	ULSCLIPTextEncode
 ULSCineTimeline	timeline
 ULSClipAssemble	first,last,name
 ULSClipChainSource	path,tail_frames,ref_seconds
 ULSClipStore	
+ULSControlFit	target_fps,source_fps,start,frames,grid,at_the_end,width,height,size_mode,multiple,block,block_index
+ULSControlMap	mode,draw_hands,draw_face,stick_width,low,high,depth_resolution,keypoints,preview
 ULSEmptyLatent	latent_type,width,height,length,batch_size,noise_type,noise_seed,noise_strength,duration_seconds
 ULSFastUpscale	size_mode,upscale_by,width,height,resize_method,device,divisible_by,per_batch,mute_staging_logs,keep_proportion,crop_position,pad_color
 ULSFilter	exposure,temperature,tint,contrast,gamma,shadows,highlights,saturation,vibrance,hue_shift,lut_name,lut_strength,sharpen_amount,sharpen_radius,preset,auto_mode,sharpen_threshold,detail_amount
@@ -60,6 +64,7 @@ ULSSeed	seed,noise_type,noise_strength,preview_width,preview_height,noise_charac
 ULSShowText	
 ULSSigmaList	sigmas_text,shift,enforce_terminal_zero,preset
 ULSTokenCounter	model_limit,warn_threshold
+ULSTransitionCheck	pixel_level
 ULSUniversalSigmaCurve	sigma_schedule,steps,sigma_max,sigma_min,rho
 ULSVAE	mode,tiling,tile_size,tile_overlap,temporal_size,temporal_overlap,mute_staging_logs,h3_still_fix
 ULSWanBridge	
