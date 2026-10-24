@@ -1,3 +1,69 @@
+# v396 -- 3.96.0: clean seams in the Cine Timeline, interpolation that leaves fast motion alone, a first -> last frame template
+
+**ComfyUI restart** + Ctrl+F5. No new node (52), no widget of an existing node moved; one new route
+(`POST /pls/cine/snap`). Carries v395 below.
+
+## Cine Timeline: the seams of a scene film
+
+Scenes that continue each other share frames: a motion context repeats the end of scene k-1 as the head of scene k.
+The prompt's own cut list always knew that; a cut list edited by hand did not.
+
+- An edited cut list never shows a repeated head: a piece that starts inside it is held at its end (the plan's
+  warnings say so); a blend on a seam that would take head frames moves so it runs on the piece's own frames. Hold
+  **Alt** while cutting to place a cut inside the head on purpose.
+- Every piece remembers the take it was cut on. A new take of the scene moves it by the change of the head; a cut
+  list made for another scene count falls back to the prompt's pieces. Both are named.
+- The carry follows the cut: where the cut ends scene k-1 is where scene k continues (also for `@clip:k:last`).
+  The end is handed to the ONE queued run that reads it, so a fine cut still never re-renders the graph.
+- An anchor ON a scene boundary can be ticked **both scenes**: it is the last frame of the scene before and the
+  first of the scene after -- two clips that meet on one picture. Unticked: as before (the scene after only).
+- One rule for the join: an own first-frame anchor that wins over the carry now warns that the scene before ends
+  free (unless it is ticked both scenes). Two anchors on one frame of the rendered scene stop the run by name.
+- **snap to scenes** (toolbar, and an arrow in every track head): V1 cuts where the prompt cuts again, and every
+  track's clip whose name says its scene (`..._scene_<k>_...`, `_whole_`) goes back to the start of its scene, its
+  repeated head measured on that file and left out. Clips without a scene number and locked tracks stay.
+- The anchor's pill and row show its role in the scene that renders it (first / last / both / guide).
+- A scene that carries finds the clip of the scene before also when the browser tab was in the background or
+  closed: it looks in today's and yesterday's output folder for the newest clip a Save wired to `clip_prefix`
+  wrote, before it starts free.
+
+## MiniMax Continue
+
+- Warns when `context_frames` pins fewer tail frames than the Cine Timeline lengthened the scene by, with the value
+  to set.
+
+## Interpolate: fast motion is not a cut
+
+- With the `cuts` pin wired (a Cine Timeline's cuts -- even when the shot has no cut) the `cut_guard` threshold is
+  off: only the cuts the timeline asked for are held, found around their time. Before, a fast camera move (pair
+  differences of 0.10-0.15 per frame, measured) reached the 0.1 threshold and every such pair was held -- the clip
+  ran at 24 fps in the move and at 48 around it. The console says when the threshold is off. Without the pin
+  nothing changes. The tooltip is rewritten.
+
+## The model lines no longer freeze the page
+
+- The model-status route computes in a thread: loading a workflow with many model lines (Control Map, Apply Control,
+  the Download door) no longer blocks the server's event loop while it walks the model folders.
+- Inside that route a folder walk is kept for a moment (a hit while the file is there, a miss for 5 s); every other
+  caller -- a run, an install -- looks fresh. A file copied in by hand shows after 5 s at the latest.
+- The frontend asks once per burst: one status request per set within 1.5 s, one list refresh 400 ms after the last
+  ask, one check per node line per burst.
+
+## New template: first -> last frame, she sits down
+
+`polyhedron_minimax_h3_flf_sitdown` -- a first and a last frame (she stands, she has sat down on the chair) plus
+pose, depth and canny from one video, blended to one control (Control Fit -> Control Map x3 -> Blend -> Apply
+Control), Transition Check after the decode. The two keyframes, the pose video and the original clip (Pexels
+11066122, scaled to 720x1280) are in `assets/flf_sitdown/`; the README shows the run
+(`assets/flf_sitdown_run.mp4`, the template embedded). Credits: `docs/third_party/flf_sitdown_media.md`.
+
+## Guards
+
+New: `test_v1219_overlap`, `test_v1220_ui_freeze`, `test_v1222_interp_motion`. Brought to the new code (the promise
+unchanged): `test_v1046`, `test_v1083`, `test_v1150`, `test_v1160`, `test_v1199`, `test_v1211`.
+
+---
+
 # v395 -- 3.95.0: first -> last frame, documented
 
 **Ctrl+F5** (no node, widget or route change). Carries v394 below -- an install from v393 gets both.

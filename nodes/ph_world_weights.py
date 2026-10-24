@@ -192,11 +192,20 @@ def _send(name, done, total, phase):
 
 
 async def handle_status(request):
+    """v1220 (the UI freeze): status() walks the model folders -- it runs in a thread, never on the event loop that
+    serves the frontend (every model line asks this route while a workflow loads)."""
+    import asyncio
     from aiohttp import web
     want = request.query.get("set", "")
     if want and want not in SETS:
         return web.json_response({"ok": True, "models": []})
-    return web.json_response({"ok": True, "models": status(want or None)})
+    return web.json_response({"ok": True, "models": await asyncio.to_thread(_status_kept, want or None)})
+
+
+def _status_kept(want):
+    """v1220: status() with find_file's answers kept (ph_weights.cached_finds) -- the route only."""
+    with PW.cached_finds():
+        return status(want)
 
 
 async def handle_install(request):
@@ -219,6 +228,7 @@ async def handle_install(request):
     if name in _BUSY:
         return web.json_response({"ok": False, "error": "%s is already downloading" % name})
     _BUSY.add(name)
+    PW.forget_found()                       # v1220: the folders are about to change
     try:
         import time as _time
         _t0 = _time.time()
@@ -230,6 +240,7 @@ async def handle_install(request):
         return web.json_response({"ok": False, "error": str(e)})
     finally:
         _BUSY.discard(name)
+        PW.forget_found()                   # v1220: the download / conversion wrote into a model folder
     _send(name, 1, 1, "done")
     return web.json_response({"ok": True, "path": path})
 

@@ -311,12 +311,62 @@ export function moveCut(m, i, sec) {
     if (i < 1 || i >= m.shots.length) return;
     const lo = m.shots[i - 1].at + 1 / FPS;
     const hi = (i + 1 < m.shots.length ? m.shots[i + 1].at : duration(m)) - 1 / FPS;
+    const was = Math.round(m.shots[i].at * FPS);
     m.shots[i].at = Math.min(hi, Math.max(lo, snap(sec)));
+    // v1219: an anchor ON a scene boundary goes with it -- it was the scene's first frame (and with 'both' the last
+    // of the scene before); left behind it would turn into a guide of the scene before without a word
+    if (m.shots[i].scene) for (const a of m.anchors || []) if (Math.round(Number(a.at) * FPS) === was) a.at = m.shots[i].at;
+}
+/* v1219: the frames on which a scene boundary lies (scene 2..n start) -- the backend's boundary_frames() */
+export function boundaryFrames(m) {
+    const sc = scenesOf(m), out = new Set();
+    for (let k = 1; k < sc.length; k++) out.add(Math.round(Number(m.shots[sc[k][0]].at) * FPS));
+    return out;
+}
+/* v1219: an anchor's role in the run that renders it -- the whole clip (anchorRole) or, rendered scene by scene, its
+ * scene: {role: first | last | both | guide, scene: k}. Mirrors cine_timeline.scene_model + split_anchors (the guard
+ * drives both): an anchor on a boundary is the first frame of the scene after it; marked `both` also the last frame
+ * of the scene before; on a scene's last asked frame (or in its grid overhang) it is that scene's last frame. */
+export function anchorRoleIn(m, a) {
+    const sc = scenesOf(m);
+    if (!m || m.render === "whole" || sc.length < 2) return { role: anchorRole(m, a), scene: 0 };
+    const f = Math.round(Number(a.at) * FPS);
+    for (let k = 2; k <= sc.length; k++) {
+        if (Math.round(sceneSpan(m, k)[0] * FPS) === f) return { role: a.both ? "both" : "first", scene: k };
+    }
+    for (let k = 1; k <= sc.length; k++) {
+        const [t0, t1] = sceneSpan(m, k), last = k === sc.length;
+        if (Number(a.at) < t0 - 1e-9 || (Number(a.at) >= t1 - 1e-9 && !last)) continue;
+        const grid = framesFor(t1 - t0), asked = Math.max(1, Math.min(grid, Math.floor((t1 - t0) * FPS + 0.5)));
+        const fl = Math.max(0, Math.min(grid - 1, Math.round((Number(a.at) - t0) * FPS)));
+        const wf = framesFor(m.seconds);
+        if ((last && f >= wf - 1) || fl >= asked - 1) return { role: "last", scene: k };
+        return { role: fl <= 0 ? "first" : "guide", scene: k };
+    }
+    return { role: anchorRole(m, a), scene: 0 };
+}
+/* v1219: the head a piece must not show -- the repeated head of a motion context (plan.guard, from the server);
+ * Alt held = cut past it on purpose (the piece is marked free). -> {pieces, held: how many were held} */
+export function guardHeads(pieces, guard, alt) {
+    let held = 0;
+    const out = (pieces || []).map((p) => {
+        const q = Object.assign({}, p);
+        if (isGap(q)) return q;
+        const g = guard && guard[String(q.k)], head = g && g.repeat ? Number(g.head) || 0 : 0;
+        if (head > 0 && q.a < head && !q.free) {
+            if (alt) q.free = true;
+            else { q.a = head; if (q.b - q.a < 1) q.b = q.a + 1; held++; }
+        }
+        return q;
+    });
+    return { pieces: out, held };
 }
 export function lastFrameTime(m) { return (framesFor(m.seconds) - 1) / FPS; }
 export function moveAnchor(m, i, sec) {
     if (!m.anchors[i]) return;
     m.anchors[i].at = Math.min(lastFrameTime(m), Math.max(0, snap(sec)));
+    // v1219: 'both scenes' only means something ON a boundary
+    if (m.anchors[i].both && !boundaryFrames(m).has(Math.round(m.anchors[i].at * FPS))) delete m.anchors[i].both;
 }
 /* a free spot for a new anchor: first frame, else last, else the middle */
 export function freeSpot(m) {
@@ -1624,16 +1674,98 @@ function _saveEdit(node, e) {
 }
 /* v1037: the pieces into the edit (for the render kind on screen); the
  * v1036 form (cuts, end, slip, keep_tail) is folded into them from now on */
+/* v1219: Alt held -- a cut may pass the repeated head on purpose (pointer events and keys both report it) */
+let _altHeld = false;
+try {
+    const _alt = (ev) => { _altHeld = !!(ev && ev.altKey); };
+    window.addEventListener("keydown", _alt, true); window.addEventListener("keyup", _alt, true);
+    window.addEventListener("pointerdown", _alt, true); window.addEventListener("pointermove", _alt, true);
+    window.addEventListener("blur", () => { _altHeld = false; });
+} catch (e) { /* no window (node.js guard) */ }
+/* v1219: the ends of the cut where a scene CARRIES into the next -> {k: {f, t}} (the carry and @clip:k:last follow
+ * them); f = the last source frame of scene k's last piece, t = the take it was cut on */
+export function carryEnds(m, pieces, takeOf) {
+    const out = {}, sc = scenesOf(m);
+    for (let k = 1; k < sc.length; k++) {
+        if (!carryOf(m, k + 1)) continue;
+        let last = null;
+        for (const p of pieces || []) if (!isGap(p) && Number(p.k) === k) last = p;
+        const t = takeOf(k);
+        if (last && t) out[String(k)] = { f: Math.max(0, Math.trunc(last.b) - 1), t };
+    }
+    return out;
+}
 function _savePieces(node, pieces) {
     if (_planBusy(node)) return;
-    const st = node._plsTl, e = editOf(node);
+    const st = node._plsTl, e = editOf(node), m = _model(node), D = st && st.plan;
     e.pieces = e.pieces || {};
     // v1044: a deleted piece is a gap -- gaps merged, none at the end
     // v1088 (audit C9): the render kind of the MODEL now, not of the last plan (a switch
     // still on its way to the server put a cut under the old kind)
-    e.pieces[(_model(node).render || "whole") === "whole" ? "whole" : "scenes"] = normLayer(pieces);
+    const scenes = (m.render || "whole") !== "whole";
+    let pcs = normLayer(pieces);
+    if (scenes && D && D.plan) {
+        // v1219 (the overlap): never into a motion context's repeated head, unless Alt; every piece keeps the take
+        // and head it was cut on (a new take moves it to its own head), the list the scene count it was made for
+        const g = guardHeads(pcs, D.plan.guard || {}, _altHeld);
+        pcs = g.pieces;
+        if (g.held && st.state) st.state.textContent = "held at the repeated head (the end of the scene before, rendered again) -- hold Alt to cut past it";
+        const stamp = {};
+        for (const p of D.plan.pieces || []) if (!isGap(p) && p.t && !(String(p.k) in stamp)) stamp[String(p.k)] = { t: p.t, h0: p.h0 || 0 };
+        pcs = pcs.map((p) => (isGap(p) || p.t || !stamp[String(p.k)]) ? p : Object.assign({}, p, stamp[String(p.k)]));
+        e.pieces_n = scenesOf(m).length;
+        // v1219: where the cut ends a carried scene is NOT written into the timeline widget (a fine cut never
+        // re-renders the graph, v1036) -- the queue hook hands it to the ONE run that carries from it (carryInject)
+    }
+    e.pieces[scenes ? "scenes" : "whole"] = pcs;
     for (const k of ["cuts", "end", "slip", "keep_tail"]) delete e[k];
     _saveEdit(node, e);
+}
+/* v1219: the cut list gone -- the film cuts where the prompt cuts; the cut ends of the carry go with it */
+function _clearCuts(node, e) {
+    for (const k of ["cuts", "end", "slip", "keep_tail", "pieces", "pieces_n"]) delete e[k];
+    return e;
+}
+/* v1219: the timeline JSON a queued run carries -- with the cut ends THIS run reads (scene k-1's when scene k
+ * carries; scene K's for an @clip:K:last anchor of the place it renders), taken from the edit's plan; null = the
+ * prompt's ends (no cut list, or nothing carried). Only the queued prompt gets it, never the widget: a fine cut
+ * changes the input of the run that depends on it, and of no other. */
+export function carryInject(text, plan) {
+    const P = plan && plan.plan;
+    if (!P || P.source !== "edit") return null;
+    const m = parseTimeline(text);
+    if (m.render === "whole") return null;
+    const sc = scenesOf(m), k = Math.max(1, Math.min(sc.length, Math.trunc(Number(m.active) || 1)));
+    const need = new Set();
+    if (carryOf(m, k)) need.add(k - 1);
+    for (const a of m.anchors || []) { const mm = /^@clip:(\d{1,3}):last$/.exec(String(a.src || "").trim()); if (mm && Number(mm[1]) >= 1) need.add(Number(mm[1])); }
+    if (!need.size) return null;
+    const takeOf = (j) => { const c = (plan.clips || []).find((x) => x && x.k === j); return c && c.takes && c.path ? c.takes[c.take || 0] : null; };
+    const all = carryEnds(Object.assign({}, m, { shots: m.shots.map((s, i) => (i && s.scene) ? Object.assign({}, s, { carry: true }) : s) }), P.pieces, takeOf);
+    const ce = {};
+    for (const j of need) if (all[String(j)]) ce[String(j)] = all[String(j)];
+    if (!Object.keys(ce).length) return null;
+    let d = {};
+    try { d = JSON.parse(text); } catch (e) { return null; }
+    d.carry_ends = ce;
+    return JSON.stringify(d);
+}
+/* v1219 (Frank 24.10.: "die Clips wieder korrekt an die Schneidegrenze zuruecksetzen"): every clip with a known
+ * place (V1's, a track's scene_<k> render file) back where the prompt cuts its scene -- the server measures each
+ * file's own repeated head. which = "all", "base" or a track id */
+async function _snap(node, which) {
+    if (_planBusy(node)) return;
+    const st = node._plsTl, w = _w(node, "timeline");
+    let r = null;
+    try { r = await _json("/pls/cine/snap", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ timeline: w ? w.value : "", edit: editOf(node), which }) }); }
+    catch (x) { r = { error: x.message }; }
+    if (!r || r.error) { st.state.textContent = "snap to scenes: " + ((r && r.error) || "no answer"); return; }
+    let e = editOf(node);
+    if (r.base) e = _clearCuts(node, e);
+    for (const id of Object.keys(r.layers || {})) e = setLayer(e, id, r.layers[id]);
+    _saveEdit(node, e);
+    st.state.textContent = "snap to scenes -- " + ((r.lines || []).join("; ") || "nothing to move");
 }
 /* v1165 (Frank 18.10.: "dass man sehen kann, dass in der Timeline eine Datei ersetzt worden ist ... ein kleines
  * gruenes NEW"): V1 shows the newest run of its place and an EARLIER run's clip stood there before (replace
@@ -2258,6 +2390,11 @@ function _vHead(node, el, lay, num, i, n, row) {
         _hb("\u25b2", base ? "the render stays V1" : "one track up (upper tracks win)", !base && i > 0, () => { if (!base && i > 0) _saveEdit(node, moveLayer(e0(), lay.id, -1)); }, "up"),
         _hb("\u25bc", base ? "the render stays V1" : "one track down", !base && i < nb - 1, () => { if (!base && i < nb - 1) _saveEdit(node, moveLayer(e0(), lay.id, 1)); }, "down"),
         _hb("\u21ba", base ? "reset: the render's cuts go (the film cuts where the prompt cuts)" : "reset: the file again, whole -- no cuts, no gaps", !lay.lock, () => _resetLayer(node, lay, row), "reset"),
+        // v1219: this track's scene clips back to their scenes (V1: the same as reset)
+        _hb("\u21e4", base ? "snap: the render's pieces back to the prompt's cuts" : "snap: this track's scene clips back to where their scenes start (scene_<k> in the name)", !lay.lock && (base || layerSrcs(lay).length > 0), () => {
+            if (lay.lock) return;
+            if (window.confirm(base ? "Snap V1 back to the prompt's cuts? Its cuts, trims and speeds go." : "Snap the track '" + (lay.name || lay.id) + "' back to its scenes? Its scene clips go to where their scenes start; other clips stay.")) _snap(node, base ? "base" : lay.id);
+        }, "snap"),
         _hb("\u2715", base ? "the render track stays (hide it with the eye)" : "delete this track (V + A) from the timeline -- the file stays on disk", !base && !lay.lock, () => {
             if (base || lay.lock) return;
             if (window.confirm("Delete the track V" + num + " (" + (lay.name || lay.id) + ") from the timeline? The file stays on disk.")) {
@@ -2300,7 +2437,7 @@ function _resetLayer(node, lay, row) {
     if (lay.id === BASE_ID) {
         // v1088 (audit C10): V1's reset asks like every other track's
         if (!window.confirm("Reset V1? The render's cuts, trims and speeds go -- the film cuts where the prompt cuts.")) return;
-        const e = editOf(node); for (const k of ["cuts", "end", "slip", "keep_tail", "pieces"]) delete e[k]; _saveEdit(node, e); return;
+        _saveEdit(node, _clearCuts(node, editOf(node))); return;
     }
     if (!row || !row.plan) return;
     if (layerSrcs(lay).length > 1) {    // v1198: a track of several files -- each whole again where it was laid
@@ -3861,13 +3998,17 @@ function _render(node) {
     // anchors
     st.anchors.replaceChildren();
     m.anchors.forEach((a, i) => {
-        const role = anchorRole(m, a);
-        const col = role === "guide" ? "#4fc3f7" : "#9ccc65";
+        // v1219: the role in the run that renders it -- scene by scene, a boundary anchor is scene k's FIRST frame
+        // (and with 'both' also the last of k-1), not a guide of the whole timeline
+        const ri = anchorRoleIn(m, a), role = ri.role === "both" ? "first" : ri.role;
+        const col = role === "guide" ? "#4fc3f7" : (ri.role === "both" ? "#ffd54f" : "#9ccc65");
         const p = _el("div", "position:absolute;top:3px;height:18px;min-width:14px;margin-left:-7px;cursor:ew-resize;font-size:10px;color:#111;white-space:nowrap;"
             + "padding:0 4px;border-radius:9px;border:1px solid #000;background:" + col + ";left:" + pct(a.at) + ";"
             + (st.sel && st.sel.kind === "anchor" && st.sel.i === i ? "outline:2px solid #f0c87a;" : ""), a.src || "?");
-        p.title = a.src + " at " + timeLabel(a.at) + " -- " + (role === "guide"
-            ? "a GUIDE -> Continue anchors (Core master)" : "a KEYFRAME (" + role + " frame) -> Keyframes " + role + "_frame") + " -- drag";
+        p.title = a.src + " at " + timeLabel(a.at) + " -- " + (ri.role === "both"
+            ? "a KEYFRAME of both scenes: the last frame of scene " + (ri.scene - 1) + " and the first of scene " + ri.scene
+            : role === "guide" ? "a GUIDE -> Continue anchors (Core master)" + (ri.scene ? " (scene " + ri.scene + ")" : "")
+            : "a KEYFRAME (" + role + " frame" + (ri.scene ? " of scene " + ri.scene : "") + ") -> Keyframes " + role + "_frame") + " -- drag";
         _drag(node, p, st.anchors, "anchor:" + i, (sec, done) => {
             const mm = _model(node); moveAnchor(mm, i, sec);
             p.style.left = pct(mm.anchors[i].at);
@@ -3935,10 +4076,23 @@ function _render(node) {
         const t = _el("input", INPUT + "width:70px;"); t.type = "number"; t.step = String(1 / FPS); t.min = "0";
         t.value = Number(a.at).toFixed(3);
         t.addEventListener("change", () => { const mm = _model(node); moveAnchor(mm, sel.i, parseFloat(t.value) || 0); _save(node, mm); _render(node); });
-        const role = anchorRole(m, a);
+        const ri = anchorRoleIn(m, a), role = ri.role === "both" ? "first" : ri.role;
         row.append(_el("span", "", "anchor"), s, _el("span", "", "at"), t, _el("span", "", "s"),
-            _el("span", "color:" + (role === "guide" ? "#4fc3f7" : "#9ccc65") + ";",
-                role === "guide" ? "guide -> Continue (Core master)" : "keyframe " + role + " -> Keyframes"));
+            _el("span", "color:" + (role === "guide" ? "#4fc3f7" : (ri.role === "both" ? "#ffd54f" : "#9ccc65")) + ";",
+                ri.role === "both" ? "keyframe of BOTH scenes: last of scene " + (ri.scene - 1) + ", first of scene " + ri.scene + " -> Keyframes"
+                : role === "guide" ? "guide -> Continue (Core master)" + (ri.scene ? ", scene " + ri.scene : "")
+                : "keyframe " + role + (ri.scene ? " of scene " + ri.scene : "") + " -> Keyframes"));
+        // v1219 (A -> B over a scene boundary): an anchor ON a boundary may serve both scenes -- the clip before ends
+        // on it, the clip after starts on it; the two meet on one picture
+        if (boundaryFrames(m).has(Math.round(Number(a.at) * FPS))) {
+            const bl = _el("label", "display:flex;gap:3px;align-items:center;cursor:pointer;color:#ffd54f;");
+            const bc = document.createElement("input"); bc.type = "checkbox"; bc.checked = !!a.both; bc.dataset.pls = "anchorboth";
+            bc.addEventListener("change", () => { const mm = _model(node); if (!mm.anchors[sel.i]) return;
+                if (bc.checked) mm.anchors[sel.i].both = true; else delete mm.anchors[sel.i].both; _save(node, mm); _render(node); });
+            bl.title = "on a scene boundary: also the LAST frame of the scene before -- both clips meet on this picture (scene by scene renders)";
+            bl.append(bc, _el("span", "", "both scenes"));
+            row.append(bl);
+        }
         st.edit.append(row);
     } else if (sel.kind === "transition" && st.plan && st.plan.plan && st.plan.plan.seams[sel.i]) {
         // v1037: the transition belongs to the seam of two pieces (the edit)
@@ -4258,9 +4412,14 @@ function _field(node) {
     const ptime = _el("span", "font-family:monospace;color:#ddd;", "0.00 / 0.00 s");
     const exactBtn = mk("exact preview", () => _export(node, true), "ffmpeg renders the film small into temp/ -- exactly what export makes");
     const live = mk("live", () => { const s2 = node._plsTl; s2.exact = null; _playerLoad(node); _playerDraw(node); }, "back to the live mix of the clip lane");
-    const cutsBtn = mk("cuts -> prompt", () => { const s2 = node._plsTl; if (!s2.plan) return; const mm = cutsIntoPrompt(_model(node), s2.plan); const e = editOf(node); for (const k of ["cuts", "pieces"]) delete e[k];
+    const cutsBtn = mk("cuts -> prompt", () => { const s2 = node._plsTl; if (!s2.plan) return; const mm = cutsIntoPrompt(_model(node), s2.plan); const e = editOf(node); for (const k of ["cuts", "pieces", "pieces_n"]) delete e[k];
         node.properties = node.properties || {}; node.properties[EDIT_KEY] = e; _save(node, mm); _render(node); _stack(node); }, "the film's cuts become the prompt's scene cuts (for the next run)");
-    const resetBtn = mk("reset cuts", () => { const e = editOf(node); for (const k of ["cuts", "end", "slip", "keep_tail", "pieces"]) delete e[k]; _saveEdit(node, e); }, "the film cuts where the prompt cuts again: splits, trims and speeds go (takes stay)");
+    const resetBtn = mk("reset cuts", () => { _saveEdit(node, _clearCuts(node, editOf(node))); }, "the film cuts where the prompt cuts again: splits, trims and speeds go (takes stay)");
+    // v1219: everything back to its scene -- V1 and every track's scene clips (the order the scenes say)
+    const snapBtn = mk("\u21e4 snap to scenes", () => {
+        if (window.confirm("Snap every clip back to its scene? V1 cuts where the prompt cuts again, and every track's scene clip goes to the start of its scene (repeated heads left out). Clips without a scene number stay where they are; locked tracks too.")) _snap(node, "all");
+    }, "every clip back where its scene starts -- V1 and the tracks (scene_<k> in the file name says where it belongs)");
+    snapBtn.dataset.pls = "snapall";
     const tailLab = _el("label", "display:flex;gap:3px;align-items:center;cursor:pointer;");
     const tail = document.createElement("input"); tail.type = "checkbox";
     tail.addEventListener("change", () => { const s2 = node._plsTl, D = s2.plan; if (!D || !D.plan) return;
@@ -4369,7 +4528,7 @@ function _field(node) {
     tools.title = "drag the playhead (it snaps to cuts); \u2702 cut / heal at it on the ACTIVE track; a cut is one line through picture and sound: drag = move it, "
         + "its amber \u25c6 = the speed of the clip before; drag a clip on V1 = slip, on the other tracks = move (Alt = slip); A/V unlinked or Alt+drag: picture or "
         + "sound part alone (J-/L-cut); the divider under a lane = its height; the prompt stays until 'cuts -> prompt'";
-    tools.append(splitBtn, healBtn, delBtn, linkBtn, typeBtn, snapSel, sep(), resetBtn, cutsBtn, tailLab,
+    tools.append(splitBtn, healBtn, delBtn, linkBtn, typeBtn, snapSel, sep(), resetBtn, snapBtn, cutsBtn, tailLab,
         sep(), autoLab, restLab, takesBtn, clearBtn);
     // v1034: this line says what the next Run does (stackHint) -- same height as before
     const stackLabel = _el("div", "font-size:10px;color:#9e9e9e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 0 auto;min-height:12px;", "stack: the rendered scenes of the project's stack (hover plays)");
@@ -4561,6 +4720,16 @@ app.registerExtension({
             const origQ = api.queuePrompt;
             const wrapQ = async function () {
                 const sw = (tlNodes()[0] || {})._plsSweep || null;
+                // v1219: the cut ends of the carry go into THIS run's prompt (not the widget, not the workflow)
+                try {
+                    const data = arguments[1], out = data && data.output;
+                    if (out) for (const id of Object.keys(out)) {
+                        const nd = out[id], n = tlById(id);
+                        if (!nd || nd.class_type !== NODE || !n || !n._plsTl || typeof (nd.inputs || {}).timeline !== "string") continue;
+                        const t2 = carryInject(nd.inputs.timeline, n._plsTl.plan);
+                        if (t2) nd.inputs.timeline = t2;
+                    }
+                } catch (e) { /* the run goes as it was */ }
                 const res = await origQ.apply(this, arguments);
                 try {
                     const pid = res && res.prompt_id;

@@ -54,7 +54,7 @@ fld = js[js.index("function _field("):]
 _need("root.append(topBar, headRow, refsRow, work, state, tools, film, scroller, bar, status, prev, pop);" in fld and "work.append(left, sndRow, stack);" in fld, "M1 the monitor on top, the toolbar over the tracks")
 _need("r1.append(play, ptime);" in fld and "r2.append(exactBtn, live, join);" in fld and 'stack.dataset.pls = "monitor";' in fld,
       "M1 the monitor: picture, play, time, exact preview, live, export -- nothing else")
-_need("tools.append(splitBtn, healBtn, delBtn, linkBtn, typeBtn, snapSel, sep(), resetBtn, cutsBtn, tailLab,\n        sep(), autoLab, restLab, takesBtn, clearBtn);" in fld,   # AMENDED v1200: + x tracks (v1198)
+_need("tools.append(splitBtn, healBtn, delBtn, linkBtn, typeBtn, snapSel, sep(), resetBtn, snapBtn, cutsBtn, tailLab,\n        sep(), autoLab, restLab, takesBtn, clearBtn);" in fld,   # AMENDED v1200: + x tracks (v1198); v1219: + snap to scenes
       "M1 the toolbar: the editing tools, the E4 switches (v1047: the span moved to the FILM row; v1153: + V/A by type)")
 # AMENDED v1150: the toolbar is a section, fitted to its rows (TOOLS_H at least)
 _need("export const TOOLS_H = 40, TOOLS_MAX = 140, AUTO_KEY = \"auto_track\", RESTORE_KEY = \"pls_cine_restore\";" in js

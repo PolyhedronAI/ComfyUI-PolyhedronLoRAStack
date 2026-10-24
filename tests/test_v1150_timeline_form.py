@@ -147,7 +147,7 @@ _need("root.append(topBar, headRow, refsRow, work, state, tools, film, scroller,
       "U1 the sections: top bar, head row, refs, work, state, toolbar, FILM, tracks, bar, status, preview")
 _need("topBar.append(modeSeg, tgt," in fld and "all, run);" in fld and 'run.style.cssText = BTN_GO;' in fld,
       "U1 the top bar: mode, length, project, render choice, render all, the big Render")
-_need("tools.append(splitBtn, healBtn, delBtn, linkBtn, typeBtn, snapSel, sep(), resetBtn, cutsBtn, tailLab,\n        sep(), autoLab, restLab, takesBtn, clearBtn);" in fld,   # AMENDED v1153: + V/A by type; AMENDED v1198: + x tracks
+_need("tools.append(splitBtn, healBtn, delBtn, linkBtn, typeBtn, snapSel, sep(), resetBtn, snapBtn, cutsBtn, tailLab,\n        sep(), autoLab, restLab, takesBtn, clearBtn);" in fld,   # AMENDED v1153: + V/A by type; AMENDED v1198: + x tracks; AMENDED v1221: + snap to scenes (v1219)
       "U1 the toolbar keeps EVERY tool (cut, heal, delete, A/V linked, snap, reset, cuts->prompt, keep tail, the takes switches)")
 _need('lanes.append(_row(tc, ruler), _row(gut("Scenes"), scenes), _row(gut("Shots"), shots), _row(newHead, newLane), above,' in fld
       and "v1Row, _row(a1Head, audio), below, anchorsRow, tl);" in fld,   # AMENDED v1153

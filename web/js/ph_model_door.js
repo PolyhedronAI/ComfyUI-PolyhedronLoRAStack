@@ -97,6 +97,7 @@ export function installModel(name) {
             });
             const d = r && await r.json();
             if (!d || !d.ok) throw new Error((d && d.error) || "no answer from the server");
+            forgetStatus();                  // v1220: the folders changed -- the next status asks the server
             _doneHooks.forEach((fn) => { try { fn(name, d.path); } catch (e) { /* ignore */ } });
             return d.path;
         } finally {
@@ -110,10 +111,23 @@ export function installModel(name) {
 const _doneHooks = new Set();
 export function onInstalled(fn) { _doneHooks.add(fn); return () => _doneHooks.delete(fn); }
 
-export async function modelStatus(set) {
-    const r = await api.fetchApi("/pls/weights/status?set=" + encodeURIComponent(set));
-    const d = r && await r.json();
-    return (d && d.ok && Array.isArray(d.models)) ? d.models : [];
+/* v1220 (the UI freeze, Frank 23.10.): a workflow with many model lines asked the status route once per line and
+ * per check -- the same set again and again while it loaded. One answer per set now serves every line that asks
+ * within STATUS_KEEP ms (asked together = ONE request); an install forgets it. */
+export const STATUS_KEEP = 1500;
+const _status = new Map();          // set -> {t, p}
+export function forgetStatus() { _status.clear(); }
+export function modelStatus(set) {
+    const key = String(set || ""), now = Date.now(), hit = _status.get(key);
+    if (hit && now - hit.t < STATUS_KEEP) return hit.p;
+    const p = (async () => {
+        const r = await api.fetchApi("/pls/weights/status?set=" + encodeURIComponent(set));
+        const d = r && await r.json();
+        return (d && d.ok && Array.isArray(d.models)) ? d.models : [];
+    })();
+    _status.set(key, { t: now, p });
+    p.catch(() => { if (_status.get(key) && _status.get(key).p === p) _status.delete(key); });   // a failure is not kept
+    return p;
 }
 
 export function fmtBytes(n) {
@@ -123,8 +137,17 @@ export function fmtBytes(n) {
     return Math.max(1, Math.round(n / 1024)) + " KB";
 }
 
+/* v1220 (the UI freeze): ONE list refresh for a burst -- a download's line, its notice and a set's loop each asked
+ * for one (refreshComboInNodes re-reads object_info for EVERY node); now they fold into one, REFRESH_WAIT ms after
+ * the last ask */
+export const REFRESH_WAIT = 400;
+let _refreshT = null;
 export function refreshModelLists() {
-    try { app.refreshComboInNodes && app.refreshComboInNodes(); } catch (e) { /* lists refresh on R */ }
+    if (_refreshT) clearTimeout(_refreshT);
+    _refreshT = setTimeout(() => {
+        _refreshT = null;
+        try { app.refreshComboInNodes && app.refreshComboInNodes(); } catch (e) { /* lists refresh on R */ }
+    }, REFRESH_WAIT);
 }
 
 /* ------------------------------------------------------------ 2. notice */

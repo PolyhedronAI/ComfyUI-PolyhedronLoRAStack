@@ -120,6 +120,15 @@ def run(model, sources, prev=None, fill=None):
     if errs:
         return None, errs
     target, k, n = T.resolve(model)
+    # v1219: two anchors on ONE frame of the place this run renders (a 'both scenes' anchor on the boundary and the
+    # scene's own last anchor) -- one of them would go silently
+    tf, seen = T.frames_for(target["seconds"]), {}
+    for a in target.get("anchors") or []:
+        f = T.frame_of(a.get("at", 0), tf)
+        if f in seen:
+            return None, ["anchors %s and %s land on the same frame %d of %s -- move one of them"
+                          % (seen[f], a.get("src"), f, "scene %d" % k if k else "the clip")]
+        seen[f] = a.get("src")
     want = T.carry_of(model, k)
     carry_lines, carried = [], False
     motion = model.get("carry_mode", "pin") == "motion"
@@ -141,8 +150,22 @@ def run(model, sources, prev=None, fill=None):
     if carried and r["first"] is not None and model.get("carry_mode", "pin") == "pin":
         carried = False
         carry_lines.append("carry: scene %d has its own first-frame anchor -- that one wins" % k)
+    if want and prev and not carried and r["first"] is not None:
+        # v1219 (one policy for the join): an own first-frame anchor wins over the carry -- then the scene before
+        # must END on that picture, or the join jumps. Said, with the way to tie both ends to it.
+        src = r["first"].get("src")
+        both = any(a.get("both") and a.get("src") == src for a in model.get("anchors") or [])
+        carry_lines.append("carry: scene %d ends on the same picture (%s marked 'both scenes') -- the join is the anchor"
+                           % (k - 1, src) if both else
+                           "WARN: carry: scene %d starts on %s, but scene %d ends free -- the join jumps unless %s is "
+                           "also scene %d's last frame: mark the anchor 'both scenes' (it must sit on the boundary)"
+                           % (k, src, k - 1, src, k - 1))
     r["carry"] = prev if carried else None
-    r["carry_index"] = T.film_last_index(model, k - 1) if carried else None
+    ce, ce_note = T.carry_end(model, k - 1, prev) if carried else (None, "")
+    if ce_note:
+        carry_lines.append(ce_note)
+    r["carry_cut"] = ce is not None
+    r["carry_index"] = (ce if ce is not None else T.film_last_index(model, k - 1)) if carried else None
     r["motion"] = T.motion_head(model) if (carried and motion) else 0   # v1185: 5 / 22 / 39
     if carried and motion:
         hd = r["motion"]
@@ -160,8 +183,9 @@ def run(model, sources, prev=None, fill=None):
                                "workflows): set it to %d or more, else the clip is held for 22 and %d frames of the "
                                "head render free" % (hd, hd, hd - T.MOTION_FRAMES))
     elif carried:
-        carry_lines.append("carry: scene %d begins on the frame the film shows LAST of scene %d (frame %d of %s) -> first_frame%s"
+        carry_lines.append("carry: scene %d begins on the frame the film shows LAST of scene %d (frame %d of %s%s) -> first_frame%s"
                            % (k, k - 1, r["carry_index"] + 1, os.path.basename(prev),
+                              ", where your cut ends it" if r["carry_cut"] else "",
                               " (the first-frame anchor: alignment line in the prompt, <Picture 1> in MiniMax Keyframes)"
                               if model.get("carry_mode") == "keyframe" else
                               " (pinned only -- MiniMax Reference's first_frame; the prompt is unchanged)"))
@@ -181,6 +205,15 @@ def run(model, sources, prev=None, fill=None):
         r["lines"].insert(0, "render: the whole timeline in one run, %d scenes inside it (hard cuts); the run's saved "
                              "clip joins the stack where your Save writes it (clip_prefix %s only if wired)"
                           % (n, r["clip_prefix"]))
+    bf = T.boundary_frames(model)
+    for a in model.get("anchors") or []:
+        try:
+            off = a.get("both") and int(round(float(a.get("at", 0)) * T.FPS)) not in bf
+        except (TypeError, ValueError):
+            off = False
+        if off:
+            carry_lines.append("note: anchor %s is marked 'both scenes' but sits at %s, not on a scene boundary -- it "
+                               "serves one scene" % (a.get("src"), T.time_label(float(a.get("at", 0)))))
     # v1178: the handoff rules of a continued / continuing scene -- checked, said, never rewritten
     outgoing = bool(motion and k and k < n and T.carry_of(model, k + 1))
     if (carried and motion) or outgoing:
@@ -395,6 +428,9 @@ class ULSCineTimeline:
             # v1083: "last" is the frame the FILM shows last of that place, a
             # time is the frame the editor's labels mean (frame index, not a seek)
             idx = T.film_last_index(model, k) if which == "last" else (0 if which == "first" else T.asked_frames(which))
+            if which == "last" and k:
+                ce, _n = T.carry_end(model, k, path)        # v1219: where the cut ends scene k, on this take
+                idx = ce if ce is not None else idx
             sidx, sfps, sn = source_index(path, idx)        # v1168: the clip's own frame for that film frame
             img = frame_index(path, sidx)
             sources[src] = img
@@ -403,6 +439,20 @@ class ULSCineTimeline:
                 src, which if isinstance(which, str) else "%.2f s" % which, idx + 1, sidx + 1,
                 os.path.basename(path), " at %g fps" % sfps if abs(sfps - E.FPS) > 0.01 else "", png or "(not saved)"))
         prev = carry_source(model, k0) if T.carry_of(model, k0) else None
+        if T.carry_of(model, k0) and prev is None:
+            # v1220 (audit #13): the browser registers a run's clip; a tab in the background or closed sent nothing
+            # and scene k started free. A Save wired to clip_prefix names its file <project>_scene_<k-1> in the day
+            # folder -- found there and listed as the browser would have
+            found = day_clip(model, k0 - 1)
+            if found:
+                try:
+                    A.register(project_folder(model.get("project", "")), k0 - 1, found)
+                    prev = carry_source(model, k0) or found
+                except Exception as e:
+                    prev = found
+                    print("[PLS] Cine Timeline: %s could not be listed (%s) -- carrying from it anyway" % (found, e))
+                print("[PLS] Cine Timeline: scene %d's clip found in the day folder (no register from the browser): %s"
+                      % (k0 - 1, os.path.basename(found)))
         if T.carry_of(model, k0) and prev is None:
             # v1083: in "all" mode the run before registers its clip from the
             # browser (the Save's "executed" event) while this run is already
@@ -703,8 +753,12 @@ def clip_last_shown(model, k, paths):
     paths[j] = the clip of scene j+1 (None: none). -> index or None."""
     if not k or k > len(paths) or not paths[k - 1]:
         return None
-    idx = T.film_last_index(model, k)
     g = film_greys(paths[k - 1])
+    # v1219: where the CUT ends scene k (the editor's carry_ends, on this take) -- a clip frame already
+    ce, _note = T.carry_end(model, k, paths[k - 1])
+    if ce is not None:
+        return min(ce, len(g) - 1) if g is not None else ce
+    idx = T.film_last_index(model, k)
     if model.get("carry_mode") == "motion" and T.carry_of(model, k) and k >= 2 and paths[k - 2]:
         pl = clip_last_shown(model, k - 1, paths)
         if pl is not None:
@@ -798,6 +852,33 @@ def held_at_cuts(paths, motion=(), prev_last=None):
 
 
 REGISTER_WAIT_TRIES, REGISTER_WAIT_STEP = 6, 0.5     # v1083: 3 s for the run before's register
+DAY_CLIP_DAYS = 2                                     # v1220: today's and yesterday's day folder (a run past midnight)
+
+
+def day_clip(model, k):
+    """v1220 (audit #13): the newest clip of scene k (0 = the whole run) in the day folders, by the name a Save wired
+    to clip_prefix gives it (<project>_scene_<k> / _whole) -- or None. Read only; the caller lists it."""
+    import time
+    proj = re.escape(T.project_name(model))
+    rx = re.compile(r"_%s_%s(?:_|\.)" % (proj, "scene_%d" % int(k) if k else "whole"), re.I)
+    best = None
+    for d in range(DAY_CLIP_DAYS):
+        folder = os.path.join(_output_dir(), time.strftime("%Y-%m-%d", time.localtime(time.time() - d * 86400)))
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for nm in names:
+            if not (VIDEO_EXT.search(nm) and rx.search(nm)):
+                continue
+            full = os.path.join(folder, nm)
+            try:
+                mt = os.path.getmtime(full)
+            except OSError:
+                continue
+            if best is None or mt > best[0]:
+                best = (mt, full)
+    return best[1] if best else None
 
 
 # --------------------------------------------------------------- v1051 clip frames
@@ -1111,8 +1192,10 @@ def edit_plan(model, edit, strips=True):
         mot = motion_seams(model)
         pls = [None] + [clip_last_shown(model, k, cps) if k in mot else None for k in range(1, len(cps))]
         held = held_at_cuts(cps, mot, pls)   # v1172; v1176 the motion heads
+    # v1219: the take each place shows now -- a cut list made on another take moves to this one's head
+    now = {it["k"]: it["takes"][it["take"]] for it in info if it.get("path") and it.get("takes")}
     p = E.plan(starts, float(model.get("seconds", 6)), clips, model.get("transitions") or [],
-               T.TRANSITIONS, edit=ed, whole=whole, tails=tails, held=held)
+               T.TRANSITIONS, edit=ed, whole=whole, tails=tails, held=held, takes=now)
     sizes = set((c["w"], c["h"]) for c in clips if c)
     if len(sizes) > 1:
         p["warnings"].append("the clips differ in size %s -- the export scales to the first" % sorted(sizes))
@@ -1262,6 +1345,102 @@ def stack_of(ed, p, base_clips, strips=True):
             film["warnings"].append("layer %s: %s" % (r["name"], r["error"]))
     return {"length": film["length"], "span": ed.get("span"), "flat": film["flat"], "complete": film["complete"] and not any(
         "error" in r for r in view if r["video"] or r["audio"]), "warnings": film["warnings"], "layers": view}
+
+
+def snap_edit(model, edit, which="all"):
+    """v1219 (Frank 24.10.: "eine Moeglichkeit, die Clips wieder korrekt an die Schneidegrenze zurueckzusetzen, wenn
+    ich -- auch aus Versehen -- was verschoben habe"): every clip whose place is known (V1's own, a track's render
+    file named ..._scene_<k>_ / ..._whole_) goes back to where the PROMPT cuts that place: its film start, its source
+    window with the repeated head (a motion context) or the frozen frames at a cut left out, measured on THAT file.
+    Files with no place (a clip dropped from disk) stay where they lie. Locked tracks are not touched.
+    which = "all" (V1 + every track) or a track id. -> {"base": reset V1?, "layers": {id: patch}, "lines": [..]}."""
+    ed = E.clean_edit(edit)
+    whole = model.get("render", "whole") == "whole"
+    plain = {k: v for k, v in ed.items() if k not in ("pieces", "pieces_n", "cuts", "end", "slip", "keep_tail")}
+    d = edit_plan(model, plain, strips=False)
+    p = d["plan"]
+    leads = {it["k"]: it.get("path") for it in d["clips"]}
+    places, acc = {}, 0
+    for pc in p["pieces"]:
+        n = E._length(pc)
+        if not E.is_gap(pc) and pc["k"] not in places:
+            places[pc["k"]] = {"at": acc, "len": n, "a": pc["a"], "b": pc["b"]}
+        acc += n
+    n_sc = len(T.scenes(model))
+    cps = [leads.get(k) for k in range(1, n_sc + 1)]
+    mot = motion_seams(model)
+    trans = model.get("transitions") or []
+    lines = []
+    out = {"base": which in ("all", "base"), "layers": {}, "lines": lines}
+    if out["base"]:
+        lines.append("V1: the render's cut list goes -- the film cuts where the prompt cuts")
+    for L in ed.get("layers") or []:
+        if L["id"] == "base" or L["src"].get("kind") not in ("render", "file") or (which not in ("all", L["id"])):
+            continue
+        name = L.get("name") or L["id"]
+        if L.get("lock"):
+            lines.append("track %s is locked -- left as it is" % name)
+            continue
+        srcs = [L["src"]] + list(L.get("more") or [])
+        files = []
+        for sx in srcs:
+            k = E.scene_of(sx.get("path"), whole)
+            if k is None or k not in places:
+                files.append(None)
+                continue
+            try:
+                path = layer_path(sx)
+                frames = int(clip_info(path)["frames"])
+            except Exception as e:
+                lines.append("track %s: %s -- %s" % (name, os.path.basename(str(sx.get("path"))), e))
+                files.append(None)
+                continue
+            if leads.get(k) and os.path.realpath(leads[k]) == os.path.realpath(path):
+                a, b = places[k]["a"], places[k]["b"]
+            else:
+                a = 0
+                if k >= 2:
+                    prev = leads.get(k - 1)
+                    pl = clip_last_shown(model, k - 1, cps) if (k - 1) in mot else None
+                    try:
+                        hv = held_at_cuts([prev, path], {1} if (k - 1) in mot else set(), [None, pl])[1] if prev else None
+                    except Exception:
+                        hv = None
+                    if hv:
+                        rep = len(hv) > 3 and bool(hv[3])
+                        cut = E._seam_kind(trans, T.TRANSITIONS, k - 2) == "cut"
+                        a = int(hv[0]) if (rep or cut) else 0
+                a = min(a, max(0, frames - E.MIN_SEG))
+                b = min(frames, a + places[k]["len"])
+            files.append({"place": k, "a": a, "b": b})
+        pcs, done = E.snap_layer(L.get("pieces") or [], files, places)
+        if not done:
+            lines.append("track %s: no clip with a known place (scene_<k> in its name) -- left as it is" % name)
+            continue
+        patch = {"pieces": pcs, "src": dict(L["src"])}
+        at_of = {i: at for i, _k, at in done}
+        if 0 in at_of:
+            patch["src"]["at"] = at_of[0]
+        if L.get("more"):
+            patch["more"] = [dict(m, at=at_of[i + 1]) if (i + 1) in at_of else dict(m) for i, m in enumerate(L["more"])]
+        out["layers"][L["id"]] = patch
+        lines.append("track %s: %s" % (name, ", ".join("%s at %s" % ("the whole run" if k == 0 else "scene %d" % k,
+                                                                     T.time_label(at / float(T.FPS))) for _i, k, at in done)))
+    return out
+
+
+async def handle_snap(request):
+    """v1219: POST {timeline, edit, which} -> snap_edit's patches (nothing is saved on the server)."""
+    import asyncio
+    from aiohttp import web
+    try:
+        body = await request.json()
+        model = T.load(body.get("timeline", ""))
+        loop = asyncio.get_running_loop()
+        d = await loop.run_in_executor(None, snap_edit, model, body.get("edit"), str(body.get("which") or "all"))
+    except Exception as e:
+        return web.json_response({"error": "%s: %s" % (type(e).__name__, e)})
+    return web.json_response(d)
 
 
 async def handle_edit(request):
@@ -1463,6 +1642,7 @@ def register_timeline_routes():
                              ("POST", "/pls/cine/register", handle_register),
                              ("POST", "/pls/cine/renders", handle_renders),
                              ("POST", "/pls/cine/edit", handle_edit),
+                             ("POST", "/pls/cine/snap", handle_snap),          # v1219
                              ("POST", "/pls/cine/export", handle_export),
                              ("GET", "/pls/cine/media_dir", handle_media_dir),
                              ("POST", "/pls/cine/probe", handle_probe),

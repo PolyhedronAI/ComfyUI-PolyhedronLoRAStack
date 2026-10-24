@@ -398,6 +398,17 @@ async function updateSet(node) {
     }, list + "\n\nFrom " + txt.source + ", sha256-checked, into the folders ComfyUI reports. Nothing downloads unless you click.");
 }
 
+/* v1220 (the UI freeze): a node's line is checked ONCE for a burst of reasons (created, configured, a widget
+ * callback, a mode change, the line of a neighbouring widget) -- LINE_WAIT ms after the last one */
+export const LINE_WAIT = 120;
+function schedule(node, kind) {
+    if (!node) return;
+    if (node.__plsLineT) clearTimeout(node.__plsLineT);
+    node.__plsLineT = setTimeout(() => {
+        node.__plsLineT = null;
+        try { if (kind === "pick") updatePick(node); else updateSet(node); } catch (e) { /* never break a node */ }
+    }, LINE_WAIT);
+}
 function setup(node, kind) {
     const line = addLine(node);
     if (!line) return;
@@ -411,13 +422,13 @@ function setup(node, kind) {
                 const orig = w.callback;
                 w.callback = function () {
                     const r = orig ? orig.apply(this, arguments) : undefined;
-                    try { updatePick(node); } catch (e) { /* never break a pick */ }
+                    schedule(node, "pick");
                     return r;
                 };
                 w._plsWeightsBound = true;
             }
         }
-        updatePick(node);
+        schedule(node, "pick");
     } else {
         // v1199 / v1204: a line that follows an option on the node re-reads it when the option changes
         const sp = OPTION_NEEDS[node.comfyClass || node.type];
@@ -426,15 +437,15 @@ function setup(node, kind) {
             const orig = w.callback;
             w.callback = function () {
                 const r = orig ? orig.apply(this, arguments) : undefined;
-                try { updateSet(node); } catch (e) { /* never break a pick */ }
+                schedule(node, "set");
                 return r;
             };
             w._plsWeightsBound = true;
         }
-        updateSet(node);
+        schedule(node, "set");
     }
     // v1204: bypass / mute / back -- the line follows the node's mode (one quiet timer, any renderer)
-    watchMode(node, (n) => { try { if (kind === "pick") updatePick(n); else updateSet(n); } catch (e) { /* never */ } });
+    watchMode(node, (n) => schedule(n, kind));
 }
 
 app.registerExtension({
@@ -458,7 +469,7 @@ app.registerExtension({
                 const sz = this.computeSize();
                 if (this.size[1] < sz[1] || this.size[0] < sz[0])
                     this.setSize([Math.max(this.size[0], sz[0]), Math.max(this.size[1], sz[1])]);
-                if (kind === "pick") updatePick(this); else updateSet(this);
+                schedule(this, kind);          // v1220: with onNodeCreated's ONE check (the saved pick is in now)
             } catch (e) { /* ignore */ }
             return r;
         };

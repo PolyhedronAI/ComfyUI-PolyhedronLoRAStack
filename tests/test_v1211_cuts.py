@@ -128,8 +128,10 @@ _need(opt.index('"frames"') < opt.index('"video"') < opt.index('"cuts": ("PLS_CU
       "K6 cuts pin APPENDED after frames and video")
 _need('"default": CUT_GUARD_DEFAULT' in txt and "cut_guard=CUT_GUARD_DEFAULT" in txt and "video=None, cuts=None)" in txt,
       "K6 cut_guard default 0.1 in the widget and the signature; cuts in the signature")
-body = txt[txt.index("verdicts = [_gate_verdict("):txt.index("n_dup = verdicts.count")]
-_need("_cut_pairs(maes, cuts.get(\"seconds\"), float(source_fps))" in body and 'verdicts[i] = "hold"' in body,
+# AMENDED v1222: the decisions moved into the pure _verdicts() (a wired pin switches the threshold off)
+body = txt[txt.index("def _verdicts("):txt.index("return verdicts, notes, not wired")]
+_need("held, notes = _cut_pairs(maes, cuts.get(\"seconds\") or [], float(src_fps))" in body and 'verdicts[i] = "hold"' in body
+      and "verdicts, cut_notes, _theta_on = _verdicts(maes, static_skip, cut_guard, cuts, float(source_fps))" in txt,
       "K6 the found pairs overwrite the verdicts")
 _need('info += " | " + "; ".join(cut_notes)' in txt, "K6 the findings reach interp_info")
 

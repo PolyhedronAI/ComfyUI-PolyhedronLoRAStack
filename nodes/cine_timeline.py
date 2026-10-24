@@ -159,6 +159,12 @@ DEFAULT = {
     "render": "whole", "active": 1, "project": "cine", "transitions": [],
     "carry_mode": "pin", "triggers": "", "target": "fl2va", "head_frames": 22,
 }
+# v1219 -- carry_ends {"k": {"f": frame, "t": take}}: where the CUT ends scene k -- frame = scene k's own clip frame at
+# 24 fps, take = the file it was cut on. NOT part of the saved timeline: the editor's queue hook puts it into the ONE
+# queued run that reads it (scene k+1 carrying, an @clip:k:last anchor), so a fine cut re-renders nothing else. A
+# carry or @clip:k:last takes this frame instead of the prompt's end while that take is the one read.
+# anchors[i].both -- an anchor ON a scene boundary serves BOTH scenes: the last frame of the one before and the first
+# frame of the one after (Frank 24.10.: clips from A to B that meet on one picture)
 CARRY_MODES = ("pin", "keyframe", "motion")
 MOTION_FRAMES = 22            # v1176: the pinned head (a 17k+5 window: 0.92 s; Continue's context_frames) -- the default
 MOTION_AUDIO = 18             # v1176: how far back its sound reaches (Continue's audio_context; 3-frame grid)
@@ -246,6 +252,32 @@ def film_last_index(model, k):
     return film_frames(place_model(model, k)) - 1
 
 
+def carry_end(model, k, take=None):
+    """v1219: the frame the CUT ends scene k on (carry_ends), or None -- None too when it was cut on another take
+    than `take` (compared by file name; take None = do not compare). -> (frame or None, note or "")."""
+    ce = model.get("carry_ends")
+    v = ce.get(str(int(k))) if isinstance(ce, dict) else None
+    if not isinstance(v, dict):
+        return None, ""
+    try:
+        f = int(v.get("f"))
+    except (TypeError, ValueError):
+        return None, ""
+    if f < 0:
+        return None, ""
+    t = str(v.get("t") or "")
+    if take and t and t.replace("\\", "/").rsplit("/", 1)[-1] != str(take).replace("\\", "/").rsplit("/", 1)[-1]:
+        return None, ("carry: the cut end of scene %d was made on %s, the newest take is %s -- the prompt's end is used"
+                      % (int(k), t.rsplit("/", 1)[-1], str(take).replace("\\", "/").rsplit("/", 1)[-1]))
+    return f, ""
+
+
+def boundary_frames(model):
+    """v1219: the whole timeline's frames on which a scene boundary lies (scene 2..n start)."""
+    shots = sorted_shots(model)
+    return set(int(round(float(shots[a].get("at", 0)) * FPS)) for a, _b in scenes(model)[1:])
+
+
 def time_label(sec):
     """MM:SS.mmm (official section 3)."""
     ms = int(round(float(sec) * 1000.0))
@@ -273,6 +305,8 @@ def load(text):
         raise ValueError("the timeline state is not an object")
     m = json.loads(json.dumps(DEFAULT))
     m.update({k: d[k] for k in d if k in DEFAULT})
+    if isinstance(d.get("carry_ends"), dict) and d["carry_ends"]:
+        m["carry_ends"] = d["carry_ends"]          # v1219: only in a queued run (the editor's queue hook)
     return m
 
 
@@ -548,11 +582,20 @@ def scene_model(model, k):
     last_t = (grid - 1) / float(FPS)
     asked = max(1, min(grid, asked_frames(m["seconds"])))
     m["anchors"] = []
+    edge = int(round(t1 * FPS))
     for an in model.get("anchors") or []:
         at = float(an.get("at", 0))
-        if at < t0 - 1e-9 or at > t1 + 1e-9 or (at >= t1 - 1e-9 and not last_scene):
+        # v1219: an anchor marked `both` on this scene's END boundary is also its last frame (the next scene has it
+        # as its first frame anyway)
+        on_end = bool(an.get("both")) and not last_scene and int(round(at * FPS)) == edge
+        if not on_end and (at < t0 - 1e-9 or at > t1 + 1e-9 or (at >= t1 - 1e-9 and not last_scene)):
             continue
         a2 = dict(an)
+        a2.pop("both", None)
+        if on_end:
+            a2["at"] = last_t
+            m["anchors"].append(a2)
+            continue
         # the timeline's LAST-frame keyframe stays the last frame of the last
         # scene, although the scene's own grid may end a few frames later.
         # v1083: the same for EVERY scene -- an anchor on the scene's last

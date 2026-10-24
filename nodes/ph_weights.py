@@ -124,7 +124,69 @@ def primary_dir(folder):
     return model_dirs(folder)[0]
 
 
+# v1220 (the UI freeze, Frank 23.10.): every model line asks the status route, and every status walks the model
+# folders for every file of its set -- 1.7 s cold, over and over while a workflow loads. Inside the status route
+# ONLY (cached_finds(), a thread-local scope) the answers are kept: a HIT while the file is still there (one
+# isfile), a MISS for FIND_MISS_TTL seconds. Everything else -- a run, a conversion, an install -- walks as before
+# (a file written and then looked up must be found at once). Anything the pack writes into a model folder
+# (ensure_weights, an install) forgets the kept answers (forget_found); a file copied in by hand shows in a model
+# line after FIND_MISS_TTL seconds at the latest.
+import threading as _threading
+import time as _time
+FIND_MISS_TTL = 5.0
+FIND_MAX = 2048
+_FOUND = {}
+_FOUND_LOCK = _threading.Lock()
+_FOUND_GEN = [0]
+_SCOPE = _threading.local()
+
+
+class cached_finds(object):
+    """v1220: `with cached_finds(): ...` -- find_file keeps its answers inside (the status route's thread only)."""
+    def __enter__(self):
+        _SCOPE.on = getattr(_SCOPE, "on", 0) + 1
+        return self
+
+    def __exit__(self, *exc):
+        _SCOPE.on = max(0, getattr(_SCOPE, "on", 1) - 1)
+        return False
+
+
+def forget_found():
+    """v1220: a model folder changed -- every kept find_file answer goes."""
+    with _FOUND_LOCK:
+        _FOUND.clear()
+        _FOUND_GEN[0] += 1
+
+
 def find_file(folder, filename):
+    """v1220: find_file_walk; inside cached_finds() with its answers kept (see FIND_MISS_TTL)."""
+    if not getattr(_SCOPE, "on", 0):
+        return find_file_walk(folder, filename)
+    try:
+        key = (folder, filename, tuple(model_dirs(folder)))
+    except Exception:
+        return find_file_walk(folder, filename)
+    now = _time.monotonic()
+    with _FOUND_LOCK:
+        hit = _FOUND.get(key)
+        gen = _FOUND_GEN[0]
+    if hit is not None:
+        path, t = hit
+        if path is not None and os.path.isfile(path):
+            return path
+        if path is None and now - t < FIND_MISS_TTL:
+            return None
+    path = find_file_walk(folder, filename)
+    with _FOUND_LOCK:
+        if gen == _FOUND_GEN[0]:            # nothing was written while we walked
+            if len(_FOUND) >= FIND_MAX:
+                _FOUND.clear()
+            _FOUND[key] = (path, now)
+    return path
+
+
+def find_file_walk(folder, filename):
     """The first configured folder that actually holds `filename`, or None.
     Subfolders count: people file their models in trees."""
     for root in model_dirs(folder):
@@ -232,6 +294,7 @@ def ensure_weights(folder, name, registry, tag="provision", _fetch=None,
                 "%s: sha256 mismatch for %s (got %s, want %s)%s"
                 % (tag, spec["file"], got_hash, spec["sha256"], extra))
         os.replace(part, dest)
+        forget_found()                      # v1220: a new file in a model folder
         return dest
     except Exception as e:
         if os.path.exists(part):

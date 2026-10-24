@@ -307,7 +307,7 @@ else:
     _need(False, "P7 node.js needed")
 _need('ULSPowerUpscale: { kind: "pick", widget: "restore_model", companion: /vae/i }' in WJ
       and "const need = neededModels(models, opt, ow ? ow.value : undefined);" in WJ
-      and "try { updateSet(node); } catch (e) { /* never break a pick */ }" in WJ and "ow.value = fresh.label;" in WJ,
+      and "const r = orig ? orig.apply(this, arguments) : undefined;\n                schedule(node, \"set\");" in WJ and "ow.value = fresh.label;" in WJ,   # AMENDED v1220: the re-read is debounced (schedule)
       "P7 the line follows the pick, re-reads on a change, relabels after the Download")
 shutil.rmtree(TMP, ignore_errors=True)
 print("%s: %d check(s) failed" % ("test_v1199_restore_pick", len(FAILS)) if FAILS else "test_v1199_restore_pick: all checks passed")

@@ -838,7 +838,7 @@ The same single-line pattern works for FLUX, SDXL and SD 1.5.
 
 ## Example workflows
 
-Ten ready-to-load starter workflows ship in
+Eleven ready-to-load starter workflows ship in
 [`example_workflows/`](example_workflows/) and appear in ComfyUI's template
 browser (**Workflow → Browse Templates**) under this pack's name once it is
 installed:
@@ -854,6 +854,7 @@ installed:
 | `polyhedron_minimax_h3_fox_keyframes` | Cine Timeline + MiniMax Keyframes, a first frame and two guides through MiniMax Continue | as above |
 | `polyhedron_minimax_h3_fox_continue` | Cine Timeline, two scenes in one press; scene 2 continues scene 1 (motion carry) | as above |
 | `polyhedron_minimax_h3_fox_continue_refs` | as CONTINUE, with three reference pictures in both scenes (ref2va) | as above |
+| `polyhedron_minimax_h3_flf_sitdown` | Cine Timeline + MiniMax Keyframes, a first and a last frame, plus pose, depth and canny from one video blended to one control (Control Fit → Control Map → Blend → Apply Control), Transition Check | as the fox |
 | `polyhedron_minimax_h3_text_to_video` | **Cine Timeline** → Polyhedron Sampler, MiniMax H3 (video **and** audio), upscale and interpolation branches | H3 fl2v turbo 8-step + HyperFlow 8-step on, with the matching Sigma List preset |
 
 Compact WAN 2.2 dual-noise graphs built around the Stack: a grouped canvas
@@ -893,6 +894,21 @@ Reference photos used by REFS, KEYFRAMES and CONTINUE_REFS (Wikimedia Commons):
 Island Beach State Park, NJ 04" by peggycadigan (CC BY 2.0); "Vulpes vulpes
 (32846612491)" by xulescu_g (CC BY-SA 2.0). The photos are not shipped; links
 and licences in [`docs/third_party/fox_reference_photos.md`](docs/third_party/fox_reference_photos.md).
+
+**First → last frame: she sits down** — `polyhedron_minimax_h3_flf_sitdown`. A first
+frame (she stands in front of the chair) and a last frame (she has sat down), one shot
+of 4.46 s; the way between them follows a real one: pose, depth and canny drawn from
+the same video, blended to one control. Everything it loads ships in
+[`assets/flf_sitdown/`](assets/flf_sitdown/) — the two keyframes, the pose video
+(the sit-down at real speed) and the original clip it was cut from. Copy the three
+files the in-canvas note names into your `input` folder. The run below is this
+template as it ships, upscaled and interpolated to 48 fps (click for the clip; it
+carries the template).
+
+[![First -> last frame: she sits down, a frame of the template's run](assets/flf_sitdown_run.jpg)](assets/flf_sitdown_run.mp4)
+
+Source: Pexels video 11066122 ([pexels.com/video/11066122](https://www.pexels.com/video/11066122/)),
+Pexels licence; details in [`docs/third_party/flf_sitdown_media.md`](docs/third_party/flf_sitdown_media.md).
 
 
 - **⓪ Cine Timeline** holds the film. The fixed parts of the prompt sit in the
@@ -1307,7 +1323,11 @@ held). With a Cine Timeline, wire its `cuts` output into the `cuts` pin: the
 node then looks around each cut the prompt asked for (+-0.25 s) for the one
 pair where the picture really jumps and holds it -- the model paints a cut
 close to its time, not on the frame -- while fast motion and a painted
-dissolve are left alone. `interp_info` says where each cut was found.
+dissolve are left alone. `interp_info` says where each cut was found. With the
+pin wired the `cut_guard` threshold is **off** (also when the shot has no cut at
+all): a fast camera move reaches 0.10–0.15 per frame and would otherwise be held
+pair by pair — the clip would play at the source rate in the move. Without the
+pin the threshold works as described.
 
 **On the engine.** `nodes/vfi/rife_arch.py` is the MIT-licensed IFNet from
 [Practical-RIFE](https://github.com/hzwer/Practical-RIFE) (hzwer), by way of
@@ -1416,6 +1436,17 @@ Keyframes, with the official alignment line) or **motion** (the last 5 / 22 /
 39 frames *and their sound* as the scene's held head, through `tail` /
 `tail_audio` into MiniMax Continue -- needs ComfyUI master). The template
 `polyhedron_minimax_h3_fox_continue` renders two scenes in one press.
+
+The scenes of such a film share frames (the held head repeats the end of the
+scene before). The cut list keeps them out of the film, also when you edit it:
+a cut inside a repeated head is held at its end (hold **Alt** to place it there
+on purpose), the carry continues from where your cut ends the scene before, and a
+new take or another scene count is caught and named. An anchor that sits **on**
+a scene boundary can be ticked **both scenes** in its row: the last frame of the
+one scene and the first of the next — two clips that meet on one picture.
+**snap to scenes** (toolbar, and the arrow in every track head) puts everything
+back: V1 cuts where the prompt cuts, and every clip whose name says its scene
+(`_scene_<k>_`, `_whole_`) returns to the start of its scene.
 
 **Outputs.** `prompt` (to the encoder), `first_frame` / `last_frame` (the
 Keyframes mode's anchors, for MiniMax Keyframes), `anchors`, `seconds` (to the

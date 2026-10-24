@@ -50,6 +50,7 @@ whole graph again):
 """
 
 import math
+import re
 
 FPS = 24
 
@@ -124,6 +125,14 @@ def _clean_piece(p):
     tr = p.get("tr")
     if isinstance(tr, dict) and isinstance(tr.get("kind"), str):
         out["tr"] = {"kind": tr["kind"], "seconds": _num(tr.get("seconds"), 0.5)}
+    # v1219 (overlap guards): the take a piece was cut on and that take's repeated head, so a NEW take of the
+    # place moves the piece to its own head; `free` = cut past the head on purpose (Alt in the editor)
+    if isinstance(p.get("t"), str) and p["t"]:
+        out["t"] = p["t"][:300]
+        h0 = _num(p.get("h0"), 0)
+        out["h0"] = max(0, int(h0 or 0))
+    if p.get("free"):
+        out["free"] = True
     return out
 
 
@@ -161,6 +170,9 @@ def clean_edit(e):
                     pc[mode] = ps
         if pc:
             out["pieces"] = pc
+    # v1219: how many scenes the timeline had when the scene cut list was made -- another count = another film
+    if _num(e.get("pieces_n")) is not None and int(_num(e.get("pieces_n"))) >= 1:
+        out["pieces_n"] = int(_num(e.get("pieces_n")))
     if e.get("auto_track") is False:
         out["auto_track"] = False           # v1080: OFF is the explicit state; a missing key means ON
     elif e.get("auto_track"):
@@ -387,6 +399,93 @@ def move_piece(pieces, j, d):
     return norm_layer(n + rest)
 
 
+def cut_at_frame(pieces, f):
+    """v1219: the JS cutAtFrame -- a boundary at film frame f (a gap or a piece split there; past the end a gap)."""
+    out = [dict(p) for p in pieces or []]
+    F = max(0, int(f))
+    st, acc = [], 0
+    for p in out:
+        st.append(acc)
+        acc += _length(p)
+    if F >= acc:
+        if F > acc:
+            out.append(gap_piece(F - acc))
+        return out
+    j = next((i for i in range(len(out)) if st[i] <= F < st[i] + _length(out[i])), -1)
+    if j < 0 or F - st[j] <= 0:
+        return out
+    p, local = out[j], F - st[j]
+    if is_gap(p):
+        out[j:j + 1] = [gap_piece(local), gap_piece(_length(p) - local)]
+        return out
+    s = max(p["a"] + 1, min(p["b"] - 1, p["a"] + rnd(local * p["speed"])))
+    if s <= p["a"] or s >= p["b"]:
+        return out
+    out[j:j + 1] = [dict(p, b=s), {"k": p["k"], "a": s, "b": p["b"], "speed": p["speed"]}]
+    return out
+
+
+def insert_clip(pieces, piece, at):
+    """v1219: the JS insertClip -- a piece laid on a layer at film frame `at`, overwriting what lay there."""
+    pc = {"k": int(piece["k"]), "a": int(piece["a"]), "b": int(piece["b"]), "speed": float(piece.get("speed", 1.0) or 1.0)}
+    n, a0 = _length(pc), max(0, int(at))
+    q = cut_at_frame(cut_at_frame(norm_layer(pieces or []), a0), a0 + n)
+    st, acc = [], 0
+    for p in q:
+        st.append(acc)
+        acc += _length(p)
+    out, placed = [], False
+    for j, p in enumerate(q):
+        if a0 <= st[j] < a0 + n:
+            if not placed:
+                out.append(pc)
+                placed = True
+            continue
+        if not placed and st[j] >= a0 + n:
+            out.append(pc)
+            placed = True
+        out.append(dict(p))
+    if not placed:
+        out.append(pc)
+    return norm_layer(out)
+
+
+SCENE_OF_RE = re.compile(r"(?:^|_)scene_(\d+)(?:_|\.)", re.I)
+WHOLE_OF_RE = re.compile(r"(?:^|_)whole(?:_|\.)", re.I)
+
+
+def scene_of(path, whole=False):
+    """v1219: the place a render file belongs to by its name (..._scene_<k>_... -> k, ..._whole_... -> 0), or None.
+    In a whole render only a _whole file has a place; in a scene render only _scene_k files."""
+    name = str(path or "").replace("\\", "/").rsplit("/", 1)[-1]
+    m = SCENE_OF_RE.search(name)
+    if m and not whole:
+        return int(m.group(1))
+    if whole and WHOLE_OF_RE.search(name) and not m:
+        return 0
+    return None
+
+
+def snap_layer(pieces, files, places):
+    """v1219 (Frank 24.10.: "die Clips wieder korrekt an die Schneidegrenze zuruecksetzen ... man weiss ja, welcher
+    Clip wohin gehoert"): a layer's pieces with every file whose place is known laid back where the PROMPT cuts that
+    place -- its film start, its source window (the repeated head / frozen frames left out as V1 leaves them).
+    files[i] = {"place": k or None, "a": .., "b": ..} (a/b = this file's own window, measured by the caller);
+    places[k] = {"at": film frame}. Pieces of files with no place stay where they lie (under the snapped ones).
+    -> (pieces, [(file index, place, at)])."""
+    snapped = [i for i, f in enumerate(files) if f and f.get("place") is not None and f["place"] in places
+               and f.get("b", 0) - f.get("a", 0) >= 1]
+    keep = [p if is_gap(p) or p["k"] not in snapped else gap_piece(_length(p)) for p in (pieces or [])]
+    out = norm_layer(keep)
+    done = []
+    for i in sorted(snapped, key=lambda i: places[files[i]["place"]]["at"]):
+        f = files[i]
+        at = int(places[f["place"]]["at"])
+        out = insert_clip(out, {"k": i, "a": int(f["a"]), "b": int(f["b"]), "speed": 1.0}, at)
+        done.append((i, f["place"], at))
+    return out, done
+
+
 def _cover(segs, length, key_in="film_in", key_out="film_out"):
     """[(a, b)] film frames a segment list covers inside [0, length)."""
     out = []
@@ -526,8 +625,12 @@ def default_pieces(scene_starts, asked_seconds, frames, transitions, kinds, e, w
             nk = int(held[k][2]) if len(held[k]) > 2 and held[k][2] else frames[k]
             b = max(a + MIN_SEG, min(b, nk - tt, frames[k]))
             if notes is not None:
-                notes.append("scene %d: %s left out (frozen frames at a cut)" % (k + 1, " and ".join(
-                    x for x in ("the first %d" % th if th else "", "the last %d" % tt if tt else "") if x)))
+                rep = bool(held[k]) and len(held[k]) > 3 and bool(held[k][3])
+                # v1219: a repeated head (the end of the scene before, rendered again) is named as such
+                notes.append("scene %d: %s left out (%s)" % (k + 1, " and ".join(
+                    x for x in ("the first %d" % th if th else "", "the last %d" % tt if tt else "") if x),
+                    "the repeated head -- the end of scene %d again%s" % (k, ", and frozen frames at a cut" if tt else "")
+                    if rep and th else "frozen frames at a cut"))
         p = {"k": 0 if whole else k + 1, "a": a, "b": b, "speed": 1.0}
         if tr:
             p["tr"] = tr
@@ -611,7 +714,90 @@ def audio_segments(pieces, starts, C, seams, fk, warns):
     return out
 
 
-def plan(scene_starts, asked_seconds, clips, transitions, kinds, edit=None, whole=False, tails=(), held=None):
+def guard_of(held, n, whole):
+    """v1219: per place what a cut must not show -- {k: {head, repeat, frozen_head, tail}} from held_at_cuts' result.
+    head = the repeated head (the end of the scene before, rendered again by a motion context); frozen_head / tail =
+    the frozen frames a render begins / ends with (left out at a plain cut only)."""
+    out = {}
+    if whole or not held:
+        return out
+    for i in range(min(n, len(held))):
+        h = held[i]
+        if not h:
+            continue
+        rep = len(h) > 3 and bool(h[3])
+        out[i + 1] = {"head": int(h[0]) if rep else 0, "repeat": rep, "frozen_head": 0 if rep else int(h[0]),
+                      "tail": int(h[1])}
+    return out
+
+
+def _guard_pieces(pieces, fk, kinds, guard, takes, warns):
+    """v1219 (Frank 24.10., the overlap: "gerade wenn geschnitten oder verschoben wird"): an EDITED cut list is kept,
+    but never shows the repeated head of a motion context -- the end of the scene before, a second time:
+      - a piece of a NEW take (its stamp t names another file) moves by the change of the head (h0 -> head now);
+      - a piece whose start reaches into the head is held at the head's end (cut, slip, trim);
+      - a blend centred on a seam takes h1 frames BEFORE the piece's start -- the piece moves so those are its own.
+    A piece marked `free` (Alt in the editor) passes. -> pieces stamped with the take and head they now stand on."""
+    out = [dict(p) for p in pieces]
+    named = set()
+    for p in out:
+        if is_gap(p):
+            continue
+        k = p["k"]
+        g = guard.get(k) or {}
+        head = int(g.get("head", 0) or 0)
+        now = (takes or {}).get(k)
+        f = fk.get(k)
+        if now and p.get("t") and p["t"] != now:
+            d = head - int(p.get("h0", 0) or 0)
+            if d:
+                p["a"], p["b"] = p["a"] + d, p["b"] + d
+            if k not in named:
+                warns.append("scene %d: a new take (%s) -- its cut list %s" % (
+                    k, now.rsplit("/", 1)[-1], "moved by %+d frame(s) to its own repeated head" % d if d else "kept"))
+                named.add(k)
+        if head and not p.get("free") and p["a"] < head:
+            if ("a", k) not in named:
+                warns.append("scene %d: the cut reached %d frame(s) into its repeated head (the end of scene %d again) "
+                             "-- held at frame %d; Alt-drag in the editor lets it through" % (k, head - p["a"], k - 1, head))
+                named.add(("a", k))
+            p["a"] = head
+        if f is not None:
+            if p["b"] > f:
+                p["b"] = f
+            if p["a"] > f - MIN_SEG:
+                p["a"] = max(0, f - MIN_SEG)
+        if p["b"] - p["a"] < 1:
+            p["b"] = p["a"] + 1
+        if now:
+            p["t"], p["h0"] = now, head
+    # the blends: h1 frames before a piece's start belong to the seam
+    for _round in range(2):
+        t = track(out, fk, kinds, [])
+        moved = False
+        for j, s in enumerate(t["segments"]):
+            p = out[j]
+            if j == 0 or s.get("gap") or p.get("free"):
+                continue
+            head = int((guard.get(p["k"]) or {}).get("head", 0) or 0)
+            if not head or t["seams"][j - 1]["d"] < 2 or s["src_in"] >= head:
+                continue
+            d = int(math.ceil(head - s["src_in"] - 1e-9))
+            f = fk.get(p["k"])
+            p["a"] += d
+            p["b"] = min(f, p["b"] + d) if f is not None else p["b"] + d
+            if p["b"] - p["a"] < MIN_SEG:
+                p["b"] = p["a"] + MIN_SEG
+            warns.append("seam %d: the %s took %d frame(s) of scene %d's repeated head -- the piece moved by %d so the "
+                         "blend runs on its own frames" % (j, t["seams"][j - 1]["kind"], d, p["k"], d))
+            moved = True
+        if not moved:
+            break
+    return out
+
+
+def plan(scene_starts, asked_seconds, clips, transitions, kinds, edit=None, whole=False, tails=(), held=None,
+         takes=None):
     """The film.
 
     scene_starts   seconds of the scene boundaries in the PROMPT (scene 2..n);
@@ -640,6 +826,12 @@ def plan(scene_starts, asked_seconds, clips, transitions, kinds, edit=None, whol
     mode = "whole" if whole else "scenes"
     pieces = (e.get("pieces") or {}).get(mode)
     source = "edit"
+    guard = guard_of(held, n, whole)
+    if pieces and not whole and e.get("pieces_n") and e["pieces_n"] != n:
+        # v1219: the scene cut list was made for another scene count -- its k point at other clips now
+        warns.append("the cut list was made for %d scene(s), the timeline has %d now -- the prompt's pieces are used; "
+                     "'reset cuts' clears it" % (e["pieces_n"], n))
+        pieces = None
     if pieces:
         # v1082: a piece past its clip's end is clamped to it (the "keep tail" of a
         # clip that was not there yet stored 1e9); a piece longer than PIECE_MAX
@@ -652,16 +844,23 @@ def plan(scene_starts, asked_seconds, clips, transitions, kinds, edit=None, whol
             warns.append("the cut list does not fit the clips any more (scene %s) -- the prompt's pieces are used; "
                          "'reset cuts' clears it" % ", ".join(str(p["k"]) for p in bad))
             pieces = None
+    if pieces and (guard or takes):
+        pieces = _guard_pieces(pieces, fk, kinds, guard, takes, warns)
     P = [fr(s) for s in ([] if whole else scene_starts)]
     if not pieces:
         notes = []
         pieces, P = default_pieces(scene_starts, asked_seconds, frames, transitions, kinds, e, whole, warns, tails=tails,
                                    held=held, notes=notes)
         source = "prompt"
+        for p in pieces:              # v1219: stamped with the take and head they stand on (the editor keeps them)
+            now = (takes or {}).get(p["k"])
+            if now:
+                p["t"], p["h0"] = now, int((guard.get(p["k"]) or {}).get("head", 0) or 0)
     else:
         notes = []
     t = track(pieces, fk, kinds, warns)
-    t.update({"cuts_prompt": P, "frames": {str(k): v for k, v in fk.items()}, "source": source, "held": notes})
+    t.update({"cuts_prompt": P, "frames": {str(k): v for k, v in fk.items()}, "source": source, "held": notes,
+              "guard": {str(k): v for k, v in guard.items()}})
     return t
 
 

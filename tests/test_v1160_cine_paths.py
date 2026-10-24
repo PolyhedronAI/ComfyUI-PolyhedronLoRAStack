@@ -95,8 +95,9 @@ del sys.modules["ph_media_routes"]
 _need(ns2["_lan_locked"]() is False, "L4 no lock module importable -> unlocked (fail-open, local behaviour)")
 
 # L5: every read goes through layer_path
-_need(len(re.findall(r"layer_path\(", SRC)) == 3 and "full = layer_path(src)" in SRC and "pth = layer_path(sx)" in SRC,   # AMENDED v1198: every file of a track
-      "L5 probe_layer and stack_of read through layer_path (the definition + two callers, nothing else)")
+_need(len(re.findall(r"layer_path\(", SRC)) == 4 and "full = layer_path(src)" in SRC and "pth = layer_path(sx)" in SRC
+      and "path = layer_path(sx)" in SRC,   # AMENDED v1198: every file of a track; AMENDED v1221: + snap_edit (v1219)
+      "L5 probe_layer, stack_of and snap_edit read through layer_path (the definition + three callers, nothing else)")
 
 shutil.rmtree(TMP, ignore_errors=True)
 _need(all(b < 128 for b in (ROOT / "nodes" / "ph_cine_timeline.py").read_bytes()) and all(b < 128 for b in Path(__file__).read_bytes()), "S  ASCII")

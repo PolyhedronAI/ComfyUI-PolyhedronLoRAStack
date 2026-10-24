@@ -414,6 +414,13 @@ class ULSMiniMaxContinue:
                 frames = _resize(tail[-n:], width, height)
                 kf = {"resolved_frame_index": 0, "latent": vae.encode(frames)}
                 line = "K2: last %d frame(s) of clip n at frame 0 (VAE encode)" % n
+                if int(tail.shape[0]) > n:
+                    # v1219: the timeline made the scene longer by the WHOLE tail (and moved its shots back by it);
+                    # pinning fewer leaves the rest of the head to render free -- said here, where it happens
+                    lines.append("WARN: K2 pins %d of the %d tail frames (context_frames %d) -- the Cine Timeline "
+                                 "lengthened the scene by %d, so %d frame(s) of its head render free; set context_frames "
+                                 "to %d" % (n, int(tail.shape[0]), int(context_frames), int(tail.shape[0]),
+                                            int(tail.shape[0]) - n, snap_guide(int(tail.shape[0]))))
                 aw = audio_frames(audio_context, n)
                 sound = None
                 if with_audio and tail_audio is not None and aw is not None:
