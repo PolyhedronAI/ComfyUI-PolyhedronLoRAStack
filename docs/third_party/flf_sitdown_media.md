@@ -18,8 +18,10 @@ stock video:
 | `pexels_11066122_original_720p.mp4` | the source clip, for reference | scaled to 720x1280, re-encoded (sound kept) |
 
 `assets/flf_sitdown_run.mp4` (and its poster `flf_sitdown_run.jpg`) is a new
-render by MiniMax H3 guided by the keyframes and the pose video; it carries the
-template in its metadata.
+render by MiniMax H3 guided by the keyframes and the pose video -- this template's
+run as it ships (Apply Control 0.9 until 60 %, canny blended as `difference`); it
+carries the template in its metadata. `assets/flf_sitdown_first.jpg` and
+`flf_sitdown_last.jpg` are the two keyframes scaled to 540 px for the README.
 
 The person shown is a model in a stock video. Use these files for trying the
 template; do not use them to depict her in a way that is offensive or that

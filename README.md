@@ -19,7 +19,7 @@ Installed as one custom-node pack — the node names, the package id
 
 ---
 
-> **Handbook:** [`docs/Polyhedron_Suite_Documentation_v395.pdf`](docs/Polyhedron_Suite_Documentation_v395.pdf)
+> **Handbook:** [`docs/Polyhedron_Suite_Documentation_v397.pdf`](docs/Polyhedron_Suite_Documentation_v397.pdf)
 > -- every node, with model notes for MiniMax H3, WAN 2.2 and the other families.
 
 # ⬡ Polyhedron Media Loader & ⬡ Polyhedron Save
@@ -901,11 +901,13 @@ of 4.46 s; the way between them follows a real one: pose, depth and canny drawn 
 the same video, blended to one control. Everything it loads ships in
 [`assets/flf_sitdown/`](assets/flf_sitdown/) — the two keyframes, the pose video
 (the sit-down at real speed) and the original clip it was cut from. Copy the three
-files the in-canvas note names into your `input` folder. The run below is this
-template as it ships, upscaled and interpolated to 48 fps (click for the clip; it
-carries the template).
+files the in-canvas note names into your `input` folder. In the middle: this
+template's run as it ships, upscaled and interpolated to 48 fps (click for the clip;
+it carries the template).
 
-[![First -> last frame: she sits down, a frame of the template's run](assets/flf_sitdown_run.jpg)](assets/flf_sitdown_run.mp4)
+| First frame (`flf_A_stand.png`) | The run (click for the clip) | Last frame (`flf_B_sit.png`) |
+|:---:|:---:|:---:|
+| <img src="assets/flf_sitdown_first.jpg" width="260" alt="First frame: she stands in front of the chair"> | <a href="assets/flf_sitdown_run.mp4"><img src="assets/flf_sitdown_run.jpg" width="260" alt="A frame of the run: she is sitting down"></a> | <img src="assets/flf_sitdown_last.jpg" width="260" alt="Last frame: she has sat down"> |
 
 Source: Pexels video 11066122 ([pexels.com/video/11066122](https://www.pexels.com/video/11066122/)),
 Pexels licence; details in [`docs/third_party/flf_sitdown_media.md`](docs/third_party/flf_sitdown_media.md).
@@ -1411,10 +1413,11 @@ spilling out.
 |---|---|
 | click a piece | select it (**delete** empties it, the tracks below show through) |
 | **cut** / **heal** | split at the playhead / join a cut again (double-click the line) |
-| drag a piece, a cut line, the end line | move it, trim the cut, play more or less of the clip |
+| drag a piece, a cut line, the end line | move it, trim the cut, play more or less of the clip; a cut inside a repeated head is held at its end — **Alt** places it there on purpose |
 | the amber diamond | the piece's speed (picture and sound, pitch kept); double-click = 100 % |
 | the bracket at the left | picture and sound linked or unlinked — unlinked, the sound drags alone (J/L cuts) |
-| the head | lock, show/hide, up/down, reset, remove, height S–XL, mute, solo |
+| the head | lock, show/hide, up/down, reset, **⇤** snap this track to the scenes, remove, height S–XL, mute, solo |
+| **snap to scenes** (toolbar) | V1 and every track back on the scene boundaries (see *Scenes that continue*) |
 
 **V/A by type** switches between pairs (V2 over A2) and the classic layout (all
 pictures above, all sounds below). Drop a video on the dashed row to open a

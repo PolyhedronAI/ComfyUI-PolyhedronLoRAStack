@@ -1,3 +1,36 @@
+# v397 -- 3.97.0: the first -> last frame showcase shows its template's run and both keyframes; the CTE's search row stays in its slot; handbook v397
+
+**Ctrl+F5** (no node, widget or route change). Carries v396 below.
+
+## First -> last frame showcase
+
+- `assets/flf_sitdown_run.mp4` is now the run of `polyhedron_minimax_h3_flf_sitdown` as it ships (Apply Control 0.9,
+  canny blended as `difference`). v396 showed an earlier run of the same scene with other control settings (0.8,
+  canny `over`), while the README called it this template's run. Picture and sound are the render unchanged; the
+  template is embedded, so dropping the clip on the canvas loads it.
+- The README shows the first frame, a frame of the run (she is sitting down) and the last frame side by side
+  (`assets/flf_sitdown_first.jpg`, `flf_sitdown_run.jpg`, `flf_sitdown_last.jpg`); before, only the run's poster.
+- `docs/third_party/flf_sitdown_media.md` names the run's settings and the two new pictures.
+
+## CLIP Text Encode: the search row stays in its slot
+
+On the classic canvas the search row lay over the widget below it (`use_negative`, or `pos_1` in fill mode): the
+frontend places a DOM widget 10 px inside its slot and sizes it to the slot minus twice that, and the row is a fixed
+34 px. The row now asks for margin 0 and brings the classic widgets' 15 px sides itself (dropped under Nodes 2.0,
+where the other rows have none). Measured at zoom 0.75 / 1.0 / 1.3: the row ends 4 px above the next widget. Guard
+`tests/test_v1223_cte_search_slot.py`.
+
+## Documentation
+
+- Handbook **v397** (`docs/Polyhedron_Suite_Documentation_v397.pdf`, 125 pages): Part VII gets chapter 6, *Seams --
+  editing a film of scenes* (the cut list and repeated heads, Alt, the carry following the cut, "both scenes"
+  anchors, snap to scenes, with two new pictures); chapter 8 (Cuts and the Interpolate) says the cut_guard threshold
+  is off with the cuts pin; the track table names Alt and the snap arrow. Part V notes the same for `cut_guard`. Part
+  X's recipe adds the template's run (MOTION 0.44, half of the way at 1.19 s). The CTE search picture is retaken.
+- README: the track table names Alt and the snap arrow; the handbook link points to v397.
+
+---
+
 # v396 -- 3.96.0: clean seams in the Cine Timeline, interpolation that leaves fast motion alone, a first -> last frame template
 
 **ComfyUI restart** + Ctrl+F5. No new node (52), no widget of an existing node moved; one new route

@@ -338,6 +338,19 @@ function _btn(label, title, onClick) {
  * order, textareaFor(w): the textarea on screen for w (or null) }.
  * Returns the widget, or null when the frontend has no DOM widgets.
  */
+// v1223: the 15 px sides match the classic canvas widgets; under Nodes 2.0 (the row inside a [data-node-id] node)
+// the other rows have no such inset, so the sides go to 0 there.
+function _sideCss() {
+    try {
+        if (typeof document === "undefined" || typeof document.getElementById !== "function"
+            || document.getElementById("pls-cte-search-css")) return;
+        const st = document.createElement("style");
+        st.id = "pls-cte-search-css";
+        st.textContent = "[data-node-id] .pls-cte-search{padding-left:0 !important;padding-right:0 !important;}";
+        (document.head || document.documentElement).appendChild(st);
+    } catch (e) { /* a style is never worth breaking the row */ }
+}
+
 export function installSearch(node, api) {
     if (!node || typeof node.addDOMWidget !== "function") return null;
     const have = (node.widgets || []).find((w) => w && w.name === SEARCH_W);
@@ -346,8 +359,10 @@ export function installSearch(node, api) {
     node._plsSearchApi = api;
 
     const row = document.createElement("div");
+    row.className = "pls-cte-search";
+    _sideCss();
     row.style.cssText = "display:flex;align-items:center;gap:6px;width:100%;height:" + ROW_H
-        + "px;box-sizing:border-box;padding:3px 0;";
+        + "px;box-sizing:border-box;padding:3px 15px;";   // v1223: the sides of the other widgets (margin 0 below)
     const input = document.createElement("input");
     input.type = "text";
     input.spellcheck = false;
@@ -378,8 +393,11 @@ export function installSearch(node, api) {
     node._plsSearchInput = input;
     node._plsSearchCounter = counter;
 
+    // v1223 (Frank's screenshot, 24.10.): the frontend places a DOM widget `margin` (default 10) inside its slot and
+    // gives it the slot's height minus twice that -- 18 px for this 34 px row, which then ran 6-16 px down over
+    // `use_negative`. The row brings its own padding: margin 0, the slot exactly ROW_H.
     const w = node.addDOMWidget(SEARCH_W, "pls_search", row, {
-        serialize: false, hideOnZoom: false,
+        serialize: false, hideOnZoom: false, margin: 0,
         getMinHeight: () => ROW_H, getMaxHeight: () => ROW_H,
     });
     w.serialize = false;                      // never in widgets_values (#577)
