@@ -108,6 +108,20 @@ def _previews_enabled():
         return False
 
 
+def _attention_cover():
+    """v1224: the coverage books of ph_attention, or None (the module is part of
+    this package; None only if it failed to import -- then nothing is reported)."""
+    try:
+        from . import ph_attention as _pa
+        return _pa
+    except Exception:
+        try:
+            import ph_attention as _pa   # the guards load nodes/ flat
+            return _pa
+        except Exception:
+            return None
+
+
 def _current_node_id():
     """Id of the node currently executing, so the frontend can attach the preview
     to THIS node. None -> we simply don't send (never a crash)."""
@@ -2067,8 +2081,24 @@ class ULSSampler:
         serialised names WITH length heuristics (the file warns about this
         itself), and a stability-first house does not shift that layout for a
         logging tweak. Ask for a switch and it gets its own careful cut."""
-        with _MuteStagingLogs(True, label="Sampler"):
-            return self._sample_impl(**kwargs)
+        # v1224: the Attention node books every call; the Sampler opens the
+        # stage and reads the coverage afterwards (Frank 25.10.: a fallback that
+        # nearly tripled a refine was one quiet console line).
+        _cov = _attention_cover()
+        node_id = _current_node_id()
+        if _cov is not None:
+            _cov.coverage_begin("Sampler", consumer=node_id)
+        ok = False
+        try:
+            with _MuteStagingLogs(True, label="Sampler"):
+                out = self._sample_impl(**kwargs)
+            ok = True
+            return out
+        finally:
+            if _cov is not None:
+                snap = _cov.coverage_end()
+                if ok:
+                    _cov.coverage_report(snap, consumer=node_id)
 
     def _sample_impl(self, model, positive, negative, latent_image, seed, steps, cfg,
                sampler_name, scheduler, denoise, add_noise,

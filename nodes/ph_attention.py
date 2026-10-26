@@ -94,6 +94,8 @@ without renumbering a single saved workflow.
 """
 
 import inspect
+import math
+import threading
 import time
 
 import torch
@@ -217,6 +219,17 @@ class PassThrough(Exception):
     condition must not look like a broken kernel."""
 
 
+class AddressPassThrough(PassThrough):
+    """v1224: a PassThrough for ONE reason with a cure -- the call is longer than
+    sageattention's 32-bit addressing reaches. Carries the numbers the coverage
+    report turns into advice: the sequence, the worst offset, the limit and the
+    longest sequence that would still fit (from the tensors' own strides)."""
+
+    def __init__(self, msg, seq=0, worst=0, limit=0, fit=0):
+        super().__init__(msg)
+        self.seq, self.worst, self.limit, self.fit = int(seq), int(worst), int(limit), int(fit)
+
+
 class ContextLost(RuntimeError):
     """v1184: the CUDA context died under a kernel (an illegal memory access).
     Nothing on this device can run after it -- not the fallback, not the next
@@ -259,6 +272,26 @@ def sage_addressable(*tensors, limit=SAGE_ADDRESS_LIMIT):
             continue
         worst = max(worst, max_element_offset(t))
     return worst <= limit, worst
+
+
+def sage_fit_tokens(seq_dim, *tensors, limit=SAGE_ADDRESS_LIMIT):
+    """v1224: the longest sequence (along `seq_dim`) every tensor could have and
+    still stay inside `limit` -- the same arithmetic as max_element_offset, solved
+    for the sequence length. Pure, shapes and strides only. 0 if nothing fits."""
+    best = None
+    for t in tensors:
+        if t is None:
+            continue
+        stride = abs(int(t.stride(seq_dim)))
+        rest = 0
+        for i, (n, s) in enumerate(zip(t.shape, t.stride())):
+            if i != seq_dim and n > 1:
+                rest += (n - 1) * abs(int(s))
+        if stride <= 0:
+            continue
+        fit = (int(limit) - rest) // stride + 1
+        best = fit if best is None else min(best, fit)
+    return max(0, int(best or 0))
 
 
 def is_context_lost(exc):
@@ -449,10 +482,13 @@ def run_sage(sage_fn, extra, q, k, v, heads, mask=None,
     # v1184: the 32-bit address check -- BEFORE the launch (see SAGE_ADDRESS_LIMIT)
     ok, worst = sage_addressable(q, k, v)
     if not ok:
-        seq = q.shape[2] if layout == "HND" else q.shape[1]
-        raise PassThrough("sequence of %d tokens reaches element offset %d, past "
-                          "sageattention's 32-bit addressing (%d) -- this call on the "
-                          "model's own backend" % (int(seq), worst, SAGE_ADDRESS_LIMIT))
+        sdim = 2 if layout == "HND" else 1
+        seq = q.shape[sdim]
+        fit = sage_fit_tokens(sdim, q, k, v)
+        raise AddressPassThrough("sequence of %d tokens reaches element offset %d, past "
+                                 "sageattention's 32-bit addressing (%d) -- this call on the "
+                                 "model's own backend" % (int(seq), worst, SAGE_ADDRESS_LIMIT),
+                                 seq=seq, worst=worst, limit=SAGE_ADDRESS_LIMIT, fit=fit)
 
     out = sage_fn(q, k, v, **kw)
 
@@ -1054,11 +1090,332 @@ def format_verdict(mode, ms_chosen, ms_base, stats):
     return line
 
 
+# --------------------------------------------------------------------------
+# v1224 coverage -- how much of the attention WORK a mode really carried
+# --------------------------------------------------------------------------
+# Frank, 25.10.2026: the joint refine at 1056x1856 x 175 frames took 6:25 per
+# step instead of ~2:30. Every self-attention call was 2.1 % too long for
+# sageattention's 32-bit addressing and ran on the model's own backend (3x
+# slower on his card). The log said it once, in a line ending "this is normal,
+# not a failure". Normal it was; harmless it was not -- 1.34 instead of 1.40
+# made the same refine 2.5x faster. So the override now COUNTS: every call is
+# booked as served or passed, weighted by its work (query tokens x key
+# tokens -- a short cross-attention call that passes costs next to nothing, a
+# full self-attention call that passes costs the whole step), and a report
+# says what share fell back, what it cost on this card, and what helps.
+# Model-independent: nothing here knows a model, only shapes and strides.
+
+COVER_WARN_SHARE = 0.10        # a WARN from 10 % of the attention work on the fallback
+COVER_EARLY_CALLS = 8          # the early report waits for this many calls (any fallback reason)
+COVER_ADDRESS_SHARE = 0.5      # v1227: the 32-bit address case reports at once when it carries this share
+COVER_EVENT = "pls.attention_cover"
+# v1225 (Frank 25.10.: "haengt von der Schwere ab, ob wir eine [Toast-Warnung] machen"): a toast only where
+# the run really lost time -- a WARN whose measured cost is at least x1.5, or, unmeasured (live_check off),
+# at least half the attention work on the fallback. Notes and ok lines never toast.
+COVER_TOAST_FACTOR = 1.5
+COVER_TOAST_SHARE = 0.5
+
+
+def call_cost(args, kwargs):
+    """The work of one attention call as query tokens x key tokens -- shapes
+    only, never the data. 0 if the call cannot be read (it is then not booked
+    against anyone)."""
+    try:
+        v = _unpack(args, kwargs)
+        q, k = v.get("q"), v.get("k")
+        if q is None or k is None:
+            return 0.0
+        if v.get("skip_reshape"):
+            nq, nk = int(q.shape[2]), int(k.shape[2])
+        else:
+            nq, nk = int(q.shape[1]), int(k.shape[1])
+        return float(nq) * float(nk)
+    except Exception:
+        return 0.0
+
+
+class CoverageLedger:
+    """The books of one stage (a sampler run, a refine). Thread-safe, cheap:
+    two additions per call. `begin` opens a stage, `end` closes it and hands
+    back the snapshot; between stages the override still books, so a run on a
+    foreign sampler gets the early self-report instead of silence."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.session = None
+        self.ms = None                 # (ms_chosen, ms_base) from the live check, per mode
+        self.nodes = set()
+        self._reset()
+
+    def _reset(self):
+        self.consumer = None           # v1226: the stage's own node id (gets the early line too)
+        self.advise = None             # v1226: the stage's own advice: verdict -> (extra lines, tip)
+        self.toasted = False           # v1226: the early report already toasted -> the final one does not
+        self.mode = None
+        self.served = self.passed = 0
+        self.cost_s = self.cost_p = 0.0
+        self.addr = None               # the worst AddressPassThrough seen: (seq, worst, limit, fit)
+        self.other = {}                # reason -> cost
+        self.early_said = False
+
+    def begin(self, label, consumer=None, advise=None):
+        with self._lock:
+            self._reset()
+            self.session = str(label)
+            self.consumer = consumer
+            self.advise = advise
+
+    def serve(self, mode, cost, node=None):
+        with self._lock:
+            self.mode = mode
+            self.served += 1
+            self.cost_s += cost
+            if node is not None:
+                self.nodes.add(str(node))
+
+    def pass_(self, mode, cost, exc, node=None):
+        """Book a pass-through. Returns True exactly once per stage when the
+        passed share has crossed the warning line after COVER_EARLY_CALLS
+        calls -- the caller then reports EARLY. v1224 did that only with no
+        stage open (a foreign sampler); v1226 does it inside a stage too
+        (Frank 25.10.: he stopped a 1.40 refine 45 s into step 1 and had seen
+        no toast -- the stage report would have come ~13 min later). The
+        stage's final report follows with the real numbers, without a
+        second toast."""
+        with self._lock:
+            self.mode = mode
+            self.passed += 1
+            self.cost_p += cost
+            if node is not None:
+                self.nodes.add(str(node))
+            if isinstance(exc, AddressPassThrough):
+                if self.addr is None or exc.seq > self.addr[0]:
+                    self.addr = (exc.seq, exc.worst, exc.limit, exc.fit)
+            else:
+                why = str(exc).split("\n")[0][:60] or type(exc).__name__
+                self.other[why] = self.other.get(why, 0.0) + cost
+            if not self.early_said:
+                n = self.served + self.passed
+                tot = self.cost_s + self.cost_p
+                share = (self.cost_p / tot) if tot > 0 else 0.0
+                # v1227 (Frank 25.10.: the early WARN came 2:30 into the refine step -- 8 calls of ~7 s each
+                # on the fallback): the ADDRESS case is not statistics. The sequence is too long on the very
+                # first call and every call of the stage has that length -- so it reports at once, as soon
+                # as such calls carry most of the work booked so far. Every other reason (masked calls,
+                # grouped heads ...) still waits for COVER_EARLY_CALLS: there the mix decides.
+                if isinstance(exc, AddressPassThrough) and share >= COVER_ADDRESS_SHARE:
+                    self.early_said = True
+                    return True
+                if n >= COVER_EARLY_CALLS and share >= COVER_WARN_SHARE:
+                    self.early_said = True
+                    return True
+            return False
+
+    def note_ms(self, mode, ms_chosen, ms_base):
+        with self._lock:
+            if ms_chosen and ms_base:
+                self.ms = (str(mode), float(ms_chosen), float(ms_base))
+
+    def snapshot(self):
+        with self._lock:
+            return {"session": self.session, "mode": self.mode, "served": self.served,
+                    "passed": self.passed, "cost_s": self.cost_s, "cost_p": self.cost_p,
+                    "addr": self.addr, "other": dict(self.other), "ms": self.ms,
+                    "nodes": sorted(self.nodes), "consumer": self.consumer,
+                    "advise": self.advise, "toasted": self.toasted}
+
+    def mark_toasted(self):
+        with self._lock:
+            self.toasted = True
+
+    def end(self):
+        snap = self.snapshot()
+        with self._lock:
+            self.session = None
+            self._reset()
+        return snap
+
+
+LEDGER = CoverageLedger()
+
+
+def coverage_begin(label, consumer=None, advise=None):
+    """A stage that runs the model opens its books (Sampler, Power Upscale).
+    v1226: `consumer` is the stage's node id, `advise(verdict) -> (extra lines,
+    tip)` its own advice -- both used by the EARLY report inside the stage."""
+    try:
+        LEDGER.begin(label, consumer=consumer, advise=advise)
+    except Exception:
+        pass
+
+
+def coverage_end():
+    """... and closes them. Returns the snapshot (see CoverageLedger)."""
+    try:
+        return LEDGER.end()
+    except Exception:
+        return None
+
+
+def coverage_verdict(snap, warn_share=COVER_WARN_SHARE, early=False):
+    """Pure: a snapshot -> the numbers and the advice, no printing. None when
+    no override booked anything (attention left on default, or no model ran).
+
+    Returns a dict: share (passed work 0..1), level ('ok' | 'note' | 'warn'),
+    ratio (fallback ms / mode ms from the live check, or None), factor (how
+    much longer the stage ran than it would have on the mode alone, or None),
+    fit_ratio (longest fitting sequence / sequence seen, for the address cause,
+    or None), lines (the console text, first line the headline), short (one
+    line for a node), toast (v1225: True when the loss is big enough for a
+    toast -- see COVER_TOAST_FACTOR / COVER_TOAST_SHARE). v1226: early=True
+    words it as a forecast for a stage that is still running."""
+    if not snap:
+        return None
+    tot = float(snap.get("cost_s", 0.0)) + float(snap.get("cost_p", 0.0))
+    calls = int(snap.get("served", 0)) + int(snap.get("passed", 0))
+    if tot <= 0 or calls <= 0:
+        return None
+    share = float(snap.get("cost_p", 0.0)) / tot
+    mode = snap.get("mode") or "?"
+    ms = snap.get("ms")
+    ratio = None
+    if ms and ms[0] == mode and ms[1] > 0:
+        ratio = ms[2] / ms[1]
+    factor = ((1.0 - share) + share * ratio) if ratio else None
+    level = "ok" if share <= 0.0 else ("warn" if share >= warn_share else "note")
+    label = snap.get("session") or "this run"
+    if early:
+        label += ", early -- the stage is still running"
+    lines, fit_ratio = [], None
+    pct = 100.0 * share
+    if level == "ok":
+        lines.append("[PLS] Attention coverage (%s): all of the attention work ran on '%s' "
+                     "(%d call(s))" % (label, mode, calls))
+        short = "attention: 100%% on %s" % mode
+    else:
+        head = ("[PLS] WARN Attention coverage (%s): %.0f%% of the attention work fell back to the "
+                "model's own backend -- '%s' carried only %.0f%%" % (label, pct, mode, 100.0 - pct)
+                if level == "warn" else
+                "[PLS] Attention coverage (%s): %.1f%% of the attention work fell back to the "
+                "model's own backend (below the %.0f%% warning line), '%s' carried the rest"
+                % (label, pct, 100.0 * warn_share, mode))
+        lines.append(head)
+        if ratio:
+            lines.append("[PLS]   cost: the fallback measured %.1fx slower than '%s' on this card "
+                         "(live check) -> this stage %s about %.1fx as long as it %s"
+                         % (ratio, mode, "will run" if early else "ran", factor,
+                            "has to -- stop it now and change the size if that matters" if early
+                            else "had to"))
+        elif level == "warn":
+            lines.append("[PLS]   cost: unmeasured (live_check off) -- typically 2-3x slower per "
+                         "fallen-back call with a quantised mode")
+        addr = snap.get("addr")
+        if addr:
+            seq, worst, lim, fit = addr
+            fit_ratio = (float(fit) / float(seq)) if seq else None
+            over = (100.0 * (worst / float(lim) - 1.0)) if lim else 0.0
+            lines.append("[PLS]   cause: one call holds %d tokens; the kernel addresses at most %d "
+                         "elements (32 bit) and this call needs %d -- %.1f%% too long. The longest "
+                         "sequence that fits: %d tokens." % (seq, lim, worst, over, fit))
+            if fit_ratio:
+                area = max(0.0, fit_ratio - 0.01)          # 1 % for the parts that do not shrink
+                lines.append("[PLS]   what helps (any model): fewer tokens per call -- pixel area "
+                             "x%.3f or less (each side x%.3f), or %.0f%% fewer frames, or -- where "
+                             "the model puts the prompt into the same sequence -- a prompt shorter "
+                             "by %d token(s). A node that sets the size names its own value below."
+                             % (area, math.sqrt(area), 100.0 * (1.0 - area), max(1, seq - fit)))
+        for why, c in sorted((snap.get("other") or {}).items(), key=lambda kv: -kv[1]):
+            if c / tot < 0.01:
+                continue
+            lines.append("[PLS]   cause: %.0f%% of the work -- %s. '%s' does not serve that kind of "
+                         "call; if that share matters, a backend that does (sdpa, default) is the "
+                         "fix, not this one." % (100.0 * c / tot, why, mode))
+        short = ("attention: %.0f%% fell back%s" % (pct, (" (~%.1fx time)" % factor) if factor else "")
+                 if level == "warn" else "attention: %.1f%% fell back" % pct)
+    toast = level == "warn" and ((factor is not None and factor >= COVER_TOAST_FACTOR)
+                                 or (factor is None and share >= COVER_TOAST_SHARE))
+    return {"share": share, "level": level, "ratio": ratio, "factor": factor,
+            "fit_ratio": fit_ratio, "lines": lines, "short": short, "mode": mode,
+            "calls": calls, "toast": bool(toast)}
+
+
+def coverage_report(snap, consumer=None, extra=None, tip=None, early=False):
+    """Print the verdict and put its short form on the nodes: the Attention
+    node(s) that booked the calls and the consumer (the stage's own node).
+    `extra` are console lines a consumer adds (its own value to change),
+    `tip` the same advice in one line for the node. Best effort, never raises.
+    v1226: early=True words it as a forecast; a final report whose stage was
+    already toasted early sends no second toast."""
+    try:
+        v = coverage_verdict(snap, early=early)
+    except Exception:
+        v = None
+    if v is None:
+        return None
+    if not early and (snap or {}).get("toasted"):
+        v = dict(v, toast=False)
+    try:
+        for ln in v["lines"]:
+            print(ln)
+        for ln in (extra or []):
+            print(ln)
+    except Exception:
+        pass
+    try:
+        from server import PromptServer
+        nodes = list((snap or {}).get("nodes") or [])
+        if consumer is not None:
+            nodes.append(str(consumer))
+        PromptServer.instance.send_sync(COVER_EVENT, {
+            "nodes": nodes, "level": v["level"], "text": v["short"],
+            "tip": tip or "", "stage": ((snap or {}).get("session") or "") + (" (early)" if early else ""),
+            "toast": bool(v.get("toast")), "share": round(float(v["share"]), 4),
+            "factor": (None if v.get("factor") is None else round(float(v["factor"]), 2))})
+    except Exception:
+        pass
+    return v
+
+
+def coverage_early(snap):
+    """v1226: the EARLY report -- called by the override once per stage when the
+    passed share crosses the warning line after COVER_EARLY_CALLS calls. With a
+    stage open it carries the stage's own advice (Power Upscale: the
+    final_upscale_by that fits) and goes to the stage's node; with none open
+    (a foreign sampler) it is the v1224 self-report. Marks the books toasted, so
+    the stage's final report does not toast twice. Never raises."""
+    try:
+        snap = dict(snap or {})
+        in_stage = bool(snap.get("session"))
+        if not in_stage:
+            snap["session"] = "running stage, reported early"
+        extra, tip = [], ""
+        adv = snap.get("advise")
+        if adv is not None:
+            try:
+                v0 = coverage_verdict(snap, early=True)
+                got = adv(v0) if v0 is not None else None
+                if got:
+                    extra, tip = list(got[0] or []), str(got[1] or "")
+            except Exception:
+                extra, tip = [], ""
+        v = coverage_report(snap, consumer=snap.get("consumer"), extra=extra, tip=tip, early=in_stage)
+        if v is not None and v.get("toast"):
+            LEDGER.mark_toasted()
+        return v
+    except Exception:
+        return None
+
+
 def build_override(mode, fallback=True, report=None,
                    first_mode=None, first_steps=0,
                    last_mode=None, last_steps=0, announce=None, sparse=None,
-                   live_check=False, verdict=None, passthrough=None):
+                   live_check=False, verdict=None, passthrough=None,
+                   ledger=None, node=None, early=None):
     """Wrap a router so a runtime failure degrades instead of killing the run.
+
+    v1224: `ledger` (a CoverageLedger) books every call as served or passed,
+    weighted by its work; `early` is called once with the ledger's snapshot
+    when no stage is open and the passed share crosses the warning line.
 
     `report` is called once, with the exception, the first time a mode falls
     back -- a backend that silently stops being used is worse than one that
@@ -1136,7 +1493,10 @@ def build_override(mode, fallback=True, report=None,
                             verdict(chosen, got[0], got[1], got[2])
                     except Exception:
                         pass
-            return routers[chosen](func, *args, **kwargs)
+            out = routers[chosen](func, *args, **kwargs)
+            if ledger is not None:
+                ledger.serve(chosen, call_cost(args, kwargs), node)
+            return out
         except PassThrough as skip:
             # Normal condition, not a failure: this call was never ours.
             # v849: BUT SAY SO ONCE. Until now this branch was completely
@@ -1155,6 +1515,12 @@ def build_override(mode, fallback=True, report=None,
                         passthrough(chosen, skip)
                     except Exception:
                         pass
+            if ledger is not None:
+                try:
+                    if ledger.pass_(chosen, call_cost(args, kwargs), skip, node) and early is not None:
+                        early(ledger.snapshot())
+                except Exception:
+                    pass
             return func(*args, **kwargs)
         except Exception as exc:
             if is_context_lost(exc):
@@ -1175,6 +1541,12 @@ def build_override(mode, fallback=True, report=None,
                                   % (chosen, str(exc).split("\n")[0][:120])) from exc
             if not fallback:
                 raise
+            if ledger is not None:
+                try:
+                    if ledger.pass_(chosen, call_cost(args, kwargs), exc, node) and early is not None:
+                        early(ledger.snapshot())
+                except Exception:
+                    pass
             if not state["warned"]:
                 state["warned"] = True
                 if report is not None:
@@ -1548,6 +1920,7 @@ class ULSAttention:
                                "sampler gets. Without it the sparse mode "
                                "refuses out loud rather than guessing."}),
             },
+            "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
     @classmethod
@@ -1593,7 +1966,7 @@ class ULSAttention:
               attention_first=SAME_AS_MAIN, first_steps=0,
               attention_last=SAME_AS_MAIN, last_steps=0,
               sparse_time_window=3, sparse_sink=True, live_check=True,
-              latent=None):
+              latent=None, unique_id=None):
         m = model.clone()
 
         # Sentinel: "same as main" and 0 steps mean no window at all, and the
@@ -1791,11 +2164,21 @@ class ULSAttention:
                       % total)
 
         def _passthrough(mode_, skip):
+            if isinstance(skip, AddressPassThrough):
+                # v1227: the coverage WARN follows on this very call (address case, reported at once);
+                # one line, not two. The cause, the numbers and the cure are in that WARN.
+                return
             print("[PLS] Attention: not every call is '%s' to serve (%s) -- "
                   "those run on the model's own backend, the rest on '%s'"
                   % (mode_, str(skip).split("\n")[0][:80], mode_))
-            print("[PLS]   this is normal, not a failure -- but it means the "
-                  "mode does not cover the whole run.")
+            # v1224: no longer "normal, not a failure" without a number -- the
+            # coverage report after the stage weighs it (Frank 25.10.: this one
+            # line hid a refine running 2.5x as long as it had to).
+            print("[PLS]   not an error -- how much of the work it is, what it costs and "
+                  "what helps: the coverage report after this stage.")
+
+        def _early(snap):
+            coverage_early(snap)
 
         def _verdict(mode_, ms_chosen, ms_base, dev):
             if ms_chosen is None:
@@ -1803,6 +2186,7 @@ class ULSAttention:
                       "call -- no numbers this run. The run itself is "
                       "unaffected; '%s' is serving normally." % mode_)
                 return
+            LEDGER.note_ms(mode_, ms_chosen, ms_base)
             line = format_verdict(mode_, ms_chosen, ms_base, dev)
             if line:
                 print(line)
@@ -1819,7 +2203,9 @@ class ULSAttention:
                                   announce=_announce, sparse=sparse,
                                   live_check=bool(live_check),
                                   verdict=_verdict,
-                                  passthrough=_passthrough)
+                                  passthrough=_passthrough,
+                                  ledger=LEDGER, node=unique_id,
+                                  early=_early)
         if override is None:
             tops.pop("optimized_attention_override", None)
             m.model_options["transformer_options"] = tops

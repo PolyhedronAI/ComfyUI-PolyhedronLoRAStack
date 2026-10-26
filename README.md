@@ -19,7 +19,7 @@ Installed as one custom-node pack — the node names, the package id
 
 ---
 
-> **Handbook:** [`docs/Polyhedron_Suite_Documentation_v397.pdf`](docs/Polyhedron_Suite_Documentation_v397.pdf)
+> **Handbook:** [`docs/Polyhedron_Suite_Documentation_v398.pdf`](docs/Polyhedron_Suite_Documentation_v398.pdf)
 > -- every node, with model notes for MiniMax H3, WAN 2.2 and the other families.
 
 # ⬡ Polyhedron Media Loader & ⬡ Polyhedron Save
@@ -1592,9 +1592,26 @@ and then watch fail is worse than one that was never there.
 The split matters because the fast quantised kernels are not lossless on every
 model. Running the exact backend for the first and last few steps and the fast
 one in between is usually indistinguishable from full precision and still buys
-most of the time. A cross-attention call, a masked call or an unfamiliar
-sequence length is handed straight back to the model's own backend rather than
-being forced through — no warning, because it is not an error.
+most of the time. A cross-attention call, a masked call or a sequence the
+kernel cannot address is handed straight back to the model's own backend rather
+than being forced through. That is not an error — but it can cost a lot of time,
+so the node keeps books on it.
+
+**Coverage.** Every call is booked as served or handed back, weighted by its
+work. After each stage that ran the model (the Sampler, the Power Upscale's
+refine) the console says how much of the work the kernel carried. From 10 % on
+the fallback it is a `WARN` with the share, the measured cost on this card
+(from `live_check`), the cause and what helps; the same line appears on the node
+and in the Power Upscale's process pane, and from a 1.5x cost a toast pops up.
+The long-sequence case — a call a few percent too long for SageAttention's
+32-bit addressing, typical for a whole clip refined at a large canvas — is
+reported on its first call while the stage is still running, with the way back
+(smaller area, fewer frames, a shorter prompt); the Power Upscale names its own
+value, e.g. `final_upscale_by 1.37 (now 1.40)`. Measured on MiniMax H3, 175
+frames: 1056×1856 refined at 6:25 per step, 1024×1792 at 2:30.
+
+<p><img src="assets/v6_attention_cover.png" width="300" alt="The Attention node with its coverage line">
+<img src="assets/v6_attention_toast.png" width="400" alt="The early coverage toast"></p>
 
 # ⬡ Polyhedron NAG
 

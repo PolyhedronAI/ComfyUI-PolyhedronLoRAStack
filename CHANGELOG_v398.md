@@ -1,3 +1,42 @@
+# v398 -- 3.98.0: attention coverage -- what fell back to the model's own backend, what it cost, what helps; handbook v398
+
+**Restart + Ctrl+F5** (no node or widget change; the Attention node gets a hidden id, one new frontend file).
+Carries v397 below.
+
+## Attention coverage
+
+A call the chosen attention kernel cannot serve is handed back to the model's own backend. That is not an error,
+but it can cost a lot of time: a MiniMax H3 refine of 175 frames at 1056x1856 ran 6:25 per step because every
+self-attention call was 2.1 % too long for SageAttention's 32-bit addressing; at 1024x1792 the same step took 2:30.
+The log said so in one quiet line.
+
+- **The books** (`nodes/ph_attention.py`): every call is booked as served or handed back, weighted by its work
+  (query tokens x key tokens) -- a short cross-attention call that falls back costs next to nothing, a full
+  self-attention call costs the whole step. Shapes and strides only, no model name anywhere.
+- **The report** after each stage that ran the model (Sampler, Power Upscale joint refine): one ok line; a note below
+  10 %; from 10 % a `WARN Attention coverage` with the share, the cost on this card from `live_check` ("this stage
+  ran about 3.0x as long as it had to"), the cause (for the address case: tokens, limit, how much too long, the
+  longest sequence that fits) and what helps for any model (pixel area / each side by a factor, fewer frames, a
+  shorter prompt where the model puts the text into the same sequence).
+- **Early**: the address case is reported on its FIRST call, while the stage is still running; any other fallback
+  reason after 8 calls. The final report follows with the real numbers.
+- **The Power Upscale names its own value**: "final_upscale_by 1.37 (now 1.40) lands the refine on 1024x1824".
+- **On the node, not only in the console** (`web/js/ph_attention_cover.js`): a line under the Attention node's
+  widgets (classic canvas; a title-bar chip under Nodes 2.0), the same line in the Power Upscale's process pane, and
+  a warning toast (15 s) when the cost is at least 1.5x (or, without `live_check`, half the work fell back) -- once
+  per stage. The file names its version in the browser console and logs every toast it shows.
+- **An honest refine plan**: a refine that fell back remembers the factor for its size; the next plan at that size
+  carries it, and the learned step rate stays clean (the measured step divided by the factor).
+- A foreign sampler (no stage of ours open) gets the same early report from the Attention node itself.
+
+Guards: `tests/test_v1224_attention_cover.py`, `test_v1225_attention_toast.py`, `test_v1226_attention_early.py`,
+`test_v1227_attention_now.py`.
+
+## Handbook v398
+
+`docs/Polyhedron_Suite_Documentation_v398.pdf` (126 pages): new page "Attention -- coverage: what fell back, and
+what it cost" in Part VI; the Attention page no longer says a fallback is "not warned about".
+
 # v397 -- 3.97.0: the first -> last frame showcase shows its template's run and both keyframes; the CTE's search row stays in its slot; handbook v397
 
 **Ctrl+F5** (no node, widget or route change). Carries v396 below.

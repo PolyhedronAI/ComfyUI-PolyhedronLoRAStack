@@ -1120,6 +1120,115 @@ def _final_canvas(w, h, model_scale, resize_method, final_by=1.0):
     return tw, th, (tw != w or th != h)
 
 
+def _suggest_final_by(w, h, model_scale, resize_method, final_by, snap, area_max):
+    """v1224 pure: the largest final_upscale_by (in 0.01 steps, at most the
+    current one) whose snapped refine canvas holds at most `area_max` of the
+    current canvas's area -- the dial value the coverage report names when the
+    joint refine's attention ran out of sageattention's 32-bit range. None when
+    nothing down to half the current value fits (then the advice stays general).
+    Same size law as the run: _final_canvas, then _snap_to."""
+    try:
+        f0 = round(float(final_by), 2)
+        cw, ch, _g = _final_canvas(w, h, model_scale, resize_method, f0)
+        cw, ch = _snap_to(cw, ch, snap)
+        a0 = float(cw * ch)
+        if a0 <= 0 or not (0.0 < float(area_max) < 1.0):
+            return None
+        f = f0
+        while f >= max(0.25, f0 * 0.5) - 1e-9:
+            tw, th, _g = _final_canvas(w, h, model_scale, resize_method, f)
+            tw, th = _snap_to(tw, th, snap)
+            if tw * th <= a0 * float(area_max):
+                return round(f, 2), (tw, th)
+            f = round(f - 0.01, 2)
+    except Exception:
+        return None
+    return None
+
+
+# v1225: the attention slowdown seen at a refine size, so the NEXT plan at that size is honest (Frank 25.10.:
+# step 1 was planned at ~3:19 and took 6:29 -- the learned rate knew only runs that stayed on the fast kernel).
+# Key: (rates section, canvas w, canvas h, frames). In-process memory: a restart forgets it, the learned rates
+# stay clean either way (the step is learned divided by the factor, see _joint_refine).
+_ATTN_SLOW = {}
+
+
+def _slow_plan_rates(rates, factor):
+    """v1225 pure: the rates with the sample step scaled by a remembered attention factor (enc/dec untouched)."""
+    r = dict(rates or {})
+    if factor and r.get("step"):
+        r["step"] = float(r["step"]) * float(factor)
+    return r
+
+
+def _clean_step(step_s, factor):
+    """v1225 pure: the step rate to LEARN -- the measured step without the fallback's extra time, so a slow run
+    does not drag the clean rate up (the EMA would otherwise land between fast and slow, the 3:19 of 25.10.)."""
+    try:
+        f = float(factor)
+    except (TypeError, ValueError):
+        return step_s
+    return step_s / f if f > 1.05 else step_s
+
+
+def _cover_mod():
+    """v1224: ph_attention's coverage books (package or flat load), or None."""
+    try:
+        from . import ph_attention as _pa
+        return _pa
+    except Exception:
+        try:
+            import ph_attention as _pa
+            return _pa
+        except Exception:
+            return None
+
+
+def _refine_advice(v, cov_args, order):
+    """v1224/v1226: the refine's OWN advice for a coverage verdict -> (console lines, node tip).
+    Shared by the early report (inside the running refine) and the final one."""
+    extra, tip = [], ""
+    if v is None or v.get("level") != "warn":
+        return extra, tip
+    fr = v.get("fit_ratio")
+    if fr and order == "after pixel" and cov_args is not None:
+        w, h, fsc, rm, fby, snap_px = cov_args
+        got = _suggest_final_by(w, h, fsc, rm, fby, snap_px, max(0.0, fr - 0.01))
+        if got is not None:
+            nf, (nw, nh) = got
+            extra.append(f"[PLS] Power Upscale: -> final_upscale_by {nf:.2f} (now {float(fby):.2f}) "
+                         f"lands the refine on {nw}x{nh} -- inside sageattention's range; "
+                         f"measured 25.10. on H3: 1.40 -> 1.34 made each refine step 2.5x faster")
+            tip = f"final_upscale_by <= {nf:.2f} keeps the refine on the fast kernel"
+        else:
+            extra.append("[PLS] Power Upscale: -> no final_upscale_by down to half the current "
+                         "value fits; fewer frames or a shorter prompt is the lever here")
+    elif fr and order == "before pixel":
+        extra.append("[PLS] Power Upscale: -> the refine runs on the INPUT canvas here "
+                     "(refine_order 'before pixel'): a smaller render or fewer frames is the lever")
+    return extra, tip
+
+
+def _cover_report_refine(info, cov_args, order):
+    """v1224: the joint refine's coverage verdict, with the ONE dial this node
+    owns for it: final_upscale_by (refine after pixel). Prints, puts the short
+    form on this node and on the Attention node; never raises. v1226: a refine
+    that already warned EARLY gets its final numbers here without a second toast."""
+    pa = _cover_mod()
+    snap = (info or {}).get("coverage") if isinstance(info, dict) else None
+    if pa is None or not snap:
+        return None
+    try:
+        v = pa.coverage_verdict(snap)
+    except Exception:
+        v = None
+    extra, tip = _refine_advice(v, cov_args, order)
+    try:
+        return pa.coverage_report(snap, consumer=_current_node_id(), extra=extra, tip=tip)
+    except Exception:
+        return None
+
+
 def _chunks(n, per_batch):
     step = n if int(per_batch) <= 0 else int(per_batch)
     for i in range(0, n, step):
@@ -2345,7 +2454,7 @@ except ImportError:  # pragma: no cover - direct-run fallback, as elsewhere here
 
 def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
                   steps, cfg, sampler_name, scheduler, denoise, audio_mode,
-                  clock, probe=None, mute=True, cached=None, vae_tiling="Off"):
+                  clock, probe=None, mute=True, cached=None, vae_tiling="Off", cov_ctx=None):
     """The whole-clip refine on a joint (video+audio) model. Returns
     (frames_out, info) -- info carries steps_run / start_sigma / sigmas_n /
     frames_out for the verdict. Raises only on a broken wire it cannot heal
@@ -2418,7 +2527,12 @@ def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
     mpf = float(sw * sh * n_in) / 1e6
     rsec = _rates_section("joint", model)
     rates = _rates_load(rsec)
-    plan_lines, est = _phase_plan(mpf, steps_run, vid_lat_c is not None, rates)
+    slow_key = (str(rsec), int(sw), int(sh), int(n_in))
+    slow_f = _ATTN_SLOW.get(slow_key)
+    plan_lines, est = _phase_plan(mpf, steps_run, vid_lat_c is not None, _slow_plan_rates(rates, slow_f))
+    if slow_f and est.get("step"):
+        plan_lines.insert(2, f"          the sample plan carries x{slow_f:.1f}: at this size the attention fell back "
+                             f"to the model's own backend last time (coverage report)")
     # v1050: the learned phase estimates feed the run clock too (stage / run left)
     if clock is not None:
         try:
@@ -2530,6 +2644,13 @@ def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
     print(f"[PLS] Power Upscale: joint sample begin -> {steps_run} step(s) on "
           f"{tuple(vid_lat.shape)} from σ {float(sig[0]):.3f}")
     _open_step(1)
+    _cov = _cover_mod()
+    if _cov is not None:
+        # v1224: the refine's own books; v1226: with its node and its advice for the EARLY report
+        _ca, _co = (cov_ctx if cov_ctx else (None, "after pixel"))
+        _cov.coverage_begin("Power Upscale joint refine", consumer=node_id,
+                            advise=lambda _v: _refine_advice(_v, _ca, _co))
+    cov_snap = None
     try:
         with _MuteInfoLogs(mute, label="Power Upscale"):
             out = comfy.sample.sample_custom(model, noise, float(cfg), sampler, sig,
@@ -2538,6 +2659,8 @@ def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
                                              disable_pbar=True, seed=int(seed))
     finally:
         _open_step(steps_run + 99)   # closes whatever phase is open, opens none
+        if _cov is not None:
+            cov_snap = _cov.coverage_end()
     peaks.append(("sample", stw["peak"]))
     tt.append(time.monotonic())
     vid_out = _joint_video_half(out)
@@ -2561,7 +2684,23 @@ def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
         print(pl)
     top = max([v for _k, v in peaks if v is not None] or [0.0]) or None
     # v1007: learn -- the next run of this size class opens with real numbers
-    learned = _rates_learn(rsec, mpf, enc_s, (tt[2] - tt[1]) / max(1, steps_run),
+    step_meas = (tt[2] - tt[1]) / max(1, steps_run)
+    slow_now = None
+    try:
+        _pa = _cover_mod()
+        _cv = _pa.coverage_verdict(cov_snap) if (_pa is not None and cov_snap) else None
+        if _cv and _cv["level"] == "warn" and _cv.get("factor"):
+            slow_now = float(_cv["factor"])
+    except Exception:
+        slow_now = None
+    if slow_now and slow_now > 1.05:
+        _ATTN_SLOW[slow_key] = slow_now
+        print(f"[PLS] Power Upscale: the step rate is learned WITHOUT the attention fallback ({step_meas:.1f}s "
+              f"measured / x{slow_now:.1f} = {step_meas / slow_now:.1f}s) -- the next plan at this size carries "
+              f"the x{slow_now:.1f}")
+    else:
+        _ATTN_SLOW.pop(slow_key, None)
+    learned = _rates_learn(rsec, mpf, enc_s, _clean_step(step_meas, slow_now),
                            tt[3] - tt[2], peak_gb=top)
     print(f"[PLS] Power Upscale: joint rates learned (s per megapixel-frame, {rsec}): "
           f"encode {learned['enc'] if learned['enc'] is None else round(learned['enc'], 3)} · "
@@ -2572,7 +2711,7 @@ def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
     return px, {"steps_run": steps_run, "start_sigma": float(sig[0]) if steps_run else 0.0,
                 "sigmas_n": sigmas_n, "frames_out": int(px.shape[0]),
                 "vid_lat": vid_lat_keep, "n_in": n_in, "canvas": (sw, sh),
-                "cached": vid_lat_c is not None}
+                "cached": vid_lat_c is not None, "coverage": cov_snap}
 
 
 class ULSPowerUpscale:
@@ -3317,6 +3456,7 @@ class ULSPowerUpscale:
         #    curve's run, or 'steps' under Core's slicing); its weight is the
         #    canvas it runs on times the frames (one latent, all frames). ──
         _jr_info = None
+        _cov_args = None   # v1224: (w, h, model scale, resize method, final_by, snap) of the refine canvas
         _jr_frames_in = n_frames
         _jr_key = None
         _jr_hit = None
@@ -3446,9 +3586,10 @@ class ULSPowerUpscale:
                                           sigmas, seed, steps, cfg, sampler_name,
                                           scheduler, denoise, audio_stream, clock,
                                           probe=probe, mute=mute_staging_logs, cached=_c,
-                                          vae_tiling=vae_tiling)
+                                          vae_tiling=vae_tiling, cov_ctx=(None, "before pixel"))
             if _jr_hit is None and not _rs_before:
                 _latent_cache_put(_jr_key, _jr_info["vid_lat"], "before pixel")
+            _cover_report_refine(_jr_info, None, "before pixel")
             n_frames = int(cur.shape[0])
         # v1008: the tile path's books -- rates section, per-stage VRAM peaks,
         # and what the verdict will say about the run
@@ -3720,6 +3861,7 @@ class ULSPowerUpscale:
                           f"Pick a kernel to put the canvas in your hand.")
                 tw, th, grows = _final_canvas(fw, fh, fsc, resize_method, fby)
                 if _joint_on and _order == "after pixel" and str(resize_method) != _NO_RESIZE:
+                    _cov_args = (fw, fh, fsc, str(resize_method), fby, _jr_snap)
                     # v1004: the joint grid (VAE x patch since v1164; H3: /32) -- land the canvas
                     # there NOW so the refine's encode never centre-crops it.
                     _sw, _sh = _snap_to(tw, th, _jr_snap)
@@ -3840,9 +3982,10 @@ class ULSPowerUpscale:
                                           sigmas, seed, steps, cfg, sampler_name,
                                           scheduler, denoise, audio_stream, clock,
                                           probe=probe, mute=mute_staging_logs, cached=_c,
-                                          vae_tiling=vae_tiling)
+                                          vae_tiling=vae_tiling, cov_ctx=(_cov_args, "after pixel"))
             if _jr_hit is None and not _rs_before:
                 _latent_cache_put(_jr_key, _jr_info["vid_lat"], "after pixel")
+            _cover_report_refine(_jr_info, _cov_args, "after pixel")
         # v1194/v1199: the restore AFTER the refine (or with no refine running) -- over the delivered frames
         if _restore is not None and not _rs_before:
             cur = _RS.to_host(cur)

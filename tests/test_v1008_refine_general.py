@@ -288,7 +288,9 @@ def main():
     _need('sig_run=st.get("sig_run"), rsec=_tile_rsec,' in up and 'st["sig_run"], st["sig_how"] = run, how' in up,
           "%s: G7 the wired curve reaches every stage" % NAME)
     _need("if um is not None and st is plans[0][0]:" in up, "%s: G7 the pixel cache serves ONLY the first stage's model pass" % NAME)
-    _need(up.count("vae_tiling=vae_tiling)") == 2, "%s: G7 BOTH joint call sites hand vae_tiling to the joint refine" % NAME)
+    # v1228: since v1226 the call sites also hand over cov_ctx (the attention coverage advice) after vae_tiling
+    _need(len(re.findall(r"vae_tiling=vae_tiling(?:, cov_ctx=\([^()]*\))?\)", up)) == 2,
+          "%s: G7 BOTH joint call sites hand vae_tiling to the joint refine" % NAME)
     _need('"pls_pu_path": ["joint" if _joint is not None else "tile"]' in up, "%s: G7 the ui carries the path" % NAME)   # AMENDED v1199
     ref = src[src.index("def _joint_refine("):src.index("class ULSPowerUpscale")]
     _need("v_enc, v_dec, v_label = _vae_ops(vae, vae_tiling)" in ref and "snap = _vae_spatial(vae, _JOINT_SNAP_DEFAULT)" in ref
