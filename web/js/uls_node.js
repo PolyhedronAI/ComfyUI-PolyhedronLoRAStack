@@ -316,9 +316,20 @@ function insertTriggerAtCursor(triggerText) {
     el.dispatchEvent(new Event("change", { bubbles: true }));
 
     // Textfeld kurz highlighten als visuelles Feedback
-    const origBg = el.style.background;
-    el.style.background = "rgba(139, 111, 232, 0.25)";
-    setTimeout(() => { el.style.background = origBg; }, 400);
+    // v1243: the flash is an inset glow (box-shadow), never the background. The old flash
+    // wrote the background SHORTHAND and "restored" it from el.style.background -- which
+    // reads "" when a field is coloured through backgroundColor (the CTE's green / brown
+    // tint): the restore wiped the tint and the field fell to the theme's black until the
+    // next redraw (Frank, 28.10.). A second insert inside the flash keeps the first saved
+    // value, so the field never ends on the flash itself.
+    if (el._ulsFlashTimer) clearTimeout(el._ulsFlashTimer);
+    else el._ulsFlashSaved = el.style.boxShadow || "";
+    el.style.boxShadow = "inset 0 0 0 2px rgba(139, 111, 232, 0.85), 0 0 8px rgba(139, 111, 232, 0.55)";
+    el._ulsFlashTimer = setTimeout(() => {
+        el.style.boxShadow = el._ulsFlashSaved || "";
+        el._ulsFlashTimer = null;
+        el._ulsFlashSaved = undefined;
+    }, 400);
 
     return true;
 }
@@ -458,7 +469,8 @@ function showInsertToast(text, ok, nodePos) {
 
 /**
  * Zeigt ein kleines Popup mit allen verfügbaren Triggern zur Auswahl.
- * Klick auf einen Trigger fügt ihn im Format (trigger:weight) ein.
+ * v1243: click inserts the plain trigger; Shift+click inserts (trigger:weight)
+ * with the row's weight -- see triggerInsertText.
  */
 function openTriggerSelectPopup(triggers, weight, e) {
     document.getElementById("uls-trigger-select")?.remove();
@@ -476,7 +488,7 @@ function openTriggerSelectPopup(triggers, weight, e) {
 
     const header = document.createElement("div");
     header.style.cssText = "padding:6px 10px;color:#666;font-size:10px;border-bottom:1px solid #2a2a3a;";
-    header.textContent = "Select trigger — inserts as (trigger:weight)";
+    header.textContent = "Select trigger \u2014 click: plain, Shift+click: (trigger:" + weight + ")";
     wrap.appendChild(header);
 
     for (const trigger of triggers) {
@@ -486,14 +498,14 @@ function openTriggerSelectPopup(triggers, weight, e) {
         label.textContent = trigger;
         const preview = document.createElement("span");
         preview.style.cssText = "color:#f0a030;font-size:10px;margin-left:8px;opacity:0.7;";
-        preview.textContent = `(${trigger}:${weight})`;
+        preview.textContent = `Shift: (${trigger}:${weight})`;
         item.appendChild(label);
         item.appendChild(preview);
         item.addEventListener("mouseenter", () => item.style.background = "#28284a");
         item.addEventListener("mouseleave", () => item.style.background = "");
         item.addEventListener("mousedown", (ev) => {
             ev.preventDefault();
-            const text = `(${trigger}:${weight})`;
+            const text = triggerInsertText(trigger, weight, ev.shiftKey);
             showInsertToast(text, insertTriggerAtCursor(text));
             wrap.remove();
             document.removeEventListener("pointerdown", closeH, true);
@@ -1285,8 +1297,20 @@ const WEIGHT_HDR_TIP_LINES = [
     "Enter the model weight again to re-link.",
 ];
 
+/** v1243: what a trigger insert writes. Plain by default -- weight brackets are an
+ *  SD / Flux prompt convention; encoders that do not parse them (e.g. a Qwen-based text
+ *  encoder) keep "(x:1.00)" as literal text, brackets and all. Shift = the weighted form,
+ *  with the given weight (the row's own weight, two decimals). */
+function triggerInsertText(trigger, weight, weighted) {
+    if (!weighted) return String(trigger);
+    const w = Number(weight);
+    const ws = Number.isFinite(w) ? w.toFixed(2) : String(weight);
+    return `(${trigger}:${ws})`;
+}
+
 /** \u21b5 on a row: its trigger word(s) at the cursor of the last prompt field
- *  (one trigger: inserted + toast; several: the choice popup). */
+ *  (one trigger: inserted + toast; several: the choice popup). v1243: plain trigger;
+ *  Shift+click = (trigger:weight) with the row's weight. */
 function insertRowTrigger(row, e) {
     const toastPos = { x: e.clientX - 10, y: e.clientY - 36 };
 
@@ -1296,11 +1320,13 @@ function insertRowTrigger(row, e) {
     }
     const doInsert = (meta) => {
         const triggers = deriveTriggers(row.name, meta);
+        const w = Number(row.weight);
+        const wStr = (Number.isFinite(w) ? w : 1).toFixed(2);
         if (triggers.length <= 1) {
-            const text = `(${triggers[0]}:1.00)`;
+            const text = triggerInsertText(triggers[0], wStr, !!(e && e.shiftKey));
             showInsertToast(text, insertTriggerAtCursor(text), toastPos);
         } else {
-            openTriggerSelectPopup(triggers, "1.00", e);
+            openTriggerSelectPopup(triggers, wStr, e);
         }
     };
     const cached = metaCache.get(row.name);

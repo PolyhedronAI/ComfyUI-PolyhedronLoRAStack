@@ -691,7 +691,7 @@ Model-agnostic backend: WAN 2.1 / 2.2, FLUX, SDXL, SD 1.5 — no model-specific 
 - **Cleanup switches: Trim & Resolve** — magnitude-based channel pruning and TIES sign-election against multi-LoRA interference (see below)
 - **⬡ Merge Analyzer** — a passive node that shows what is actually being merged and measures the Resolve repack fidelity (energy, cosine, amplitude)
 - **Thumbnails & previews** — hover popups with image/video, Civitai hash-based fetch (SFW-strict), editable metadata
-- **Trigger-word management** — read from `.uls-meta.json`, `.txt` or the safetensors header, one-click insert into your prompt node
+- **Trigger-word management** — read from `.uls-meta.json`, `.txt` or the safetensors header, one-click insert into your prompt node (click: the plain trigger; Shift+click: `(trigger:weight)` with the row's weight)
 - **Quality-of-life** — Token Counter for WAN's 512-token limit, trigger Inspector, central Model Switch, dual HIGH/LOW workflow support, fast cancel via ComfyUI's red ✕
 - **Persistent settings** — group assignments, modes and cleanup toggles are serialized into the workflow and survive reloads and full ComfyUI restarts
 

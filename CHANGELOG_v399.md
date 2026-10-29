@@ -1,3 +1,34 @@
+# v399 -- 3.99.0: LoRA Stack trigger insert -- the prompt field keeps its colour, the trigger goes in plain
+
+**Ctrl+F5** (frontend only: `web/js/uls_node.js`, `web/js/uls_stack_dom.js`; no node, widget or Python change).
+Carries v398 below.
+
+## The field turned black
+
+Inserting a trigger from the LoRA Stack flashed the target field by writing the CSS `background` shorthand and
+restored it from `el.style.background`. The CLIP Text Encode colours its fields through `backgroundColor` (green
+positive, brown negative); the shorthand reads "" while only `background-color` is set, so the restore wiped the tint
+and the field fell to the theme colour (black) until the next redraw. Now the flash is an inset glow (`box-shadow`,
+400 ms) and the background is never touched; a second insert inside the flash keeps the first saved shadow.
+
+## Plain trigger by default
+
+Every insert wrote `(trigger:1.00)`. Weight brackets are an SD / Flux prompt convention; a text encoder that does not
+parse them (e.g. a Qwen-based one) keeps them as literal text, brackets and all.
+
+- Click on the trigger button (painted row and Nodes 2.0 panel): the plain trigger, e.g. `fe8rn`.
+- Shift+click: `(trigger:weight)` with the ROW's weight, two decimals (was a fixed 1.00).
+- The choice popup (LoRAs with several triggers): the same -- click plain, Shift+click weighted; its header and the
+  preview say so. The Nodes 2.0 button tooltip names Shift+click.
+
+## Checked
+
+- New guard `tests/test_v1243_trigger_insert.py`: the real insert functions driven in node against a stand-in that
+  follows the browser's shorthand rule; mutations caught. `tools/browser_probe_stack.py` expects the plain trigger.
+- Suite 321/321.
+
+---
+
 # v398 -- 3.98.0: attention coverage -- what fell back to the model's own backend, what it cost, what helps; handbook v398
 
 **Restart + Ctrl+F5** (no node or widget change; the Attention node gets a hidden id, one new frontend file).

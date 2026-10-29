@@ -273,7 +273,7 @@ function render(node, root) {
         trig.className = "uls-dom-trig";
         trig.textContent = "\u21b5";
         trig.title = "Insert this LoRA's trigger word at the cursor of the " +
-                     "last prompt field";
+                     "last prompt field. Shift+click: as (trigger:weight) with this row's weight";
         trig.onclick = (e) => insertRowTrigger(row, e);
         el.appendChild(trig);
 

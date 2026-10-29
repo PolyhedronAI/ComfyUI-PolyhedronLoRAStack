@@ -37,6 +37,7 @@ a session with unsaved work: it clears the graph.
 
 Exit code 0 = all PASS, 1 = a FAIL, 2 = environment missing.
 """
+import re
 import argparse
 import asyncio
 import json
@@ -249,7 +250,7 @@ async def run(url):
         await page.mouse.click(x, y)
         await page.wait_for_timeout(700)
         after = await page.evaluate(TEXT)
-        verdict(after is not None and after != before and after.count("(test:1.00)") == 2,
+        verdict(after is not None and after != before and len(re.findall(r"\btest\b", after)) == 2,   # v1243: plain trigger insert
                 "H3 classic: \u21b5 right after the order input still lands in the prompt (%r)" % (after,))
 
         # I: the same pieces under Nodes 2.0, through the DOM panel
