@@ -1,4 +1,60 @@
-# v399 -- 3.99.0: LoRA Stack trigger insert -- the prompt field keeps its colour, the trigger goes in plain
+# v400 -- 4.0.0: Save reads a Cutout mask; Media Loader finds a dropped file in ComfyUI's own folders; loaders name a model family newer than the Core; LoRA Engine panel follows what runs
+
+**Ctrl+F5 and a server restart** (one new route). Carries v399 below. The version number steps from 3.99 to 4.0
+only because 3.99 was the last two-digit minor; nothing else about the numbering changes (vNNN = major x 100 + minor).
+
+## Polyhedron Save: `mask_polarity` (internal v1246)
+
+A wired mask was always read as Load Image reads it (white = transparent). A Cutout mask is the opposite (white =
+visible), so a Cutout -> Save chain wrote the alpha inverted. New widget `mask_polarity`, shown only while a mask is
+wired: **white = transparent** (the default -- every older workflow writes exactly as before) or **white = visible**.
+Baseline WIDGET_ORDER v400 (Save: `mask_polarity` appended); NODE_IDS unchanged, renamed to v400. Guard
+`test_v1246_save_mask_polarity`.
+
+## Media Loader (internal v1247-v1249)
+
+- **A folder this machine does not have** (a workflow from another computer, a moved pin) no longer leaves an empty
+  node: the loader shows the ComfyUI input folder instead and says so in its status line ("Workflow folder missing
+  here -- showing input", the missing path in the tooltip); picking a file or a folder clears it. `/uls/media/list`
+  answers 404 with a `fallback`. Guard `test_v1247_folder_fallback` (public cut).
+- **"Load from where it is"** finds a dropped file whose path the browser hides (every browser hides it for an
+  Explorer drag) not only in recently used folders but through ComfyUI's own output and input trees, bounded
+  (20000 folders, depth 8); two matches stay an honest "ambiguous"; a miss opens the folder picker -- nothing is
+  ever copied. A path that does not resolve falls through to that lookup. One console line per drop says what the
+  browser handed over and where the file was found. New route `POST /uls/media/dirs_exist` (LAN-locked, reads only
+  isdir): recent folders that do not exist on this machine are pruned once per page load. Guard
+  `test_v1249_drop_lookup`.
+- Fix on the way: the folder note of v1247 had wrapped the grid builder and broke the grid's sort order (caught by
+  `test_v968_grid_order` before publishing); the wrapper is gone, the note only re-renders the status line.
+
+## Loaders: "newer than this ComfyUI" (internal v1244)
+
+A model file whose format this Core cannot read (a family newer than the installed ComfyUI) used to die with a
+detection traceback. Load Model (diffusion and checkpoint), Load CLIP and Load VAE now raise one plain sentence
+naming the file, the ComfyUI version and the cure ("update ComfyUI"). Out-of-memory errors pass through unchanged.
+Guard `test_v1244_newer_than_core` (public cut).
+
+## Interpolate: RGBA in (internal v1245)
+
+Frames with an alpha channel are interpolated on their colour, and the alpha rides beside them on the same timeline
+(hold / cut verdicts applied). Guard `test_v1245_rgba_in` (public cut).
+
+## LoRA Engine: the panel follows the rows that run (internal v1250)
+
+A saved Engine carries its rows twice: in the hidden widget `engine_config` (what the backend runs) and in the
+panel's own copy. A workflow written by a tool that set only the widget showed an empty panel over a running
+engine; the first touch of that panel would have pushed the empty rows into the widget. At load the two are now
+compared and the widget wins -- the panel takes its rows and says so in the console. The API prompt is unchanged
+either way. Guard `test_v1250_engine_split`.
+
+## Housekeeping
+
+`test_v365_public_build` reads the version tag as major x 100 + minor (4.0.0 -> v400). `tools/wf_hygiene.py`
+(finds bench paths in workflows) added. CHANGELOG_v399 folded in below.
+
+---
+
+## Carried: v399 -- 3.99.0: LoRA Stack trigger insert -- the prompt field keeps its colour, the trigger goes in plain
 
 **Ctrl+F5** (frontend only: `web/js/uls_node.js`, `web/js/uls_stack_dom.js`; no node, widget or Python change).
 Carries v398 below.

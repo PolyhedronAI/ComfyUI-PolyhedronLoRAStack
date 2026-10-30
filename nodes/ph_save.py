@@ -210,6 +210,17 @@ def _fps_of(video, frame_rate):
 
 
 # ── the node ─────────────────────────────────────────────────────────────────
+
+# v1246: the two mask conventions of the pack, named as Pixelize names them
+MASK_VISIBLE_WHITE = "white = visible (Cutout, Pixelize, Sprite Align)"
+MASK_TRANSPARENT_WHITE = "white = transparent (Load Image -- default)"
+MASK_POLARITIES = [MASK_TRANSPARENT_WHITE, MASK_VISIBLE_WHITE]
+
+
+def mask_polarity_visible(choice):
+    """True when a wired mask is to be read white = visible. None / unknown -> the old default."""
+    return str(choice or "").startswith("white = visible")
+
 class ULSSave:
     """⬡ Polyhedron Save -- unified image/video/audio writer (see module doc)."""
 
@@ -288,6 +299,15 @@ class ULSSave:
                     "tooltip": "On: write to ComfyUI/output/. Off: temp dir (preview only, keeps "
                                "output/ uncluttered while iterating).",
                 }),
+                # v1246 (Frank 30.10., Ritter-Test): APPENDED -- older workflows keep every value in place
+                "mask_polarity": (MASK_POLARITIES, {
+                    "default": MASK_TRANSPARENT_WHITE,
+                    "tooltip": "How a wired mask reads when it becomes the alpha. 'white = transparent' is "
+                               "ComfyUI's Load Image convention (the default, unchanged). 'white = visible' "
+                               "is the Cutout / Pixelize / Sprite Align convention -- pick it when such a mask "
+                               "is wired, else the alpha comes out inverted. A mask saved alone is written as "
+                               "it is either way.",
+                }),
             },
             "optional": {
                 "image": ("IMAGE", {"tooltip": "Still(s) or video frames [N,H,W,3|4]."}),
@@ -322,10 +342,18 @@ class ULSSave:
                    "PNG can.")
     OUTPUT_NODE = True
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, mask_polarity=None):
+        """v1246: mask_polarity was APPENDED. A workflow saved before v1246 carries one value
+        fewer, and the frontend fills the new widget from the next slot (the preview's empty
+        string). Any unknown value reads as the old default -- old workflows never fail at the
+        door; ph_save.js also sets the widget back to the default on load."""
+        return True
+
     # -- dispatch -------------------------------------------------------------
     def save(self, filename_prefix, media_kind, image_format, image_quality,
              video_preset, quality, frame_rate, autoplay, pingpong, loop_count,
-             trim_to_audio, save_metadata, save_output,
+             trim_to_audio, save_metadata, save_output, mask_polarity=None,
              image=None, video=None, audio=None, mask=None, keypoints=None,
              prompt=None, extra_pnginfo=None):
         # v1218: keypoints ride beside the media -- or alone (then only the JSON is written)
@@ -338,6 +366,12 @@ class ULSSave:
             media_kind, image is not None, video is not None, audio is not None,
             n_frames=(int(image.shape[0]) if image is not None else 1),
             has_mask=(mask is not None))
+        # v1246: every alpha path below reads a mask as white = transparent (alpha = 1 - mask).
+        # A Cutout-style mask (white = visible) is turned ONCE here, so all of them stay right;
+        # a mask saved alone is written as it came.
+        if mask is not None and kind != "mask" and mask_polarity_visible(mask_polarity):
+            mask = 1.0 - mask
+            print("[PLS] Save: mask read as white = visible (Cutout convention) -> alpha = mask")
 
         # v621: the resolved fps is exposed as a second output (Slot 1, appended --
         # the append-only output rule; 'path' stays Slot 0). A wired VIDEO carries

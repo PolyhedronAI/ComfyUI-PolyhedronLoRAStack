@@ -102,6 +102,36 @@ def _file_mb(*paths):
 
 
 
+# v1244: a model file this ComfyUI cannot read says WHY in plain words. The usual
+# cause is a model family newer than the running ComfyUI (its architecture,
+# encoder or detection rule arrived in a later Core) -- the raw Core error
+# ("Could not detect model type", a KeyError on a weight name) does not say so.
+# Out-of-memory errors pass through untouched: they have their own cure.
+
+def _core_version():
+    """The running ComfyUI's version string, or 'unknown version'."""
+    try:
+        import comfyui_version
+        return "ComfyUI " + str(comfyui_version.__version__)
+    except Exception:
+        return "unknown version"
+
+
+def _is_oom(err):
+    t = (type(err).__name__ + " " + str(err)).lower()
+    return "out of memory" in t or "outofmemory" in t
+
+
+def newer_than_core_error(who, path, err):
+    """ValueError naming the file, the running ComfyUI and the likely cure."""
+    first = (str(err).strip().splitlines() or [type(err).__name__])[0][:240]
+    return ValueError(
+        "[PLS] %s: this %s could not load '%s' (%s). The usual cause is a "
+        "model family that is newer than this ComfyUI -- update ComfyUI, then "
+        "load again. (The file itself was not changed.)"
+        % (who, _core_version(), os.path.basename(str(path)), first))
+
+
 _UI_KEY = "pls_basics"  # status line channel, rendered by web/js/ph_basics.js
 
 
@@ -759,12 +789,17 @@ class ULSLoadCLIP:
 
         with _blocking("Load CLIP", "load:clip:%s:%s" % (str(clip_type), weight_dtype), size=_file_mb(*paths),
                        what="load %d file(s), %.0f MB" % (len(paths), _file_mb(*paths)), unit="MB"):
-            clip = comfy.sd.load_clip(
-                ckpt_paths=paths,
-                embedding_directory=folder_paths.get_folder_paths("embeddings"),
-                clip_type=clip_type,
-                model_options=model_options,
-            )
+            try:
+                clip = comfy.sd.load_clip(
+                    ckpt_paths=paths,
+                    embedding_directory=folder_paths.get_folder_paths("embeddings"),
+                    clip_type=clip_type,
+                    model_options=model_options,
+                )
+            except (RuntimeError, ValueError, KeyError, AttributeError, TypeError) as e:
+                if _is_oom(e):
+                    raise
+                raise newer_than_core_error("Load CLIP", paths[0], e) from e
 
         total = 0.0
         for path in paths:
@@ -858,9 +893,14 @@ class ULSLoadVAE:
             # passes it (some VAEs carry their config there -- LTX audio, TAE
             # latent channels); without it such a VAE is built wrong or refused.
             sd, metadata = comfy.utils.load_torch_file(vae_path, return_metadata=True)
-            vae = comfy.sd.VAE(sd=sd, dtype=dtype, metadata=metadata)
-        if hasattr(vae, "throw_exception_if_invalid"):
-            vae.throw_exception_if_invalid()
+            try:
+                vae = comfy.sd.VAE(sd=sd, dtype=dtype, metadata=metadata)
+                if hasattr(vae, "throw_exception_if_invalid"):
+                    vae.throw_exception_if_invalid()
+            except (RuntimeError, ValueError, KeyError, AttributeError, TypeError) as e:
+                if _is_oom(e):
+                    raise
+                raise newer_than_core_error("Load VAE", vae_path, e) from e
 
         channels = getattr(vae, "latent_channels", None)
         family, note = (_vae_family(channels) if channels
@@ -1200,10 +1240,15 @@ class ULSLoadModel:
             path = folder_paths.get_full_path_or_raise("checkpoints", name)
             with _blocking("Load Model", "load:model:checkpoint", size=_file_mb(path),
                            what="load %s (%.0f MB)" % (name, _file_mb(path)), unit="MB"):
-                out = comfy.sd.load_checkpoint_guess_config(
-                    path, output_vae=False, output_clip=False,
-                    embedding_directory=folder_paths.get_folder_paths("embeddings"),
-                )
+                try:
+                    out = comfy.sd.load_checkpoint_guess_config(
+                        path, output_vae=False, output_clip=False,
+                        embedding_directory=folder_paths.get_folder_paths("embeddings"),
+                    )
+                except (RuntimeError, ValueError, KeyError, AttributeError, TypeError) as e:
+                    if _is_oom(e):
+                        raise
+                    raise newer_than_core_error("Load Model", path, e) from e
             model = out[0]
             dtype_txt = "checkpoint (MODEL only)"
             size = _size_mb(name, ("checkpoints",))
@@ -1231,7 +1276,12 @@ class ULSLoadModel:
                 )
             with _blocking("Load Model", "load:model:diffusion:%s" % weight_dtype, size=_file_mb(path),
                            what="load %s (%.0f MB)" % (name, _file_mb(path)), unit="MB"):
-                model = comfy.sd.load_diffusion_model(path, model_options=model_options)
+                try:
+                    model = comfy.sd.load_diffusion_model(path, model_options=model_options)
+                except (RuntimeError, ValueError, KeyError, AttributeError, TypeError) as e:
+                    if _is_oom(e):
+                        raise
+                    raise newer_than_core_error("Load Model", path, e) from e
             dtype_txt = weight_dtype
             size = _size_mb(name, ("diffusion_models", "unet"))
 

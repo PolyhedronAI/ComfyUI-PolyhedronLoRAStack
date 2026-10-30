@@ -14,7 +14,7 @@ Rewritten in v388 (the cut without legacy rules). What it holds:
      (Power Upscale, four optional SeedVR2 files) and h3_latent_upscale (H3 Latent Upscale) -- RE-GROUNDED in
      v392 because both nodes ship now; still pinned: exactly these sets, every row https + sha256 + size, each
      set owned by a registered node, no import of a module this build does not ship
-  V  the version triple agrees: pyproject x.NNN.0, the banner "Polyhedron Suite  vNNN", PLUGIN_VERSION vNNN
+  V  the version triple agrees: pyproject M.m.0 with vNNN = M*100+m, the banner "Polyhedron Suite  vNNN", PLUGIN_VERSION vNNN
   F  nothing of the removed legacy comes back: no install.py, no runtime pip, no standalone CLI
   S  the route modules are pure ASCII
 """
@@ -93,7 +93,7 @@ _need(not any(m in WW for m in ("ph_da3_lib", "ph_music_clap", "ph_textgen")), "
 
 # --- V: the version triple --------------------------------------------------------------------------
 m = re.search(r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"', _read("pyproject.toml"), re.M)
-tag = "v%s%s" % (m.group(1), m.group(2)) if m else "?"
+tag = "v%d" % (int(m.group(1)) * 100 + int(m.group(2))) if m else "?"   # v400: 4.0.0 -> v400 (3.99.0 -> v399 as before)
 _need(bool(m) and ("Polyhedron Suite  %s" % tag) in INIT, "V  the banner carries %s" % tag)
 _need(('PLUGIN_VERSION = "%s"' % tag) in _read("web", "js", "uls_compat.js"), "V  uls_compat.js PLUGIN_VERSION carries %s" % tag)
 _need(os.path.isfile(os.path.join(ROOT, "CHANGELOG_%s.md" % tag)), "V  CHANGELOG_%s.md at the root" % tag)

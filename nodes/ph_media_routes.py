@@ -22,6 +22,7 @@ Routes (14), each registered under the bare path AND the /api alias:
     GET  /uls/media/thumb        GET  /uls/media/file
     GET  /uls/media/native_pick  POST /uls/media/upload
     POST /uls/media/locate       GET  /uls/media/resolve
+    POST /uls/media/dirs_exist
     GET  /uls/media/seq/list     POST /uls/media/seq/build
     POST /uls/media/seq/delete   POST /uls/media/open_folder
     GET  /uls/media/proc_count
@@ -408,9 +409,17 @@ async def handle_media_list(request: web.Request) -> web.Response:
     folder = (request.query.get("folder", "") or "").strip()
     want_dims = (request.query.get("dims", "1") or "1").strip() not in ("0", "false", "no")
     try:
-        rp = os.path.realpath(folder)
-        if not os.path.isdir(rp):
-            return web.json_response({"ok": False, "error": "not a folder", "files": []}, status=404)
+        rp = os.path.realpath(folder) if folder else ""
+        if not folder or not os.path.isdir(rp):
+            # v1247: a folder this machine does not have (a workflow from another computer, a
+            # pinned path that moved) or none at all -> say where the loader can go instead:
+            # ComfyUI's own input folder. The frontend switches once and says so.
+            try:
+                fb = os.path.realpath(folder_paths.get_input_directory())
+            except Exception:
+                fb = ""
+            return web.json_response({"ok": False, "error": "not a folder" if folder else "no folder",
+                                      "files": [], "fallback": fb}, status=404)
         loop = asyncio.get_running_loop()   # v577: get_event_loop() is deprecated (3.12+)
         scan = _scan_media_with_dims if want_dims else _scan_media_fast
         entries = await loop.run_in_executor(None, scan, rp)
@@ -1044,9 +1053,73 @@ async def handle_media_locate(request: web.Request) -> web.Response:
             continue
         hits.append(rp)
     if len(hits) == 1:
-        return web.json_response({"ok": True, "folder": hits[0], "file": name})
-    return web.json_response({"ok": False,
-                              "reason": "ambiguous" if hits else "not_found"})
+        return web.json_response({"ok": True, "folder": hits[0], "file": name, "where": "known folder"})
+    if hits:
+        return web.json_response({"ok": False, "reason": "ambiguous"})
+    # v1249 (Frank 30.10.): not in a known folder -> look through ComfyUI's OWN trees (output and input,
+    # with their subfolders), bounded. Renders carry a time stamp in their name, so the name+size+mtime
+    # triple is unique in practice; two matches stay an honest refusal. Never a disk-wide search.
+    loop = asyncio.get_running_loop()
+    deep = await loop.run_in_executor(None, _locate_in_comfy_trees, name, size, mtime, seen)
+    if len(deep) == 1:
+        return web.json_response({"ok": True, "folder": deep[0], "file": name, "where": "ComfyUI folders"})
+    return web.json_response({"ok": False, "reason": "ambiguous" if deep else "not_found"})
+
+
+_LOCATE_MAX_DIRS = 20000     # v1249: the walk stops here -- a bound, not a disk search
+_LOCATE_MAX_DEPTH = 8
+
+
+def _locate_in_comfy_trees(name, size, mtime, skip=()):
+    """Folders under ComfyUI's output and input trees that hold `name` with this size (mtime within 2 s).
+    Bounded by _LOCATE_MAX_DIRS / _LOCATE_MAX_DEPTH; folders already checked (skip) are not counted twice."""
+    roots = []
+    for getter in ("get_output_directory", "get_input_directory"):
+        try:
+            roots.append(os.path.realpath(getattr(folder_paths, getter)()))
+        except Exception:
+            pass
+    hits, seen, n = [], set(skip or ()), 0
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        base_depth = root.rstrip(os.sep).count(os.sep)
+        for dirpath, dirnames, filenames in os.walk(root):
+            n += 1
+            if n > _LOCATE_MAX_DIRS:
+                return hits
+            if dirpath.count(os.sep) - base_depth >= _LOCATE_MAX_DEPTH:
+                dirnames[:] = []
+            dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "_polyhedron"]
+            rp = os.path.realpath(dirpath)
+            if rp in seen or name not in filenames:
+                continue
+            seen.add(rp)
+            try:
+                st = os.stat(os.path.join(rp, name))
+            except OSError:
+                continue
+            if int(st.st_size) != size or (mtime and abs(int(st.st_mtime) - mtime) > 2):
+                continue
+            hits.append(rp)
+            if len(hits) > 1:
+                return hits
+    return hits
+
+
+async def handle_media_dirs_exist(request: web.Request) -> web.Response:
+    """v1249: POST {paths:[...]} -> {ok, exist:[...]} -- which of these folders exist on THIS machine.
+    The Media Loader prunes its recent-folder list with it (a workflow from another computer, a moved
+    folder). Reads nothing but os.path.isdir; capped at 64 paths."""
+    _deny = _lan_deny(request)
+    if _deny is not None:
+        return _deny
+    try:
+        data = await request.json()
+        paths = [str(p) for p in (data.get("paths") or [])][:64]
+    except Exception as e:
+        return web.json_response({"ok": False, "error": "bad json: %s" % e}, status=400)
+    return web.json_response({"ok": True, "exist": [p for p in paths if p and os.path.isdir(p)]})
 
 
 
@@ -1205,6 +1278,7 @@ def register_media_routes():
         ("GET",  "/uls/media/native_pick", handle_media_native_pick),
         ("POST", "/uls/media/upload",      handle_media_upload),
         ("POST", "/uls/media/locate",      handle_media_locate),
+        ("POST", "/uls/media/dirs_exist",  handle_media_dirs_exist),   # v1249
         ("GET",  "/uls/media/resolve",     handle_media_resolve),
         ("GET",  "/uls/media/seq/list",    handle_media_seq_list),
         ("POST", "/uls/media/seq/build",   handle_media_seq_build),

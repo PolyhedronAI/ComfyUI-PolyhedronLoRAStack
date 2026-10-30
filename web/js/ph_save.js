@@ -177,6 +177,13 @@ app.registerExtension({
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (o) {
             const r = onConfigure?.apply(this, arguments);
+            // v1246: mask_polarity was appended -- a pre-v1246 workflow fills it from the next
+            // slot (an empty string). Anything not in the list goes back to the default.
+            try {
+                const mp = (this.widgets || []).find((w) => w.name === "mask_polarity");
+                const vals = mp?.options?.values;
+                if (mp && Array.isArray(vals) && !vals.includes(mp.value)) mp.value = vals[0];
+            } catch (e) { /* a widget fix must never take the node down */ }
             try {
                 requestAnimationFrame(() => requestAnimationFrame(() => {
                     try {

@@ -3883,6 +3883,36 @@ app.registerExtension({
                     this._engineResize();
                 } catch {}
             }
+            // v1250: the rows live twice in a saved workflow -- `_engine` (the panel) and the hidden
+            // widget `engine_config` (what the backend RUNS). A workflow written by a tool that set only
+            // the widget showed an empty panel over a running engine (Frank, 30.10.: "hier sind btw.
+            // keine Acceleratoren geladen" -- the knight walk ran with two accelerators). The first
+            // touch of that panel would have pushed the empty rows into the widget: a silent loss.
+            // The widget is the truth: when the two differ, the panel takes the widget's rows.
+            try {
+                const cw = this.widgets?.find(x => x.name === "engine_config");
+                let raw = cw ? cw.value : "";
+                if ((!raw || raw === "") && Array.isArray(o.widgets_values)) {
+                    raw = o.widgets_values.find(v => typeof v === "string" && v.indexOf('"rows"') >= 0) || "";
+                }
+                if (raw && typeof raw === "string") {
+                    const c = JSON.parse(raw);
+                    if (Array.isArray(c.rows)) {
+                        const key = rows => JSON.stringify(rows.map(r => [!!r.enabled, r.name || "", +r.weight || 0, r.wClip]));
+                        if (key(c.rows) !== key(this._uls.rows)) {
+                            console.warn("[ULS] LoRA Engine #" + this.id + ": the panel's rows differed from engine_config "
+                                + "(the rows that run) -- panel set to engine_config: "
+                                + c.rows.filter(r => r.enabled).map(r => r.name).join(", "));
+                            this._uls.rows = c.rows.map(r => ({ ...newEngineRow(), ...r }));
+                            if (c.mode) this._uls.mode = String(c.mode).toUpperCase();
+                            if (c.apply) this._uls.apply = applyNorm(c.apply);
+                            if (c.dare_variant === "channel" || c.dare_variant === "element") this._uls.dareVariant = c.dare_variant;
+                            this._uls.rows.forEach(r => ensurePreview(r.name));
+                            this._engineResize();
+                        }
+                    }
+                }
+            } catch {}
         };
 
         nodeType.prototype._engineHideConfigWidget = function () {

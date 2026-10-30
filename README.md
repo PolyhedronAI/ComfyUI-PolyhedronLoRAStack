@@ -108,6 +108,11 @@ hunting through long folders — see *Live preview on hover* in section 2.
   the folder in the background and re-renders only if something actually
   changed. No flicker, no clicks.
 - **↻ Reset** jumps back to the ComfyUI input folder.
+- **A folder this machine does not have** (a workflow from another
+  computer, a pinned path that moved): the loader shows the ComfyUI input
+  folder instead and says so in its status line — "Workflow folder missing
+  here — showing input", the missing path in the tooltip. Picking a file
+  or another folder clears the note.
 
 ### Getting files in
 
@@ -124,9 +129,11 @@ hunting through long folders — see *Live preview on hover* in section 2.
     nothing is copied. When the drag carries the file's path (a dropped
     path text, a `file:///` URI, or the desktop client) that path is
     used directly; otherwise the file is **found again** by name, size
-    and timestamp in recently used folders. If it cannot be found, the
-    folder picker opens instead (its 📁 button is the native dialog) —
-    nothing is copied.
+    and timestamp — in recently used folders, then through ComfyUI's own
+    output and input trees (bounded; two matches stay an honest refusal).
+    If it cannot be found, the folder picker opens instead (its 📁 button
+    is the native dialog) — nothing is copied. Recent folders that do not
+    exist on this machine are dropped from the list on page load.
 
   The zones exist only while a drag is in flight; the node gains no
   permanent buttons. The zone under the pointer lights up, so the aim is
@@ -583,6 +590,7 @@ because an .mp4 cannot carry a workflow but a PNG can.
 | `video` | in | A native VIDEO — frames, audio and fps ride through. Takes the loader's `video` **or `video_audio`** output alike: a `video_audio` wire carries its trimmed companion track along, muxed into the written clip. |
 | `audio` | in | Optional: muxed with image frames, or **replaces** a wired video's audio. |
 | `mask` | in | Optional alpha `[N,H,W]` (opaque → 0) for png/webp stills and alpha-capable presets (ProRes 4444). **Wired alone**, the mask itself is saved as grayscale stills (section 6). |
+| `mask_polarity` | widget | How a wired mask reads: **white = transparent** (Load Image's mask, the default — every older workflow unchanged) or **white = visible** (a Cutout mask). Shown only while a mask is wired. |
 | `path` | out | The full path of the written file. |
 | `fps` | out | The rate the clip was written at. |
 

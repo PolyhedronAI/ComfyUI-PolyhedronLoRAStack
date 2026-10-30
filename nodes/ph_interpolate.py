@@ -234,6 +234,24 @@ def _inert_knobs(arch_ver):
     return inert
 
 
+def _alpha_timeline(alpha, multiplier, tasks, verdicts, out_count):
+    """v1245: the alpha channel [n,H,W,1] on the output timeline. Source frames
+    land exactly; an interpolated slot is the linear blend of its pair at t;
+    a held / duplicated pair copies its first frame (the RGB path does the same)."""
+    import torch as _t
+    n = int(alpha.shape[0])
+    out = _t.empty((out_count,) + tuple(alpha.shape[1:]), dtype=alpha.dtype, device=alpha.device)
+    for i in range(n):
+        out[i * multiplier] = alpha[i]
+    for pair, t in tasks:
+        slot = pair * multiplier + int(round(t * multiplier))
+        if verdicts[pair] == "interp":
+            out[slot] = alpha[pair] * (1.0 - float(t)) + alpha[pair + 1] * float(t)
+        else:
+            out[slot] = alpha[pair]
+    return out
+
+
 def _timeline(n_frames, multiplier):
     """The task list, and the output count it is contractually bound to.
 
@@ -867,6 +885,15 @@ class ULSInterpolate:
             print("[PLS] Interpolate: %s" % fps_note)
         n = int(frames.shape[0])
         h, w = int(frames.shape[1]), int(frames.shape[2])
+        # v1245: the flow network is trained on colour; an RGBA clip runs on
+        # its RGB and the alpha is carried along the same timeline (source
+        # frames exact, new frames a linear blend of their pair, held / dup
+        # slots copy) -- see _alpha_timeline.
+        frames_alpha = None
+        if int(frames.shape[-1]) == 4:
+            frames, frames_alpha = frames[..., :3].contiguous(), frames[..., 3:4].contiguous()
+            print("[PLS] Interpolate: RGBA in -- the network sees the colour channels, "
+                  "the alpha follows the same timeline")
 
         # ---- One frame is not an error. It is a still. ----------------------
         # Interpolation fills GAPS. A single frame has no gap, so there is nothing
@@ -889,6 +916,8 @@ class ULSInterpolate:
             _early_audio = _audio_of(video)
             if audio_mode == "mute":
                 _early_audio = None
+            if frames_alpha is not None:
+                frames = torch.cat([frames, frames_alpha], dim=-1)
             return (frames, n, float(source_fps), info,
                     _build_video(frames, _early_audio, source_fps),
                     _early_audio)
@@ -1145,6 +1174,10 @@ class ULSInterpolate:
                                            out_count, out_fps)
         if retime_note:
             info += " | " + retime_note
+        if frames_alpha is not None:
+            a_out = _alpha_timeline(frames_alpha, multiplier, tasks, verdicts, out_count)
+            out = torch.cat([out, a_out.to(out.device, out.dtype)], dim=-1)
+            info += " | RGBA: alpha carried (linear between source frames)"
         out_video = _build_video(out, audio, out_fps)
         if out_video is not None:
             print("[PLS] Interpolate: video output ready at %.2f fps, audio=%s"

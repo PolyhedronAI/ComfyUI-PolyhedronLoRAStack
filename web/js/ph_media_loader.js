@@ -134,6 +134,28 @@ function getRecentFolders() {
     try { const a = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); return Array.isArray(a) ? a : []; }
     catch (e) { return []; }
 }
+// v1249: drop recent folders that do not exist on THIS machine (a workflow from another computer
+// put one there). Once per page load; the folder dialog awaits it before it lists them.
+let _recentPrune = null;
+function pruneRecentFolders() {
+    if (_recentPrune) return _recentPrune;
+    _recentPrune = (async () => {
+        const arr = getRecentFolders();
+        if (!arr.length) return;
+        try {
+            const r = await api.fetchApi("/uls/media/dirs_exist", { method: "POST",
+                headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: arr }) });
+            const d = r && r.ok ? await r.json() : null;
+            if (!d || !d.ok || !Array.isArray(d.exist)) return;
+            const keep = arr.filter((p) => d.exist.includes(p));
+            if (keep.length !== arr.length) {
+                localStorage.setItem(RECENT_KEY, JSON.stringify(keep));
+                console.log("[PLS] MediaLoader: " + (arr.length - keep.length) + " recent folder(s) not on this machine removed");
+            }
+        } catch (e) { /* a stale recent costs a line in the picker, never a run */ }
+    })();
+    return _recentPrune;
+}
 function pushRecentFolder(path) {
     if (!path) return;
     try {
@@ -765,6 +787,7 @@ function plsWithWiredOuts(value, node) {
 
 class MediaLoaderUI {
     constructor(node) {
+        try { pruneRecentFolders(); } catch (e) { /* v1249: never blocks the node */ }
         injectCSS();
         this.node = node;
         this._pop = null;
@@ -1140,7 +1163,15 @@ class MediaLoaderUI {
                 const nth = (c.every_nth && c.every_nth > 1) ? ` ×${c.every_nth}` : "";
                 el.textContent = `▦ Batch ON (Video frames): ${c.sort_mode || "name (natural)"} · "${c.name_filter || "*"}"${nth}${selTxt} · ${c.resize_method || "none (strict)"}`;
                 el.style.color = "#7fd17f";
+            } else if (this._fallbackActive()) {
+                // v1247: the workflow's folder is not on this machine -- said in the status line
+                // (it holds the width of the node and clips cleanly) until a file is picked or the
+                // folder changes; then the hint below comes back.
+                el.textContent = "\u26A0 Workflow folder missing here \u2014 showing input";
+                el.title = this._fallbackBanner.text + "\nPick a file, or choose another folder; this line then goes back to the hint.";
+                el.style.color = "#ff8c00";
             } else {
+                el.title = "";
                 // Single-file: lead with a 🛈 info affordance + the selection keys, so the
                 // check mechanism is documented right where you use it. Static text only.
                 el.innerHTML = '<span class="ph-batch-info" style="cursor:help" title="Single-file: the node emits the one clicked file. ▦▶ Batch… picks files and a mode: ▦ Frames = whole selection as one batch, ▶ Processing = one file per run. Check files via the ○ circle on each tile; Ctrl+A checks all, Ctrl+X none, Ctrl+I inverts (pointer over the grid). Your checked files are remembered.">🛈</span> Single-file — click a tile to load it · ○ circle checks it for the batch · Ctrl+A all · Ctrl+X none · Ctrl+I invert' + (nSel ? ` · <b style="color:#7fd17f">${nSel} checked</b>` : "");
@@ -1987,6 +2018,14 @@ class MediaLoaderUI {
         // Festplatte"). Pinning needs a path; without one the drop copies and says so.
         const wantPin = intent === "pin";
         const path = wantPin ? this._dropPathOf(dt) : "";
+        // v1249: one console line per drop -- what the browser handed over decides which road B takes
+        if (wantPin) {
+            const f0 = dt.files && dt.files.length ? dt.files[0] : null;
+            console.log("[PLS] MediaLoader drop (load from where it is): " +
+                (path ? "the browser gave the path " + path
+                      : "the browser gave NO path" + (f0 ? " -- looking for " + f0.name + " (" + f0.size + " bytes) in known and ComfyUI folders" : "")));
+        }
+        let resolved = false;
         if (wantPin && path) {
             try {
                 const r = await (await api.fetchApi("/uls/media/resolve?path=" + encodeURIComponent(path))).json();
@@ -1998,9 +2037,12 @@ class MediaLoaderUI {
                                    "#7fd17f");
                     return;
                 }
+                console.warn("[PLS] MediaLoader drop: the path " + path + " did not resolve here (" +
+                             ((r && r.error) || "unknown") + ") -- looking the file up instead");
             } catch (e) { /* drop is a convenience, never load-bearing */ }
         }
-        if (wantPin && !path && dt.files && dt.files.length) {
+        // v1249: a path that did not resolve falls through to the lookup too (before: straight to the picker)
+        if (wantPin && !resolved && dt.files && dt.files.length) {
             // v665: no path on the wire — RELOCATE the file instead of giving up.
             // The browser still hands out name, byte size and mtime, and that triple
             // is checked against the folders this node has actually visited (recents
@@ -2019,19 +2061,23 @@ class MediaLoaderUI {
                     this.setFolder(r.folder);
                     pushRecentFolder(r.folder);
                     this._dropSelect(r.file);
+                    console.log("[PLS] MediaLoader drop: found in " + r.folder + " (" + (r.where || "known folder") + ")");
                     this._dropNote("📌 Found the file in " + r.folder + " — pinned its folder, nothing was copied.",
                                    "#7fd17f");
                     return;
                 }
+                console.warn("[PLS] MediaLoader drop: " + (r && r.reason === "ambiguous"
+                    ? "the same file sits in several folders" : "not found in the known folders, ComfyUI output or input") +
+                    " -- the folder picker opens (nothing is copied)");
                 this._dropNote(r && r.reason === "ambiguous"
-                    ? "📌 Found the same file in several known folders — nothing was copied. Pick the right one in the folder picker."
-                    : "📌 Your browser hides the file's path and it is not in a recently used folder — nothing was copied. Pick it once in the folder picker (📁 = the Windows dialog); after that its folder is known.",
+                    ? "📌 Found the same file in several folders — nothing was copied. Pick the right one in the folder picker."
+                    : "📌 The browser hid the file's path and it is not in ComfyUI's output / input or a folder you used — nothing was copied. Pick its folder once (📁 = the Windows dialog); after that it is known.",
                     "#e0b060");
             } catch (e) {
                 this._dropNote("📌 No path available for this drag — nothing was copied. Pick the file in the folder picker.",
                                "#e0b060");
             }
-        } else if (wantPin && !path) {
+        } else if (wantPin && !resolved) {
             this._dropNote("📌 No path available for this drag — nothing was copied. Pick the file in the folder picker.",
                            "#e0b060");
         }
@@ -2146,6 +2192,7 @@ class MediaLoaderUI {
     }
 
     select(f) {
+        if (this._fallbackBanner) { this._fallbackBanner = null; try { this._renderBatchStatus(); } catch (e) { /* noop */ } }
         this._stopAudioHover();   // v457: committing to the Selection stops any hover-preview clip (no double audio)
         if (f.kind === "audio") {
             // v458: audio fills its OWN slot — the visual selection is kept. Clicking the
@@ -3602,10 +3649,8 @@ class MediaLoaderUI {
     }
 
     async refreshGrid(keepPage = false) {
-        if (!this.folder) {
-            this.gridEl.innerHTML = `<div class="ph-media-empty">Pick a folder to see its images and videos.</div>`;
-            this.pagerEl.innerHTML = ""; return;
-        }
+        // v1247: no folder yet -> the listing still runs; the server answers with ComfyUI's
+        // input folder as the fallback and the loader opens there (below).
         const target = this.folder;   // capture: a slow listing of a folder we've since LEFT must not clobber the grid
         this.gridEl.textContent = "Loading…"; this.pagerEl.innerHTML = "";
         this._busyOn("Reading folder…");
@@ -3619,11 +3664,31 @@ class MediaLoaderUI {
             let d = null;
             try {
                 const r = await api.fetchApi("/uls/media/list?dims=0&folder=" + encodeURIComponent(target));
-                if (r && r.ok) d = await r.json();
+                // v1247: a 404 still carries the fallback folder -- read the body either way
+                if (r) { try { d = await r.json(); } catch (e) { d = null; } }
             } catch (e) { /* ignore */ }
             if (seq !== this._listSeq) return;    // a newer listing fetch started -> this one is stale
             if (target !== this.folder) return;   // folder switched mid-flight -> this response is stale, drop it
-            if (!d || !d.ok) { this.gridEl.innerHTML = `<div class="ph-media-empty">Cannot read this folder.</div>`; return; }
+            if (!d || !d.ok) {
+                // v1247: the folder is not on this machine (a workflow from elsewhere, a moved pin) or
+                // none is set -> open ComfyUI's input folder ONCE and say so; never a dead empty grid.
+                const fb = (d && typeof d.fallback === "string") ? d.fallback : "";
+                if (fb && fb !== target && this._fallbackFrom !== target) {
+                    this._fallbackFrom = target;
+                    this.node.properties = this.node.properties || {};
+                    this.node.properties.ph_media_browse = fb;
+                    try { this.renderPath(); } catch (e) { /* the label follows on the next render */ }
+                    if (target) {
+                        console.warn("[PLS] MediaLoader: folder '" + target + "' is not on this machine -- showing ComfyUI's input folder (" + fb + ")");
+                        this._fallbackNote = "\u26A0 " + target + " \u2014 not found here, showing input";
+                    }
+                    return this.refreshGrid(false);
+                }
+                this.gridEl.innerHTML = target
+                    ? `<div class="ph-media-empty">Cannot read this folder.</div>`
+                    : `<div class="ph-media-empty">Pick a folder to see its images and videos.</div>`;
+                return;
+            }
             this._files = d.files || [];
             this._filesFolder = target;   // label the files by the folder actually fetched, not the current one
             // v655: keepPage holds the current page across a re-read (renderGrid
@@ -3633,6 +3698,11 @@ class MediaLoaderUI {
             const gone = this._pruneVanished();
             this.renderGrid();
             if (gone.length) { this._renderPreview(); this._announceVanished(gone); }
+            if (this._fallbackNote) {   // v1247: keep the note while the fallback folder is the one shown
+                this._fallbackBanner = { folder: target, text: this._fallbackNote };
+                this._fallbackNote = "";
+                this._showFallbackBanner();
+            }
         } finally {
             this._busyOff();
         }
@@ -3782,6 +3852,21 @@ class MediaLoaderUI {
             this.renderGrid();
         };
         return b;
+    }
+
+    // v1247/v1249: the one line that says the workflow's folder was not found and input is shown.
+    // It lives in the status line (not the grid), so a grid rebuild never touches it.
+    _showFallbackBanner() {
+        const b = this._fallbackBanner;
+        if (!b) return;
+        if (b.folder !== this.folder) this._fallbackBanner = null;
+        this._renderBatchStatus();   // the note lives in the node's own status line (full width, ellipsis)
+    }
+
+    // v1247: true while the input folder is shown because the workflow's folder is missing here
+    _fallbackActive() {
+        const b = this._fallbackBanner;
+        return !!(b && b.folder === this.folder);
     }
 
     renderGrid() {

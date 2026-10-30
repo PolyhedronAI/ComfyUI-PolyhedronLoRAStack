@@ -57,7 +57,7 @@ ULSReferenceBoard	board
 ULSResolveInspector	analysis_depth,max_layers,device
 ULSRoughCutGate	after_step,timeout
 ULSSampler	dual_moe,boundary,cfg_low,seed,steps,cfg,sampler_name,scheduler,denoise,add_noise,start_at_step,end_at_step,return_with_leftover_noise,preview_mode,sigma_shift,handoff_mode,sampler_low,scheduler_low,sigma_shift_low
-ULSSave	filename_prefix,media_kind,image_format,image_quality,video_preset,quality,frame_rate,autoplay,pingpong,loop_count,trim_to_audio,save_metadata,save_output
+ULSSave	filename_prefix,media_kind,image_format,image_quality,video_preset,quality,frame_rate,autoplay,pingpong,loop_count,trim_to_audio,save_metadata,save_output,mask_polarity
 ULSSeamCheck	
 ULSSeamFix	trim_head,level_fix,fix_frames,fade_ms
 ULSSeed	seed,noise_type,noise_strength,preview_width,preview_height,noise_character
