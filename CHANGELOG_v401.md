@@ -1,3 +1,20 @@
+# v401 -- 4.1.0: Power Upscale runs without a pixel upscale model
+
+**Ctrl+F5 and a server restart.** Carries v400 below.
+
+## Polyhedron Power Upscale: `upscale_model` is optional (internal v1253)
+
+A Power Upscale whose stages read no pixel model (pixel_stage 'fit only', for example with resize_method
+nvidia_rtx_vsr) was still refused by the frontend: "Required input missing: upscale_model". The kernel always treated
+an unwired model as a plain fit -- the low wire `upscale_model_low` was optional from the start -- only the
+declaration was too strict.
+
+- `upscale_model` is now an optional input. Unwired: every stage runs a plain fit and resize_method does the whole
+  upscale.
+- The console's wire report says so ("asks for a pixel model, but no upscale model is wired -> a plain fit").
+- Saved workflows keep their links; no widget moved (WIDGET_ORDER and NODE_IDS baselines unchanged, renamed to v401).
+- Guard `test_v1253_upscale_model_optional`.
+
 # v400 -- 4.0.0: Save reads a Cutout mask; Media Loader finds a dropped file in ComfyUI's own folders; loaders name a model family newer than the Core; LoRA Engine panel follows what runs
 
 **Ctrl+F5 and a server restart** (one new route). Carries v399 below. The version number steps from 3.99 to 4.0

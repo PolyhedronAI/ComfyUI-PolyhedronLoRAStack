@@ -336,7 +336,10 @@ def _say_model_wires(um_high, um_low, pixel_stage, resize_method, dual=False):
         print("[PLS] Power Upscale: pixel models on the wires:")
         print(f"[PLS]     H wire : {_model_card(um_high)}")
         print(f"[PLS]     L wire : {_model_card(um_low)}")
-        if stages_have_model:
+        if stages_have_model and um_high is None and (um_low is None or not bool(dual)):
+            print(f"[PLS]     stages : pixel_stage='{pixel_stage}' asks for a pixel model, but no upscale model "
+                  f"is wired -> a plain fit (resize_method='{resize_method}') does the upscale")
+        elif stages_have_model:
             print(f"[PLS]     stages : pixel_stage='{pixel_stage}' -> the stages DO run a "
                   f"pixel model (H for stage-H, L for stage-L; L never inherits H)")
         else:
@@ -2729,10 +2732,6 @@ class ULSPowerUpscale:
                 "vae": ("VAE", {"tooltip": "The VAE encoding/decoding every tile. A Wan VAE turns the "
                                            "whole frame stack of a tile into ONE 5D video latent, so the "
                                            "video model itself keeps time consistent inside the tile."}),
-                "upscale_model": ("UPSCALE_MODEL", {"tooltip": "Pixel upscale model for the stage pre-pass "
-                                                              "(ESRGAN family via core/spandrel). In High + Low "
-                                                              "this serves the HIGH stage; the LOW stage uses "
-                                                              "'upscale_model_low' when wired, else this one."}),
                 # ── Mode — the fundamental Single/Dual decision, kept at the top ──
                 "dual_moe": ("BOOLEAN", {"default": False,
                                          "label_on": "High + Low", "label_off": "Single",
@@ -3044,6 +3043,15 @@ class ULSPowerUpscale:
                                                "output. Wire EXACTLY one of image / video."}),
                 "model_low": ("MODEL", {"tooltip": "High + Low: the LOW-noise expert for stage L. Unwired -> "
                                                    "stage L falls back to 'model'."}),
+                # v1253: OPTIONAL (was required) -- under pixel_stage 'fit only' nothing reads it, and an unwired
+                # model always meant a plain fit in the kernel (_esrgan_pass); only the declaration was too strict.
+                "upscale_model": ("UPSCALE_MODEL", {"tooltip": "Pixel upscale model for the stage pre-pass "
+                                                              "(ESRGAN family via core/spandrel). In High + Low "
+                                                              "this serves the HIGH stage; the LOW stage uses "
+                                                              "'upscale_model_low' when wired, else this one. "
+                                                              "Unwired -> a plain fit: resize_method does the whole "
+                                                              "upscale (pixel_stage 'fit only' never reads it), said "
+                                                              "in the console."}),
                 "upscale_model_low": ("UPSCALE_MODEL", {"tooltip": "High + Low: stage-L pixel upscale model - "
                                                                   "and, with pixel_stage='model final', the "
                                                                   "model of the FINAL pass behind the last "
@@ -3078,7 +3086,7 @@ class ULSPowerUpscale:
 
     RETURN_TYPES = ("IMAGE", "VIDEO")
     RETURN_NAMES = ("image", "video")
-    FUNCTION = "upscale"
+    FUNCTION = "run"
     CATEGORY = "Polyhedron/Upscaling"
     DESCRIPTION = ("MoE-aware tiled upscaler: one node in place of a chained double upscale "
                    "setup, mirroring the sampler's Single / High+Low split. Tile size is "
@@ -3088,6 +3096,13 @@ class ULSPowerUpscale:
                    "model's native one, so swapping pixel models changes their imprint, "
                    "never the file size. Every stage reports its own seconds so the slow "
                    "one is visible instead of merely suspected.")
+
+    def run(self, **kw):
+        """v1253: ComfyUI's entry. `upscale_model` became optional -- ComfyUI leaves an unwired optional input out of
+        the call, while `upscale` keeps it as its fifth positional parameter (every guard and caller passes it
+        there). Unwired -> None -> the kernel's plain fit, as the low wire always did."""
+        kw.setdefault("upscale_model", None)
+        return self.upscale(**kw)
 
     def upscale(self, model, positive, negative, vae, upscale_model, dual_moe,
                 upscale_by, denoise, steps, cfg, upscale_by_low, denoise_low,
