@@ -205,6 +205,9 @@ function ensureCss() {
 
 function stack() {
     if (_stack && document.body.contains(_stack)) return _stack;
+    // v1269: the sampler's preview notice may have opened the column first -- join it, never a second one
+    const there = document.querySelector ? document.querySelector(".pls-door-stack") : null;
+    if (there) { _stack = there; return _stack; }
     _stack = document.createElement("div");
     _stack.className = "pls-door-stack";
     _stack.setAttribute("data-ph-overlay", "1");

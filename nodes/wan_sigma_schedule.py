@@ -654,6 +654,19 @@ SIGMA_PRESETS = {
         12.0, True,
         "HyperFlow 8-step for MiniMax-H3. RAW grid, shifted here with the "
         "model's video shift (12.0). Recipe: euler, 8 steps, cfg 1.0."),
+    # v1271: TaoMate-H3 (Alibaba TaoLive AIGC), the 3-step LoRA for MiniMax-H3 FL2VA. The grids are the FINAL
+    # schedules the converters publish (austinit/TaoMate-H3-FL2VA-ComfyUI from the adapter metadata,
+    # robertbschuette/MiniMax-H3-Turbo-Lora-ComfyUI for the 4-step) -- already shifted, so the shift here is 1.0.
+    "taomate_3step_h3": (
+        (1.0, 0.961165, 0.853333, 0.0),
+        1.0, True,
+        "TaoMate-H3 3-step for MiniMax-H3 (trained on FL2VA). FINAL grid as published -- no shift. Recipe: "
+        "euler, 3 steps, cfg 1.0, LoRA strength 0.9-1.0, audio shift 3."),
+    "taomate_4step_h3": (
+        (1.0, 0.970874, 0.907249, 0.640000, 0.0),
+        1.0, True,
+        "TaoMate-H3 on 4 steps (the converters' alternative grid). FINAL grid as published -- no shift. "
+        "Recipe: euler, 4 steps, cfg 1.0."),
     "wan22_lightning_4step_raw": (
         (1.0, 0.75, 0.5, 0.25, 0.0),
         5.0, True,

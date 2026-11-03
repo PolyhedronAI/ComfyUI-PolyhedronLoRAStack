@@ -548,7 +548,20 @@ function _taeToast(title, text, goLabel, onGo) {
         setTimeout(close, 12000);
     }
     box.setAttribute?.("data-ph-overlay", "1");   // no browser menu on right-click (ph_overlay_menu.js)
-    document.body.appendChild(box);
+    // v1269: ONE column top right for every notice of the pack -- this box used to sit fixed at the same spot as
+    // the model door's notices, so two notices lay on top of each other and the buttons of one showed under the
+    // text of the other (sandbox 03.11.: the RIFE "Download (23 MB)" under the taeh3 text, which has no download)
+    let host = document.querySelector ? document.querySelector(".pls-door-stack") : null;
+    if (!host) {
+        host = document.createElement("div");
+        host.className = "pls-door-stack";
+        host.setAttribute("data-ph-overlay", "1");
+        host.style.cssText = "position:fixed;top:16px;right:16px;z-index:10000;display:flex;"
+            + "flex-direction:column;gap:8px;max-width:360px;";
+        document.body.appendChild(host);
+    }
+    box.style.position = "static";
+    host.appendChild(box);
     return { box: box, p: p, close: close };
 }
 

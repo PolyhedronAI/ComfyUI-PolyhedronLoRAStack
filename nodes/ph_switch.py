@@ -65,6 +65,28 @@ class _FlexOutTuple(tuple):
         return super().__getitem__(index)
 
 
+# v1268: how many outputs the inverse switch can grow -- the same cap as its
+# select widget. Core asks the per-node INSTANCE for this count in one place: a
+# node whose input arrived blocked is not run, Core hands every consumer
+# len(obj.RETURN_TYPES) blockers instead. With the class's 1-tuple a consumer on
+# out_2+ hit "list index out of range" (field 03.11.: Upscale switch on 1 -> the
+# Interpolate switch behind it). The class keeps its 1-tuple (object_info).
+INV_MAX_OUT = 999
+
+
+class _InvOutTuple(tuple):
+    """Instance RETURN_TYPES of the inverse switch: one real entry, any index
+    resolves to it, and its length is the most outputs the node can have."""
+
+    def __len__(self):
+        return INV_MAX_OUT
+
+    def __getitem__(self, index):
+        if isinstance(index, int):
+            index = 0
+        return tuple.__getitem__(self, index)
+
+
 def _blocked():
     return ExecutionBlocker(None) if ExecutionBlocker is not None else None
 
@@ -222,7 +244,7 @@ class ULSAnySwitchInv:
         return {
             "required": {
                 "select": ("INT", {
-                    "default": 1, "min": 1, "max": 999, "step": 1,
+                    "default": 1, "min": 1, "max": INV_MAX_OUT, "step": 1,
                     "tooltip": "Which output receives the input. The UI caps "
                                "this at the number of connected outputs.",
                 }),
@@ -244,6 +266,11 @@ class ULSAnySwitchInv:
                        "ExecutionBlocker so their branches never run.",)
     FUNCTION = "route"
     CATEGORY = "Polyhedron/Logic"
+
+    def __init__(self):
+        # v1268: a blocked input must block EVERY output a consumer reads.
+        self.RETURN_TYPES = _InvOutTuple((_any,))
+
     DESCRIPTION = ("The mirror of the switch: one input, several outputs, and only the "
                    "selected branch runs. Everything hanging off the other outputs stays "
                    "cold.")

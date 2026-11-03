@@ -120,8 +120,14 @@ def model_dirs(folder):
 
 
 def primary_dir(folder):
-    """Where a download goes. Reading happens everywhere, writing here."""
-    return model_dirs(folder)[0]
+    """Where a download goes. Reading happens everywhere, writing here.
+    v402 (internal v1269): among ComfyUI's paths for this type the one NAMED like it wins -- Core lists models/unet
+    before models/diffusion_models (the legacy name first), and a model belongs where its folder says."""
+    dirs = model_dirs(folder)
+    for d in dirs:
+        if os.path.basename(os.path.normpath(d)) == folder:
+            return d
+    return dirs[0]
 
 
 # v1220 (the UI freeze, Frank 23.10.): every model line asks the status route, and every status walks the model

@@ -1,3 +1,36 @@
+# v402 -- 4.2.0: Switch Inverse behind a blocked branch; TaoMate-H3 3-step; one column for every notice
+
+**Ctrl+F5 and a server restart.** Carries v401 below.
+
+## Polyhedron Switch Inverse: a blocked input blocks every output (internal v1268)
+
+Field: an Upscale switch on 1 left the Power Upscale branch unrun; the Interpolate switch (a Switch Inverse) behind
+it got a blocked input, and ComfyUI handed its consumers one blocker per declared output. The class declares one
+output (its outputs grow in the frontend), so a consumer on out_2 read past the end -- "IndexError: list index out
+of range" after everything had been saved. The node instance now declares as many outputs as its select can reach
+(the class and object_info are unchanged). Guard `test_v1268_switch_inv_blocked` (Core's own executor, in process).
+
+## Polyhedron Sigma List + Sampler: TaoMate-H3 3-step (internal v1271)
+
+Two presets for the TaoMate-H3 LoRA (MiniMax-H3, trained on FL2VA): `taomate_3step_h3` (1, 0.961165, 0.853333, 0)
+and `taomate_4step_h3` (1, 0.970874, 0.907249, 0.64, 0). Both are the FINAL grids the converters publish, so their
+shift is 1.0. A LoRA with "taomate" in its file name is treated like HyperFlow: the Sampler refuses a run without
+SIGMAS and names the preset, accepts the 3- and the 4-step grid quietly and notes any other grid. Recipe: euler,
+cfg 1. Guard `test_v1271_taomate_presets`.
+
+## Notices: one column top right (internal v1269)
+
+The Sampler's preview notice and the model door's download notices sat fixed at the same spot, so two notices lay on
+top of each other and the buttons of one showed under the text of the other. Every notice of the pack now stacks in
+one column.
+
+## Model door: a download lands in the folder named like its type (internal v1269)
+
+ComfyUI lists models/unet before models/diffusion_models for the same type (the legacy name first). Among the paths
+of a type the one named like it now wins, so a diffusion model is written to models/diffusion_models.
+
+No widget moved: WIDGET_ORDER and NODE_IDS baselines unchanged, renamed to v402.
+
 # v401 -- 4.1.0: Power Upscale runs without a pixel upscale model
 
 **Ctrl+F5 and a server restart.** Carries v400 below.

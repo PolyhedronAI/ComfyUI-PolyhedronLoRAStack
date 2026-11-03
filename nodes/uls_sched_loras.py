@@ -30,6 +30,10 @@ ATTACH_KEY = "pls_schedule_lora"
 SCHEDULE_LORAS = (
     {"token": "hyperflow", "label": "HyperFlow 8-step",
      "preset": "hyperflow_8step_h3_raw", "sampler": "euler", "cfg": 1.0},
+    # v1271: TaoMate-H3 3-step (FL2VA). "also": further grids the LoRA is published for -- a connected grid that
+    # matches any of them is the trained one (the converters give a 4-step alternative).
+    {"token": "taomate", "label": "TaoMate 3-step",
+     "preset": "taomate_3step_h3", "also": ("taomate_4step_h3",), "sampler": "euler", "cfg": 1.0},
 )
 
 GRID_TOL = 1e-3     # a connected grid within this of the preset IS the preset
@@ -66,7 +70,7 @@ def record(found, previous=None):
         names = list(cur["names"]) if cur else []
         if name not in names:
             names.append(name)
-        rec[e["preset"]] = {"label": e["label"], "preset": e["preset"],
+        rec[e["preset"]] = {"label": e["label"], "preset": e["preset"], "also": list(e.get("also") or ()),
                             "sampler": e["sampler"], "cfg": e["cfg"], "names": names}
     return rec
 
@@ -96,9 +100,16 @@ def plan(rec, sigmas_list, sampler_name, cfg, preset_grid):
             grid = list(preset_grid(preset))
         except Exception:
             grid = None
+        alts = []                                # v1271: the other grids this LoRA is published for
+        for a in r.get("also") or ():
+            try:
+                alts.append(list(preset_grid(a)))
+            except Exception:
+                pass
         if grid is not None and sigmas_list:     # [] = connected elsewhere (High+Low pair)
-            same = (len(grid) == len(sigmas_list)
-                    and all(abs(a - b) <= GRID_TOL for a, b in zip(grid, sigmas_list)))
+            same = any(len(g) == len(sigmas_list)
+                       and all(abs(a - b) <= GRID_TOL for a, b in zip(g, sigmas_list))
+                       for g in [grid] + alts)
             if not same:
                 notes.append(
                     "%s LoRA (%s) is active, but the connected SIGMAS are not its "
