@@ -1835,7 +1835,9 @@ class ULSAttention:
                                "speed with accuracy -- which of them is the "
                                "most accurate depends on the model geometry, "
                                "so measure per model rather than picking one "
-                               "for the whole tree."}),
+                               "for the whole tree. 'default' patches nothing: "
+                               "a backend set upstream (Core's Model Attention "
+                               "Backend, a sparse layer) stays in place."}),
                 "fallback": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "On a kernel error mid-run, quietly continue on "
@@ -1990,12 +1992,36 @@ class ULSAttention:
         tops = m.model_options.get("transformer_options", None)
         tops = dict(tops) if isinstance(tops, dict) else {}
 
-        if attention == DEFAULT_MODE:
-            # Trap A: remove the key, never park a None in it.
+        # v1276 (Fix C, Singularity audit 02.11.): every path that patches
+        # NOTHING leaves the slot exactly as it arrived. Up to v1275 these
+        # paths popped the key -- which silently deleted a backend set
+        # UPSTREAM (Core's ModelAttentionBackend, Veda, any other node writing
+        # the same key), while the collision report below told the user to
+        # pick 'default' "if you meant to keep it". Only a parked None is
+        # removed (Trap A: the slot never holds a None).
+        prior = tops.get("optimized_attention_override", None)
+        if prior is None:
             tops.pop("optimized_attention_override", None)
+
+        def _leave():
             m.model_options["transformer_options"] = tops
-            print("[PLS] Attention: default -- model left on its own backend")
+            if prior is not None:
+                if getattr(prior, "_pls_owner", None) == "ULSAttention":
+                    print("[PLS]   the backend an earlier Polyhedron Attention "
+                          "node set stays in place -- this node adds nothing.")
+                else:
+                    print("[PLS]   the attention backend set upstream (e.g. "
+                          "Core's ModelAttentionBackend) stays in place -- "
+                          "this node adds nothing on top of it.")
             return (m,)
+
+        if attention == DEFAULT_MODE:
+            if prior is None:
+                print("[PLS] Attention: default -- model left on its own backend")
+            else:
+                print("[PLS] Attention: default -- nothing patched here")
+            return _leave()
+
 
         # A workflow may carry a mode this installation does not offer -- it
         # was saved somewhere with a different card, wheel or start-up choice.
@@ -2004,8 +2030,6 @@ class ULSAttention:
         # the model alone. The run continues.
         offered = available_modes()
         if attention not in offered:
-            tops.pop("optimized_attention_override", None)
-            m.model_options["transformer_options"] = tops
             why = describe_absence(attention)
             print("[PLS] Attention: this workflow asks for '%s', which THIS "
                   "installation does not offer%s"
@@ -2015,7 +2039,7 @@ class ULSAttention:
             print("[PLS]   available here: %s" % ", ".join(offered))
             print("[PLS]   -> model left on its own backend, nothing patched. "
                   "Pick one of the above to silence this.")
-            return (m,)
+            return _leave()
 
         # --- sparse preparation ------------------------------------------
         sparse = None
@@ -2069,10 +2093,8 @@ class ULSAttention:
                           "below settles it on this geometry.")
             if not wants_sparse:
                 if attention == SPARSE_LOCAL:
-                    tops.pop("optimized_attention_override", None)
-                    m.model_options["transformer_options"] = tops
                     print("[PLS]   -> model left on its own backend.")
-                    return (m,)
+                    return _leave()
                 first_mode = None if first_mode == SPARSE_LOCAL else first_mode
                 last_mode = None if last_mode == SPARSE_LOCAL else last_mode
 
@@ -2083,14 +2105,12 @@ class ULSAttention:
         else:
             ok, note = probe(attention)
         if not ok:
-            tops.pop("optimized_attention_override", None)
-            m.model_options["transformer_options"] = tops
             print("[PLS] Attention: '%s' did NOT run on this machine (%s)"
                   % (attention, note))
             for extra_line in explain_failure(attention, note):
                 print("[PLS]   %s" % extra_line)
             print("[PLS]   -> model left on its own backend, nothing patched.")
-            return (m,)
+            return _leave()
 
         def _report(exc):
             if isinstance(exc, ContextLost):
@@ -2207,11 +2227,9 @@ class ULSAttention:
                                   ledger=LEDGER, node=unique_id,
                                   early=_early)
         if override is None:
-            tops.pop("optimized_attention_override", None)
-            m.model_options["transformer_options"] = tops
             print("[PLS] Attention: unknown mode '%s' -- nothing patched"
                   % attention)
-            return (m,)
+            return _leave()
 
         # v903: SAY IT when we are overwriting somebody else's choice.
         # Core's ModelAttentionBackend writes the same key, so a graph with

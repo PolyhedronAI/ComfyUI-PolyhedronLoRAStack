@@ -131,13 +131,26 @@ def check_layout(run_sage):
 
 def check_default_key(patch_impl):
     bad = []
+    # v1276 (Fix C) -- RE-GROUNDED, explained: up to v1275 this pinned that
+    # 'default' REMOVES an upstream override. That was the bug: it deleted
+    # Core's ModelAttentionBackend (or Veda) silently. Now 'default' patches
+    # nothing and leaves an upstream callable exactly where it was; only a
+    # parked None is still removed (the A2 law itself is unchanged).
+    upstream = lambda *a, **k: None
     model = FakeModel({"transformer_options": {"optimized_attention_override":
-                                               lambda *a, **k: None}})
+                                               upstream}})
     (out,) = patch_impl(model, PH.DEFAULT_MODE, True)
     tops = out.model_options.get("transformer_options", {})
-    if "optimized_attention_override" in tops:
-        bad.append("default mode left the key in place (value %r)"
-                   % (tops["optimized_attention_override"],))
+    if tops.get("optimized_attention_override") is not upstream:
+        bad.append("default mode did not leave the upstream override in "
+                   "place (value %r)"
+                   % (tops.get("optimized_attention_override"),))
+    parked = FakeModel({"transformer_options":
+                        {"optimized_attention_override": None}})
+    (out_p,) = patch_impl(parked, PH.DEFAULT_MODE, True)
+    if "optimized_attention_override" in \
+            out_p.model_options.get("transformer_options", {}):
+        bad.append("default mode left a parked None in the slot")
     # and the caller's dict must be untouched (copy-on-write)
     if "optimized_attention_override" not in \
             model.model_options["transformer_options"]:

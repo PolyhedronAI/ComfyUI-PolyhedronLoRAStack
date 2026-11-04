@@ -50,10 +50,14 @@ PRESETS = {
         "alpha": True, "intra": True, "ten_bit": True,
         "opts": {"profile": "4"},          # prores_ks: 4 = 4444
     },
+    # v1280: planar RGB at 16 bit -- lossless means lossless. Up to v1279 this wrote yuv420p: a quarter of the
+    # colour resolution and a YUV round trip, nothing "lossless" about the colour (found with FX CRT, 04.11.:
+    # a phosphor mask lost half its contrast in 4:2:0). gbrp16le keeps every pixel's RGB and the diffusion
+    # float precision (16-bit intermediate, as the 10-bit presets do).
     "FFV1 (lossless archive)": {
         "backend": "pyav", "ext": "mkv", "vcodec": "ffv1",
-        "pix_fmt": "yuv420p", "acodec": "flac",
-        "alpha": False, "intra": True, "ten_bit": False, "opts": {},
+        "pix_fmt": "gbrp16le", "acodec": "flac",
+        "alpha": False, "intra": True, "ten_bit": True, "opts": {},
     },
     "WebM VP9": {
         "backend": "pyav", "ext": "webm", "vcodec": "vp9",

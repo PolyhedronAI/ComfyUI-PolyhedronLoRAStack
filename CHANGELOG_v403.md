@@ -1,3 +1,31 @@
+# v403 -- 4.3.0: Attention "default" keeps an upstream backend; FFV1 truly lossless; preset fields show their values
+
+**Ctrl+F5 and a server restart.** Carries v402 below.
+
+## Polyhedron Attention: "default" leaves an upstream backend alone (internal v1276)
+
+"default (leave the model alone)" and every path on which the node patches nothing (a mode this installation does
+not offer, a kernel that failed its launch, an unknown mode) used to REMOVE the attention override from the model --
+a backend set upstream (ComfyUI's Model Attention Backend, or any other node writing that key) was deleted without a
+word, while the node's own collision message advised "default" to keep it. Now nothing is removed: the upstream
+backend stays in place and the console says so. A mode that does patch still replaces it and reports it, as before.
+Guard `test_v1276_attention_keep_upstream`; `test_v841` / `test_v903` re-grounded (they pinned the removal).
+
+## Polyhedron Save: "FFV1 (lossless archive)" is lossless in the colour (internal v1280)
+
+The preset wrote yuv420p -- a quarter of the colour resolution and a YUV round trip. It now writes planar RGB at 16
+bit (gbrp16le) from the 16-bit intermediate; odd frame sizes are allowed. Files are larger; every pixel comes back
+within one 16-bit step. The PyAV writer also no longer depends on the comfy_api import for `Fraction`. Guard
+`test_v1280_ffv1_lossless`.
+
+## Preset fields show their values (internal v1279)
+
+The ComfyUI frontend 1.53 draws a disabled widget without its value, so the fields a preset locks showed only their
+names. A locked field now keeps its value readable -- greyed, no arrows, no input; picking "custom" frees it. In this
+cut: Polyhedron Sigma List. Guard `test_v1279_locked_values`.
+
+No widget moved: WIDGET_ORDER and NODE_IDS baselines unchanged, renamed to v403.
+
 # v402 -- 4.2.0: Switch Inverse behind a blocked branch; TaoMate-H3 3-step; one column for every notice
 
 **Ctrl+F5 and a server restart.** Carries v401 below.

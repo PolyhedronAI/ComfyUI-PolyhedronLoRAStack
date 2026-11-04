@@ -195,9 +195,28 @@ function setValue(w, v) {
     if (el && el.value !== undefined) el.value = v;
 }
 
+// v1279: the frontend (1.53) draws a disabled widget WITHOUT its value (BaseWidget._displayValue
+// returns "" when computedDisabled -- read in its bundle 04.11.). A preset-locked field must show the
+// preset's value (Frank's rule): the locked widget gets its own _displayValue -- greyed, no arrows, no
+// input, the value readable. Unlocking removes the override. The same function in every preset node;
+// guard test_v1279 holds the copies byte-equal.
+function plsShowLockedValue(w, locked) {
+    if (locked) {
+        Object.defineProperty(w, "_displayValue", { configurable: true, get() {
+            const v = this.value;
+            if (v == null) return "";
+            if (typeof v !== "number") return String(v);
+            let p = this.options && this.options.precision;
+            if (p == null) { const st = String((this.options && (this.options.round ?? this.options.step2 ?? this.options.step)) ?? ""); p = st.includes(".") ? st.split(".")[1].length : (Number.isInteger(v) ? 0 : 2); }
+            return Number(v).toFixed(Math.max(0, Math.min(6, p | 0)));
+        } });
+    } else if (Object.prototype.hasOwnProperty.call(w, "_displayValue")) delete w._displayValue;
+}
+
 function setDisabled(w, off) {
     if (!w) return;
     w.disabled = !!off;                       // LiteGraph draws it greyed
+    plsShowLockedValue(w, !!off);             // v1279: ...and the value stays readable
     const el = domEl(w);
     if (el) {                                 // DOM widget (the multiline text)
         el.readOnly = !!off;

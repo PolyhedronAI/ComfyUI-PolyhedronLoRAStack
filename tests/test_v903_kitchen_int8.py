@@ -38,9 +38,10 @@ WHAT IS PINNED
       naming Core's node and the way to keep it; a Polyhedron one gets its
       own message. Both are pinned on content, not on merely printing.
   V6  our override is marked, so the two cases can be told apart at all.
-  V7  DEFAULT_MODE still REMOVES the key rather than writing one -- that is
-      what makes "leave the model alone" true and lets Core's node win on
-      purpose.
+  V7  DEFAULT_MODE writes nothing -- and since v1276 (Fix C) it also KEEPS an
+      upstream key instead of removing it: removing it never let Core's node
+      "win", it deleted Core's node when that sat UPSTREAM, while V5's report
+      told the user to pick default "if you meant to keep it".
 
 Script-style: exit 0 = pass.
 """
@@ -272,10 +273,12 @@ def main():
     pre3 = _Model({"transformer_options":
                    {"optimized_attention_override": _foreign}})
     out_d, said_d = _run(pre3, A.DEFAULT_MODE)
-    _need("optimized_attention_override" not in
-          out_d.model_options["transformer_options"],
-          "V7: '%s' must REMOVE the key, or 'leave the model alone' is a lie "
-          "and Core's node can never win on purpose" % A.DEFAULT_MODE)
+    _need(out_d.model_options["transformer_options"].get(
+              "optimized_attention_override") is _foreign,
+          "V7: '%s' must KEEP the upstream key (v1276 Fix C) -- otherwise "
+          "V5's 'if you meant to keep it' is a lie" % A.DEFAULT_MODE)
+    _need("stays in place" in said_d,
+          "V7: keeping it must be SAID, said:\n%s" % said_d)
     # ...and it must take the DEFAULT branch to get there, not fall through
     # the unknown-mode one. Both clear the key, so the key alone cannot tell
     # them apart -- the message can, and a user who deliberately picked

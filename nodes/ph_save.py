@@ -32,6 +32,7 @@ failure there logs and degrades, it never loses the render.
 """
 
 import os
+from fractions import Fraction   # v1280: stdlib, always -- the PyAV path needs it even without comfy_api
 
 import numpy as np
 
@@ -72,7 +73,6 @@ except Exception:
 try:
     from comfy_api.input_impl import VideoFromComponents
     from comfy_api.util import VideoComponents
-    from fractions import Fraction
     _HAS_VIDEO_API = True
 except Exception:  # pragma: no cover
     VideoFromComponents = VideoComponents = None
@@ -256,7 +256,8 @@ class ULSSave:
                     "default": U.DEFAULT_PRESET,
                     "tooltip": "Delivery (small, universal) vs Master (edit/archive). H.264 uses "
                                "ComfyUI's own tested writer; the masters use our bundled-PyAV "
-                               "encoder (10-bit via a 16-bit intermediate, intra keyframes).",
+                               "encoder (10-bit via a 16-bit intermediate, intra keyframes). FFV1 = "
+                               "truly lossless: planar RGB at 16 bit, no colour subsampling.",
                 }),
                 "quality": ("INT", {
                     "default": 17, "min": 0, "max": 100,
