@@ -2847,6 +2847,16 @@ async function _loadInto(node, id, src, at, note) {
 /* v1080 (Frank 10.10.: "das soll ein Sammelbecken werden"): ON is the default.
  * The edit stores an explicit false for off; a missing key means on. */
 export function autoOn(e) { return !(e && e[AUTO_KEY] === false); }
+/* v1288 (Frank 05.11., a workflow copied for a new project kept V1 pinned to a clip of the old one): a pin counts only
+ * when it is one of THIS place's takes in the project. The server ignores a foreign pin (V1 shows the newest run), but
+ * the basin treated it as a pin: the first run of the new project went on a track AND showed on V1, and every later
+ * run moved V1 along. Without a loaded plan the pin is trusted as before (a valid pin is never overwritten early). */
+export function pinValid(D, key, pin) {
+    if (!pin) return false;
+    if (!D || !Array.isArray(D.clips)) return true;
+    const c = D.clips.find((x) => x && String(x.k) === String(key));
+    return !!(c && Array.isArray(c.takes) && c.takes.includes(pin));
+}
 /* v1198 (Frank 21.10.: "die anderen Teile dann auch auf dem EINEN neuen Track, damit sie alle zusammenbleiben"):
  * the three choices -- "track" (every run its own track), "render" (every scene of ONE render on ONE new track),
  * "replace" (V1 follows the newest run) */
@@ -2990,11 +3000,12 @@ async function _autoTrack1(node, rel, scene, nFiles, sweep) {
     // v1080: the basin starts with V1 -- the FIRST run of a place is pinned
     // there (V1 would show it anyway; a track on top would show it twice);
     // every run after that lands in a new track while V1 keeps its clip
-    if (!(e.takes && e.takes[key])) {
+    const stale = !!(e.takes && e.takes[key]) && !pinValid(node._plsTl.plan, key, e.takes[key]);   // v1288
+    if (!(e.takes && e.takes[key]) || stale) {
         e.takes = e.takes || {};
         e.takes[key] = rel;
         _saveEdit(node, e);
-        node._plsTl.state.textContent = "first run of this place -> V1 (pinned): " + rel + " -- the next runs become tracks on top";
+        node._plsTl.state.textContent = "first run of this place -> V1 (pinned): " + rel + (stale ? " -- the old pin was not a take of this project" : "") + " -- the next runs become tracks on top";
         return;
     }
     // v1198: one track per render -- the render's track (by its sweep stamp) takes every scene of it

@@ -1,3 +1,21 @@
+# v405 -- 4.5.0: Cine Timeline -- a V1 pin from another project no longer blocks the basin
+
+**Ctrl+F5.** Carries v404 below.
+
+## Polyhedron Cine Timeline: a stale V1 pin counts as none (internal v1288)
+
+A workflow copied for a new project keeps the timeline's edit, including the take V1 is pinned to. When that pin is a
+clip of ANOTHER project, the server already ignored it (V1 showed the newest run), but "new render -> new track"
+still treated it as a pin: the first run of the new project went on a track AND showed on V1, and every later run
+moved V1 along instead of V1 keeping its clip. A pin now counts only when it is one of this place's takes in the
+project; otherwise the run is pinned to V1 and the state line says "the old pin was not a take of this project".
+Without a loaded plan the pin is trusted as before. "delete all tracks" still leaves V1 and its pin alone.
+Guard `test_v1288_foreign_pin`; `test_v1080` B3 follows.
+
+No widget moved: WIDGET_ORDER and NODE_IDS baselines unchanged, renamed to v405.
+
+---
+
 # v404 -- 4.4.0: every track-head button seen, "delete all tracks" next to "+ new track"; the CTE spreads open on its own
 
 **Ctrl+F5 and a server restart.** Carries v403 below.

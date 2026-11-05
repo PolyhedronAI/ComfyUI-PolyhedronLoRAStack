@@ -122,9 +122,9 @@ _need('export const AUTO_CHOICES = [["track", "new track"], ["render", "one trac
       "B3 the choice: new track (first, the default) | replace -> _setAuto")
 _need('if (st.autoChk) st.autoChk.value = autoMode(editOf(node));' in js, "B3 the choice mirrors autoOn")
 j = js.find("async function _autoTrack1(node, rel, scene, nFiles, sweep)")   # AMENDED v1198: + the sweep
-body = js[j:j + 3000]   # AMENDED v1198: the render branch made the body longer
+body = js[j:j + 3600]   # AMENDED v1198: the render branch made the body longer; AMENDED v1288: + the stale check
 _need("if (!autoOn(e)) return;" in body, "B3 _autoTrack1 gates on autoOn")
-k1, k2 = body.find("if (!(e.takes && e.takes[key]))"), body.find("_renderTrack(node, rel")
+k1, k2 = body.find("if (!(e.takes && e.takes[key]) || stale) {"), body.find("_renderTrack(node, rel")   # AMENDED v1288: + a stale pin (not a take of this project) counts as none
 _need(0 < k1 < k2 and "e.takes[key] = rel;" in body[k1:k2] and "return;" in body[k1:k2],
       "B3 the first run of a place is pinned to V1 and no track is added")
 # drive autoOn
