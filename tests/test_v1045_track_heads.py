@@ -51,8 +51,8 @@ _need([(r["film_in"], r["film_out"], r["layer"]) for r in fl["aruns"]] == [(0, 8
       "H1 solo on the lower track: only it sounds (the upper is silent), the pictures unchanged")
 
 # ------------------------------------------------------------------ H2
-_need("export const GUT_W = 216, NEWROW_H = 22;" in js and 'const tl = _el("div", "position:absolute;top:0;bottom:0;right:0;left:" + GUT_W + "px;pointer-events:none;z-index:6;");' in js
-      and "tl.append(head, headGrip, cuts);" in js, "H2 a head column; the time axis overlay starts right of it")
+_need("export const GUT_W = 284, NEWROW_H = 22;" in js and 'const tl = _el("div", "position:absolute;top:0;bottom:0;right:0;left:" + GUT_W + "px;pointer-events:none;z-index:6;");' in js
+      and "tl.append(head, headGrip, cuts);" in js, "H2 a head column; the time axis overlay starts right of it")   # AMENDED v1287: 216 -> 284 px (Frank: size pick + file... were cut)
 _need("lanes.append(_row(tc, ruler), _row(gut(\"Scenes\"), scenes), _row(gut(\"Shots\"), shots), _row(newHead, newLane), above," in js
       and "v1Row, _row(a1Head, audio), below, anchorsRow, tl);" in js and 'const anchorsRow = _row(gut("Anchors"), anchors);' in js,   # AMENDED v1150, v1153 (v1Row)
       "H2 every row = head + lane: ruler (timecode), Scenes, Shots, new track, V tracks, V1, A1, A tracks, Anchors")

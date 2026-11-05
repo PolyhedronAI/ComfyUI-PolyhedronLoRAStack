@@ -577,8 +577,10 @@ export function laneHeights(node) {
 export const LANE_GAP = 4, LANES_TOP = 84;     // v1150: shots 34 px (was 30)
 /* v1044: the height grip under a lane, and the sizes to pick without dragging */
 export const DIV_H = 10;
-/* v1045: the head column (Premiere's track headers) and the new-track row */
-export const GUT_W = 216, NEWROW_H = 22;
+/* v1045: the head column (Premiere's track headers) and the new-track row
+ * v1287 (Frank 05.11.: "buttons hidden at the back of the track heads"): 216 px held lock .. x, but not the size pick
+ * and the file... button -- measured in the frontend: V1 needs 254 px, an empty track 279 px; 284 = every button seen */
+export const GUT_W = 284, NEWROW_H = 22;
 /* v1046: the timeline's toolbar (two rows at most) and the E4 switches */
 export const TOOLS_H = 40, TOOLS_MAX = 140, AUTO_KEY = "auto_track", RESTORE_KEY = "pls_cine_restore";
 export const AUTO_CHOICES = [["track", "new track"], ["render", "one track per render"], ["replace", "replace"]];   // v1163; v1198: + one track per render
@@ -2474,6 +2476,7 @@ function _stackRows(node, pct) {
     });
     if (st.above.children.length) st.above.style.display = "flex";
     if (st.below.children.length) st.below.style.display = "flex";
+    if (st.clearBtn) { const none = !others.length; st.clearBtn.style.opacity = none ? "0.35" : "1"; st.clearBtn.style.cursor = none ? "default" : "pointer"; }   // v1287
     // v1153: the render's clamp (V1/A1 = the A/V switch)
     _bracket(node, st.v1Row, laneHeights(node).clip, laneHeights(node).audio, isLinked(node), () => {
         node.properties = node.properties || {}; node.properties[LINK_KEY] = !isLinked(node); node.setDirtyCanvas?.(true, true); _render(node); },
@@ -4312,7 +4315,15 @@ function _field(node) {
     addBtn.title = "a new EMPTY track on top (V + A) -- drop a clip on it, or use its \u2026 button; upper tracks win";
     addBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
     addBtn.addEventListener("click", (e) => { e.stopPropagation(); const ed = editOf(node), id = newLayerId(ed); node._plsTl.active = id; _seedTrackH(node, id); _saveEdit(node, addLayer(ed, id)); });
-    const newHead = gut(); newHead.style.paddingLeft = "0"; newHead.appendChild(addBtn);
+    // v1287 (Frank 05.11.: "a button that deletes all tracks together, right next to + new track"): the v1198
+    // "x tracks" moves out of the toolbar to here -- the same step (asks first, Ctrl+Z brings them back, V1 stays);
+    // dimmed while V1 is the only track. The node shrinks with the stack (fieldH -> refit, measured)
+    const clearBtn = _el("button", "margin-left:4px;background:#3a1f1f;color:#ffb0a8;border:1px solid #8a3d3d;border-radius:3px;font-size:11px;font-weight:bold;padding:1px 8px;cursor:pointer;white-space:nowrap;", "\u2715 delete all tracks");
+    clearBtn.dataset.pls = "cleartracks";
+    clearBtn.title = "remove ALL tracks above V1 in one step (asks first; Ctrl+Z brings them back) -- V1 stays, the files stay on disk";
+    clearBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
+    clearBtn.addEventListener("click", (e) => { e.stopPropagation(); _clearTracks(node); });
+    const newHead = gut(); newHead.style.paddingLeft = "0"; newHead.append(addBtn, clearBtn);
     _dropZone(node, newLane, (dt, zone, at) => _dropNewTrack(node, dt, zone, at));
     const anchorsRow = _row(gut("Anchors"), anchors);   // v1150: not in Text mode (no pictures there)
     anchorsRow.dataset.pls = "anchorsrow";
@@ -4518,9 +4529,7 @@ function _field(node) {
     const takesBtn = mk("\u29c9 takes \u2192 tracks", () => _takesToTracks(node), "the OLDER renders as tracks -- ONE track per render (its scenes at their places), the newest on top; "
         + "per run only the clip it picked (backup / raw saves stay out); what V1 shows or a track has already is skipped");
     takesBtn.dataset.pls = "takes";
-    // v1198: every track off in one step
-    const clearBtn = mk("\u2715 tracks", () => _clearTracks(node), "remove ALL tracks above V1 in one step (asks first; Ctrl+Z brings them back) -- V1 stays, the files stay on disk");
-    clearBtn.dataset.pls = "cleartracks";
+    // v1198: every track off in one step -- v1287: the button sits next to "+ new track" (clearBtn above)
     const sep = () => _el("span", "width:1px;align-self:stretch;background:#3a3a3a;margin:0 4px;");
     const tools = _el("div", "display:flex;gap:6px;align-items:center;flex-wrap:wrap;align-content:center;font-size:12px;color:#aaa;height:" + TOOLS_H + "px;flex:0 0 auto;overflow:hidden;"
         + "background:#1a1a1a;border:1px solid #2c2c2c;border-radius:3px;padding:3px 6px;box-sizing:border-box;");
@@ -4529,7 +4538,7 @@ function _field(node) {
         + "its amber \u25c6 = the speed of the clip before; drag a clip on V1 = slip, on the other tracks = move (Alt = slip); A/V unlinked or Alt+drag: picture or "
         + "sound part alone (J-/L-cut); the divider under a lane = its height; the prompt stays until 'cuts -> prompt'";
     tools.append(splitBtn, healBtn, delBtn, linkBtn, typeBtn, snapSel, sep(), resetBtn, snapBtn, cutsBtn, tailLab,
-        sep(), autoLab, restLab, takesBtn, clearBtn);
+        sep(), autoLab, restLab, takesBtn);
     // v1034: this line says what the next Run does (stackHint) -- same height as before
     const stackLabel = _el("div", "font-size:10px;color:#9e9e9e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 0 auto;min-height:12px;", "stack: the rendered scenes of the project's stack (hover plays)");
 
@@ -4587,7 +4596,7 @@ function _field(node) {
             if ((ev.key === "Delete" || ev.key === "Backspace") && t !== "INPUT" && t !== "TEXTAREA" && t !== "SELECT" && _deleteSel(node)) { ev.preventDefault(); ev.stopPropagation(); }
         });
         node._plsTl = { root, stackLabel, topBar, headRow, refsRow, work, status, chips, prevBtn, pop, popImg, modeBtns, modeSeg, toCte, m: _model(node),
-            sec: { topbar: topBar, headrow: headRow, refs: refsRow, work, state, tools, film, scroller, bar, status, prev }, anchorsRow, anchorBtns, above, below, v1Row, tools, autoChk, restChk, takesBtn, v1Head, a1Head, tc, tl, newLane, addBtn, delBtn, span, filmInfo, viewInfo, zSl, nav, thumb, scroller, active: BASE_ID, recent: [], len, lenInfo, style, trig, tgt, ruler, scenes, shots, anchors, src, snapSel, edit, sound, music, prev, mode, project, target,
+            sec: { topbar: topBar, headrow: headRow, refs: refsRow, work, state, tools, film, scroller, bar, status, prev }, anchorsRow, anchorBtns, above, below, v1Row, tools, autoChk, restChk, takesBtn, v1Head, a1Head, tc, tl, newLane, addBtn, clearBtn, delBtn, span, filmInfo, viewInfo, zSl, nav, thumb, scroller, active: BASE_ID, recent: [], len, lenInfo, style, trig, tgt, ruler, scenes, shots, anchors, src, snapSel, edit, sound, music, prev, mode, project, target,
             all, join, state, stack, clips, audio, head, headGrip, cuts, lanes, divs: null, pct: null, cutCtx: null, plan: null, exact: null, ax: 0, exactBtn, cutsBtn, tail, splitBtn, healBtn, linkBtn, typeBtn, laneW: 0, scrubbing: false,
             player: { canvas, play, time: ptime, videos: new Map(), playing: false, t: 0, t0: 0, raf: 0, ar: 16 / 9, boxW: null, boxH: null }, monCol: stack, sel: { kind: "shot", i: 0 }, timer: null,
             io: null, prevH: PREVIEW_DEF, fitW: null, fitNodeW: null, fitQueued: false, bracket: false, bracketTimer: null, previewPending: false, fitting: false, lastDown: null, open: null, transSel: null };

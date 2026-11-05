@@ -345,8 +345,8 @@ _need("deletePiece(from.pcs, from.j)" in mv and mv.count("_saveEdit(node, e)") =
 tt = JS[JS.find("async function _takesToTracks("):JS.find("export function clearTracks(")]
 _need('"/pls/cine/renders"' in tt and "_renderTrack(node, r.rel, at, e," in tt and "_renderInto(node, r.rel, at, e, id)" in tt and tt.count("_saveEdit(node, e)") == 1,
       "W2 takes -> tracks: one track per render from /pls/cine/renders, saved ONCE")
-_need("sep(), autoLab, restLab, takesBtn, clearBtn);" in JS and '("POST", "/pls/cine/renders", handle_renders)' in (ROOT / "nodes" / "ph_cine_timeline.py").read_text(encoding="utf-8"),
-      "W2 the x tracks button in the toolbar; the renders route registered")
+_need("newHead.append(addBtn, clearBtn);" in JS and 'clearBtn.addEventListener("click", (e) => { e.stopPropagation(); _clearTracks(node); });' in JS and '("POST", "/pls/cine/renders", handle_renders)' in (ROOT / "nodes" / "ph_cine_timeline.py").read_text(encoding="utf-8"),
+      "W2 the delete-all-tracks button next to + new track (AMENDED v1287: was in the toolbar); the renders route registered")
 _need('root.addEventListener("change", (ev) => { const t = ev.target; if (blurAfterChange(t))' in JS, "W2 the timeline gives the focus back after a control's change")
 se = JS[JS.find("function _saveEdit(node, e) {"):JS.find("function _saveEdit(node, e) {") + 600]
 _need("if (node._plsTl && node._plsTl.bracket) _end(node);" in se and se.find("_end(node)") < se.find("node.properties[EDIT_KEY] = e") < se.find("commitEdit()"),

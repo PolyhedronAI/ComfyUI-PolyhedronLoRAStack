@@ -94,7 +94,7 @@ console.log(JSON.stringify(o));
 _need("root.append(topBar, headRow, refsRow, work, state, tools, film, scroller, bar, status, prev, pop);" in fld and "work.append(left, sndRow, stack);" in fld, "F2 the FILM row between the toolbar and the tracks")   # AMENDED v1153
 _need('film.append(_el("span", "font-weight:bold;color:#ffd27a;letter-spacing:1px;", "FILM"), span, preset, filmInfo,' in fld
       and "zOut, zSl, zIn, zFit, viewInfo, nav);" in fld, "F2 the row: length, presets, zoom - slider + fit, view, scroll bar")   # AMENDED v1153: the slider
-_need("cutsBtn, tailLab,\n        sep(), autoLab, restLab, takesBtn, clearBtn);" in fld, "F2 the span left the toolbar")   # AMENDED v1200: + x tracks (v1198)
+_need("cutsBtn, tailLab,\n        sep(), autoLab, restLab, takesBtn);" in fld, "F2 the span left the toolbar")   # AMENDED v1200: + x tracks (v1198); AMENDED v1287: it moved next to + new track
 _need("scroller.appendChild(lanes);" in fld and 'const scroller = _el("div", "position:relative;overflow:hidden;flex:0 0 auto;");' in fld,
       "F2 the lanes sit in a scroller")
 _need('"position:sticky;left:0;z-index:8;"' in js, "F2 the heads are sticky")

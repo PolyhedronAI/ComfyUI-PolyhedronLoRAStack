@@ -437,6 +437,7 @@ function _refit(node) {
             // and the shown widgets, nothing to measure
             const want = node.computeSize()[1];
             if (Math.abs(node.size[1] - want) > 1) node.setSize([node.size[0], want]);
+            node._plsFitPending = false;   // v1229: nothing left to measure
             node.setDirtyCanvas(true, true);
             return;
         }
@@ -455,6 +456,7 @@ function _refit(node) {
         // frequent. This is the one line where the v715 change can go wrong,
         // and the guard drives _refit twice to prove the height is stable.
         let total = frame;
+        let allMeasured = true;   // v1229: did every visible field get a real measurement?
         for (const w of fields) {
             const el = w.element;
             const pad = (w === lastPos) ? NEG_GAP : 0;
@@ -476,6 +478,7 @@ function _refit(node) {
                 w._plsH = h + pad;
             } else {
                 h = (typeof w._plsH === "number" ? w._plsH : FIELD_DEF_H) - pad;  // keep stored
+                allMeasured = false;   // v1229: kept a stored height -- owe a real measurement
             }
             if (el) {
                 el.style.height = h + "px";
@@ -486,6 +489,11 @@ function _refit(node) {
         if (Math.abs(node.size[1] - total) > 1) {
             node.setSize([node.size[0], total]);   // height only (v531)
         }
+        // v1229: a field that was not laid out kept its STORED height (v622) -- right, but
+        // that height may be stale (a workflow saved with shorter text, or the field was
+        // never measured on this page). Remember the debt; _retryPendingFit pays it from the
+        // node's own draw, i.e. the first moment the node is actually on screen.
+        node._plsFitPending = !allMeasured;
         node.setDirtyCanvas(true, true);
     } finally {
         node._plsRefitting = false;
@@ -502,10 +510,39 @@ function _refit(node) {
 // No loop: rAF is a one-shot schedule (not a ResizeObserver), and _refit's _plsRefitting
 // re-entry guard still holds.
 function _refitNextFrame(node) {
+    node._plsFitTries = 0;   // v1229: a programmatic refit opens a fresh retry budget
     const raf = (typeof requestAnimationFrame === "function")
         ? requestAnimationFrame
         : (fn) => setTimeout(fn, 0);
     raf(() => { try { _fitExt(node); _refit(node); } catch (e) { /* never break the ui */ } });
+}
+
+// v1229 -- THE FIRST-RUN CLIP (Frank, 26.10.: "the CTE often does not spread open on the
+// first run and keeps text hidden"). Every programmatic refit (load, run, wiring) is deferred
+// one frame (v620) and, when a field is still not laid out, KEEPS its stored height instead of
+// measuring blind (v622). Both right -- but nothing ever came back: a node that was off screen,
+// or whose DOM fields the frontend mounted after that one frame, stayed at the stored height
+// until the user typed. With a stored height from SHORTER text (a saved workflow, a changed
+// prompt) the field is too short and overflow:hidden hides the rest. Now _refit records the
+// debt (_plsFitPending) and the node's own onDrawForeground -- called only while the node is
+// on screen -- schedules ONE more deferred refit per frame until every field got a real
+// measurement. Bounded: at most FIT_RETRY_MAX tries per episode, one queued at a time, so a
+// field that can never be measured (a renderer without the DOM field) costs a short burst and
+// then nothing -- no loop, no ResizeObserver, no onResize (the v610/v611 lesson stands).
+const FIT_RETRY_MAX = 120;
+function _retryPendingFit(node) {
+    if (!node || !node._plsFitPending || node._plsFitQueued) return false;
+    if ((node._plsFitTries || 0) >= FIT_RETRY_MAX) return false;
+    node._plsFitTries = (node._plsFitTries || 0) + 1;
+    node._plsFitQueued = true;
+    const raf = (typeof requestAnimationFrame === "function")
+        ? requestAnimationFrame
+        : (fn) => setTimeout(fn, 0);
+    raf(() => {
+        node._plsFitQueued = false;
+        try { _fitExt(node); _refit(node); } catch (e) { /* never break the ui */ }
+    });
+    return true;
 }
 
 /* v1050: under replace the EXT field grows with its text -- measured once the
@@ -868,6 +905,8 @@ app.registerExtension({
         nodeType.prototype.onDrawForeground = function (ctx) {
             const r = _drawFg ? _drawFg.apply(this, arguments) : undefined;
             if (this.flags && this.flags.collapsed) return r;
+            // v1229: on screen now -- pay a pending measurement (the first-run clip)
+            try { _retryPendingFit(this); } catch (e) { /* never break a draw */ }
             try {
                 // v715: the SAME function that reserved the height decides what
                 // is painted -- one source, so the strip and its content can

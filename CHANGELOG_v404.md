@@ -1,3 +1,33 @@
+# v404 -- 4.4.0: every track-head button seen, "delete all tracks" next to "+ new track"; the CTE spreads open on its own
+
+**Ctrl+F5 and a server restart.** Carries v403 below.
+
+## Polyhedron Cine Timeline: the track heads hold every button (internal v1287)
+
+The head column was 216 px wide; a picture track needs up to 279 px (lock, Vn, eye, up, down, reset, snap, delete,
+the size pick S/M/L/XL and, on an empty track, the file... button). The size pick and file... were cut off on every
+picture track. The column is now 284 px -- nothing is cut, also at the node's narrowest width and after a workflow is
+opened again. A new timeline node is wider by the same 68 px.
+
+## Polyhedron Cine Timeline: "delete all tracks" next to "+ new track" (internal v1287)
+
+Tracks pile up quickly (every new render can land on its own track). The button that removes ALL tracks above V1 in
+one step now sits right next to "+ new track" (it was at the end of the toolbar): it asks first, Ctrl+Z brings the
+tracks back, V1 stays, the files stay on disk; it is dimmed while V1 is the only track. The node shrinks with the
+stack. Guard `test_v1287_track_heads_clear`; `test_v1045`, `test_v1046`, `test_v1047`, `test_v1150`, `test_v1198`
+follow the new column width / toolbar.
+
+## Polyhedron CLIP Text Encode: the fields spread open on the first run (internal v1229)
+
+A CTE that was off screen when a workflow was loaded or run kept the height stored with the workflow -- with longer
+text than that height, part of the prompt stayed hidden until you typed into it. The node now remembers that a field
+was not measured yet and measures it the first time it is actually drawn on screen (bounded, no loop, no resize hook).
+Guard `test_v1229_first_run_fit`.
+
+No widget moved: WIDGET_ORDER and NODE_IDS baselines unchanged, renamed to v404.
+
+---
+
 # v403 -- 4.3.0: Attention "default" keeps an upstream backend; FFV1 truly lossless; preset fields show their values
 
 **Ctrl+F5 and a server restart.** Carries v402 below.
