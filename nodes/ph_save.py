@@ -357,12 +357,14 @@ class ULSSave:
              trim_to_audio, save_metadata, save_output, mask_polarity=None,
              image=None, video=None, audio=None, mask=None, keypoints=None,
              prompt=None, extra_pnginfo=None):
-        # v1218: keypoints ride beside the media -- or alone (then only the JSON is written)
-        kp_path = None
-        if keypoints is not None:
+        # v1298: the date tokens are resolved ONCE for the whole save -- every file of it carries the same time
+        filename_prefix = U.freeze_date_tokens(filename_prefix)
+        # v1218: keypoints ride beside the media -- or alone (then only the JSON is written). v1298: beside media
+        # they are written AFTER it and take the media file's own name (<media name>_keypoints.json): the same stem
+        # and the same counter (the JSON written first used to take a counter of its own).
+        if keypoints is not None and image is None and video is None and audio is None and mask is None:
             kp_path = self._save_keypoints(keypoints, filename_prefix, save_output)
-            if image is None and video is None and audio is None and mask is None:
-                return {"result": (kp_path, float(_fps_of(video, frame_rate)))}
+            return {"result": (kp_path, float(_fps_of(video, frame_rate)))}
         kind = U.resolve_media_kind(
             media_kind, image is not None, video is not None, audio is not None,
             n_frames=(int(image.shape[0]) if image is not None else 1),
@@ -400,6 +402,11 @@ class ULSSave:
                                    media_kind=media_kind, image_format=image_format,
                                    image_quality=image_quality)
 
+        if keypoints is not None:                       # v1298: beside the media, named after it
+            res0 = tuple(out.get("result", ())) if isinstance(out, dict) else tuple(out or ())
+            media = res0[0] if res0 and isinstance(res0[0], str) and os.path.isfile(res0[0]) else None
+            self._save_keypoints(keypoints, filename_prefix, save_output, beside=media)
+
         # append fps as the second result slot without disturbing the ui payload
         res = tuple(out.get("result", ())) if isinstance(out, dict) else tuple(out or ())
         if isinstance(out, dict):
@@ -408,17 +415,22 @@ class ULSSave:
         return {"result": res + (float(fps),)}
 
     # -- keypoints (v1218) ----------------------------------------------------
-    def _save_keypoints(self, keypoints, filename_prefix, save_output):
+    def _save_keypoints(self, keypoints, filename_prefix, save_output, beside=None):
         """POSE_KEYPOINT (a list of OpenPose frames, or one frame dict) -> ONE JSON file
-        {"format": "openpose", "frames": [...]} in the same folder / numbering as the media."""
+        {"format": "openpose", "frames": [...]} in the same folder / numbering as the media. v1298: `beside` = the
+        media file just written -- the JSON takes its name (<media name>_keypoints.json)."""
         import json
         frames = keypoints if isinstance(keypoints, (list, tuple)) else [keypoints]
         if not frames or not all(isinstance(f, dict) for f in frames):
             raise ValueError("Save (keypoints): expects pose keypoints -- a list of OpenPose frames.")
         w = int(frames[0].get("canvas_width") or 0)
         h = int(frames[0].get("canvas_height") or 0)
-        full, stem, counter, subfolder, _t = _resolve_out(filename_prefix, w, h, save_output)
-        path = os.path.join(full, f"{stem}_{counter:05d}_keypoints.json")
+        if beside:
+            path = os.path.splitext(beside)[0].rstrip("_") + "_keypoints.json"
+            subfolder = os.path.basename(os.path.dirname(path))
+        else:
+            full, stem, counter, subfolder, _t = _resolve_out(filename_prefix, w, h, save_output)
+            path = os.path.join(full, f"{stem}_{counter:05d}_keypoints.json")
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"format": "openpose", "frames": list(frames)}, fh,
                       default=lambda o: o.tolist() if hasattr(o, "tolist") else float(o))   # numpy values

@@ -1,3 +1,21 @@
+# v406 -- 4.6.0: Save -- one save, one time in every file name; the keypoints JSON is named after its media
+
+**Server restart.** Carries v405 below.
+
+## Polyhedron Save: every file of one save carries the same time (internal v1298)
+
+A save with keypoints wired beside a clip or stills wrote the keypoints JSON FIRST, resolving the prefix's
+`%date:...%` tokens on its own, and the media a moment later with a second resolution: across a second boundary the
+pair split (`PH_112605_..._keypoints.json` beside `PH_112606_..._.mp4`), at midnight even into two day folders. The
+JSON also took a counter of its own, so with files already in the folder the pair could part within one second.
+Now a save resolves its date tokens ONCE (the other tokens stay for the writers), and beside media the keypoints JSON
+is written AFTER the media and takes its name: `<media name>_keypoints.json` (same stem, same counter, same folder).
+Keypoints wired alone are written as before (`<name>_<counter>_keypoints.json`). Guard `test_v1298_save_names`.
+
+No widget moved: WIDGET_ORDER and NODE_IDS baselines unchanged, renamed to v406.
+
+---
+
 # v405 -- 4.5.0: Cine Timeline -- a V1 pin from another project no longer blocks the basin
 
 **Ctrl+F5.** Carries v404 below.

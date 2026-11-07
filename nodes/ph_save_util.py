@@ -288,6 +288,25 @@ def expand_filename_tokens(prefix, width=0, height=0, now=None):
     return _re2.sub(r"%date:([^%]*)%", _repl, s)
 
 
+def freeze_date_tokens(prefix, now=None):
+    """v1298: every %date:...% token of a prefix resolved at ONE moment (the other tokens stay for later). A save
+    call resolves its prefix once with this, so all the files of one save (a clip, its control frame, its
+    keypoints JSON) carry the same time -- a second boundary between two of them split the names (06.11.:
+    PH_112605_..._keypoints.json beside PH_112606_..._.mp4)."""
+    s = str(prefix or "")
+    now = now or _dt.datetime.now()
+
+    def _repl(m):
+        fmt = m.group(1)
+        for a_, b_ in _DATE_MAP:
+            fmt = fmt.replace(a_, b_)
+        try:
+            return now.strftime(fmt)
+        except Exception:
+            return ""
+    return _re2.sub(r"%date:([^%]*)%", _repl, s)
+
+
 def sanitize_prefix(prefix, width=0, height=0, now=None):
     """Expand what we can, then guarantee a filesystem-safe relative prefix:
     tokens resolved, backslashes normalised, absolute/traversal segments dropped,
