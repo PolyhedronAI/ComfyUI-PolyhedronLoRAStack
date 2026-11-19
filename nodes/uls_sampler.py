@@ -1117,7 +1117,172 @@ def _fix_empty_latent(model, latent_image, latent):
         return comfy.sample.fix_empty_latent_channels(model, latent_image)
 
 
-def _apply_sigma_shift(model, shift):
+# v1325: model_sampling classes that carry their own sigma grid (by class name,
+# so an older Core simply never matches). Core 0.45.0: MiniMax H3 Image.
+GRID_SAMPLINGS = ("MiniMaxH3ImageModelSampling",)
+
+
+def _sampling_name(model):
+    try:
+        return type(model.get_model_object("model_sampling")).__name__
+    except Exception:
+        try:
+            return type(model.model.model_sampling).__name__
+        except Exception:
+            return ""
+
+
+def _owns_sigma_grid(model):
+    """True when the model's own model_sampling IS its schedule (a distilled grid)."""
+    return _sampling_name(model) in GRID_SAMPLINGS
+
+
+def _grid_mod():
+    try:
+        from . import uls_grid_math as _G
+    except ImportError:  # pragma: no cover - direct-run fallback
+        import uls_grid_math as _G
+    return _G
+
+
+def _model_grid(model):
+    """The model's own sigma grid, decreasing, or None when it has none."""
+    if not _owns_sigma_grid(model):
+        return None
+    try:
+        ms = model.get_model_object("model_sampling")
+        vals = [float(v) for v in ms.grid.flatten().tolist()]
+    except Exception:
+        return None
+    if len(vals) < 2:
+        return None
+    return _grid_mod().decreasing(vals)
+
+
+def _stock_sigmas(model, sampler_name, scheduler, steps, denoise):
+    """The schedule Core's KSampler would run for these dials, as a list, or None when it cannot be told
+    (a sampler that drops the penultimate sigma walks a different list -- never taken for the grid)."""
+    try:
+        if str(sampler_name) in comfy.samplers.KSampler.DISCARD_PENULTIMATE_SIGMA_SAMPLERS:
+            return None
+        ms = model.get_model_object("model_sampling")
+        d = float(denoise)
+        if d >= 0.9999:
+            sig = comfy.samplers.calculate_sigmas(ms, scheduler, int(steps))
+        else:
+            total = int(int(steps) / d)
+            sig = comfy.samplers.calculate_sigmas(ms, scheduler, total)[-(int(steps) + 1):]
+        return [float(v) for v in sig.flatten().tolist()]
+    except Exception:
+        return None
+
+
+def _grid_sigmas(model, steps, sampler_name, scheduler, denoise, who="Sampler"):
+    """v1337 -- the schedule for a model on its OWN sigma grid, as a list of sigmas, or None to leave the
+    run to the stock scheduler. None for: a model without a grid; a stock schedule that already sits on the
+    grid (the run stays bit for bit what it was); a count the grid cannot serve (said, not refused)."""
+    grid = _model_grid(model)
+    if grid is None:
+        return None
+    G = _grid_mod()
+    heads = len(grid) - 1
+    if int(steps) < 1 or float(denoise) <= 0.0:
+        return None
+    p = G.plan(grid, steps, denoise)
+    if p is None:
+        left = G.intervals_left(heads, denoise)
+        print("[PLS] \u26a0 %s: %d steps%s on a model with %d distilled heads on its own sigma grid -- "
+              "only %d head%s cover%s this run, so the stock scheduler steps BETWEEN the trained points and "
+              "heads are reused. 1..%d steps run on the grid."
+              % (who, int(steps), "" if float(denoise) >= 0.9999 else " at denoise %.2f" % float(denoise),
+                 heads, left, "" if left == 1 else "s", "s" if left == 1 else "", left))
+        return None
+    stock = _stock_sigmas(model, sampler_name, scheduler, steps, denoise)
+    if stock is not None and G.on_grid(grid, stock):
+        print("[PLS] %s: own sigma grid, %d step%s -- heads %s; '%s' already sits on the grid"
+              % (who, int(steps), "" if int(steps) == 1 else "s", G.heads_text(p), scheduler))
+        return None
+    print("[PLS] %s: own sigma grid, %d step%s -- heads %s; schedule built from the grid (%s), "
+          "'%s' would step between its points and is not used. Wire SIGMAS to run a curve of your own."
+          % (who, int(steps), "" if int(steps) == 1 else "s", G.heads_text(p),
+             ", ".join("%.4f" % v for v in p["sigmas"]), scheduler))
+    if p["snapped"]:
+        print("[PLS] %s: denoise %.2f is not a point of the grid -- the run starts on the nearest one, "
+              "denoise %.3f (%d of %d heads)"
+              % (who, float(denoise), p["denoise_grid"], heads - p["start"], heads))
+    return list(p["sigmas"])
+
+
+def _grid_prepare(model, steps, sampler_name, scheduler, denoise, start_at_step, end_at_step,
+                  leftover_noise, dual_moe, sigmas):
+    """v1337 -- `sigmas` for the Single run of a model on its own grid: the wired curve wins, High + Low is
+    left alone, otherwise _grid_sigmas decides. The manual slice (start/end_at_step) is cut from the
+    on-grid schedule the way KSampler (Advanced) cuts its own: an early end keeps its noise only when
+    return_with_leftover_noise is on."""
+    if sigmas is not None or dual_moe:
+        return sigmas
+    run = _grid_sigmas(model, steps, sampler_name, scheduler, denoise)
+    if run is None:
+        return None
+    n = len(run) - 1
+    a = max(0, min(int(start_at_step), n))
+    b = max(0, min(int(end_at_step), n))
+    if a > 0 or b < n:
+        if b <= a:
+            return None
+        cut = run[a:b + 1]
+        if b < n and not leftover_noise:
+            cut[-1] = 0.0
+        print("[PLS] Sampler: start_at_step %d / end_at_step %d cut the grid schedule to %s"
+              % (a, b, ", ".join("%.4f" % v for v in cut)))
+        run = cut
+    return torch.tensor(run, dtype=torch.float32)
+
+
+def _is_av_sampling(model):
+    """v1344: True when the model samples a joint audio/video latent on Core's ModelSamplingAV
+    (MiniMax H3 video and everything built on it, e.g. p-h3-image)."""
+    try:
+        import comfy.model_sampling as _cms
+        av = getattr(_cms, "ModelSamplingAV", None)
+        return av is not None and isinstance(model.get_model_object("model_sampling"), av)
+    except Exception:   # noqa: BLE001 - a stand-in model without the API
+        return False
+
+
+def _apply_av_shift(model, shift, audio_shift=0.0):
+    """v1344: the audio/video shift exactly as Core's MiniMaxH3SigmaShift (ModelSamplingMiniMaxH3,
+    comfy_extras/nodes_minimax_h3.py, Core 0.45.0) sets it: a ModelSamplingAV+CONST with the video
+    shift (it drives the sigma schedule) and the audio shift, noise_scale carried over, and BOTH
+    values in transformer_options -- the DiT reads them there to invert the video schedule and
+    derive the audio one. audio_shift <= 0 keeps the model's own audio shift."""
+    import comfy.model_sampling as _cms
+    original = model.get_model_object("model_sampling")
+    if audio_shift is None or float(audio_shift) <= 0:
+        audio_shift = getattr(original, "audio_shift", None)
+        if audio_shift is None:
+            audio_shift = model.model.model_config.sampling_settings.get("audio_shift", None)
+    m = model.clone()
+
+    class _ModelSamplingAV(_cms.ModelSamplingAV, _cms.CONST):
+        pass
+
+    ms = _ModelSamplingAV(model.model.model_config)
+    ms.set_parameters(shift=float(shift), audio_shift=None if audio_shift is None else float(audio_shift))
+    if hasattr(original, "noise_scale"):
+        ms.set_noise_scale(original.noise_scale)
+    m.add_object_patch("model_sampling", ms)
+    to = m.model_options["transformer_options"] = m.model_options.get("transformer_options", {}).copy()
+    to["minimax_h3_sigma_shift_video"] = float(shift)
+    if audio_shift is not None:
+        to["minimax_h3_sigma_shift_audio"] = float(audio_shift)
+    print("[PLS] Sampler: sigma_shift %.2f / audio %s on an audio-video model (as ModelSamplingMiniMaxH3)."
+          % (float(shift), "%.2f" % float(audio_shift) if audio_shift is not None else "model default"),
+          flush=True)
+    return m
+
+
+def _apply_sigma_shift(model, shift, audio_shift=0.0):
     """v491: apply a flow-matching sigma shift by patching the model's model_sampling,
     mirroring Core's ModelSamplingSD3.patch (comfy_extras/nodes_model_advanced.py) — the
     exact mechanism the Wan MoE KSampler bakes in. WAN 2.2 flow sampling needs a shift
@@ -1133,6 +1298,20 @@ def _apply_sigma_shift(model, shift):
     boundary step-count (which rebuilds sigmas from the HIGH model in _moe_sample) see it."""
     if shift is None or shift <= 0:
         return model
+    # v1325: a model that samples on its OWN distilled grid (MiniMax H3 Image:
+    # MiniMaxH3ImageModelSampling, sigma() linear in the PDD grid index, the
+    # flow shift unused -- comfy/ldm/minimax/sampling.py, Core 0.45.0). Patching
+    # in a DiscreteFlow sampler would throw that grid away and the six heads
+    # would denoise at sigmas they were never distilled for. Leave it alone and
+    # say so -- refusing would stop a run over a dial that only had to be 0.
+    if _owns_sigma_grid(model):
+        print("[PLS] Sampler: sigma_shift %.2f ignored -- this model samples on its own "
+              "distilled sigma grid (%s); the shift does not apply. Set it to 0."
+              % (float(shift), _sampling_name(model)))
+        return model
+    # v1344: an audio-video model keeps its two flow schedules (Core's own way).
+    if _is_av_sampling(model):
+        return _apply_av_shift(model, shift, audio_shift)
     import comfy.model_sampling as _cms
     m = model.clone()
 
@@ -1143,6 +1322,53 @@ def _apply_sigma_shift(model, shift):
     ms.set_parameters(shift=shift, multiplier=1000)
     m.add_object_patch("model_sampling", ms)
     return m
+
+
+# ── v1346: where a time-windowed conditioning REALLY falls on a wired curve ──
+# Core turns a cond's start/end_percent into SIGMAS through the model's own
+# model_sampling.percent_to_sigma and keeps the cond while
+# sigma_end <= sigma <= sigma_start (comfy/samplers.py). On a model with its own
+# grid (MiniMax H3 Image) the percent is linear in the GRID index -- so a window
+# that is "steps 1-2" on the 6-step grid covers every step of a wired curve whose
+# sigma stays above the grid's value at that percent. Frank 19.11.: the blank
+# picture 0-0.25 read "steps 1-2 of 6" on the Image Reference, and ran on steps
+# 1-4 of 8 on the HyperFlow curve shifted 12. The Image Reference cannot know the
+# curve; the Sampler can, so it names the steps -- read, never assumed.
+def _cond_windows(model, sigmas, conditioning):
+    """[(start, end, s_start, s_end, [1-based steps])] for every cond with a window other than 0..1."""
+    try:
+        ms = model.get_model_object("model_sampling")
+    except Exception:
+        ms = getattr(getattr(model, "model", None), "model_sampling", None)
+    if ms is None or sigmas is None or not conditioning:
+        return []
+    sig = [float(v) for v in sigmas.flatten().tolist()][:-1]   # the sigma each step STARTS at
+    seen, out = set(), []
+    for c in conditioning:
+        d = c[1] if isinstance(c, (list, tuple)) and len(c) > 1 else {}
+        st = float(d.get("start_percent", 0.0) or 0.0)
+        en = float(d.get("end_percent", 1.0) if d.get("end_percent", 1.0) is not None else 1.0)
+        if (st <= 0.0 and en >= 1.0) or (st, en) in seen:
+            continue
+        seen.add((st, en))
+        try:
+            s_hi, s_lo = float(ms.percent_to_sigma(st)), float(ms.percent_to_sigma(en))
+        except Exception:
+            continue
+        eps = 1e-6
+        steps = [k + 1 for k, v in enumerate(sig) if s_lo - eps <= v <= s_hi + eps]
+        out.append((st, en, s_hi, s_lo, steps))
+    return out
+
+
+def _report_cond_windows(model, sigmas, conditioning, what="the wired curve"):
+    n = 0 if sigmas is None else max(0, int(sigmas.numel()) - 1)
+    for st, en, s_hi, s_lo, steps in _cond_windows(model, sigmas, conditioning):
+        run = ("%d-%d" % (steps[0], steps[-1]) if steps and steps == list(range(steps[0], steps[-1] + 1))
+               else ",".join(str(k) for k in steps) or "none")
+        print("[PLS] Sampler: conditioning window %.3f-%.3f = sigma %.4f-%.4f -> active on step(s) %s of %d of %s "
+              "(e.g. an Image Reference blank picture; its own info counts the model's own grid)"
+              % (st, en, s_hi, s_lo, run, n, what))
 
 
 # ── v544: per-expert sampler / scheduler ────────────────────────────────────
@@ -1816,6 +2042,25 @@ def _moe_sample_split_sigmas(model_high, model_low, seed, cfg_high, cfg_low, sam
                               handoff_mode=handoff_mode)
 
 
+# v1327: the zero-out negative, written here (no core node class; the pack's
+# node modules stay import-independent, ph_music.zero_conditioning is the twin).
+# The key set is the one Core's ConditioningZeroOut handles (nodes.py, 0.45.0).
+ZERO_KEYS = ("pooled_output", "conditioning_lyrics", "conditioning_scale", "direct_context")
+
+
+def _zeroed(conditioning):
+    """Every tensor of the conditioning zeroed -- the main one and the named
+    extras -- the rest of each dict kept (masks, reference latents, hooks)."""
+    out = []
+    for t in conditioning:
+        d = t[1].copy()
+        for k in ZERO_KEYS:
+            if d.get(k, None) is not None:
+                d[k] = torch.zeros_like(d[k])
+        out.append([torch.zeros_like(t[0]), d])
+    return out
+
+
 class ULSSampler:
 
     @classmethod
@@ -1863,7 +2108,6 @@ class ULSSampler:
             "required": {
                 "model": ("MODEL", {"tooltip": "The model used to denoise the latent."}),
                 "positive": ("CONDITIONING", {"tooltip": "Conditioning to include."}),
-                "negative": ("CONDITIONING", {"tooltip": "Conditioning to exclude."}),
                 "latent_image": ("LATENT", {"tooltip": "The latent to denoise (image or video)."}),
                 # ── Mode — the fundamental Single/Dual decision, kept at the top ──
                 "dual_moe": ("BOOLEAN", {"default": False,
@@ -2025,8 +2269,31 @@ class ULSSampler:
                                                          "inert -- the console says so. Ignored in Single mode "
                                                          "and when an external SIGMAS curve drives the "
                                                          "schedule."}),
+                # -- v1344: the AUDIO flow shift of an audio-video model (MiniMax H3 video, p-h3-image).
+                #    Appended LAST like every widget since v413 (uls_sampler.js heals older saves). --
+                "sigma_shift_audio": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 20.0, "step": 0.01, "round": 0.01,
+                                                "tooltip": "Audio flow shift, only for models that sample a "
+                                                           "joint audio/video latent. With sigma_shift set, "
+                                                           "such a model is shifted the way its own Core node "
+                                                           "does it: the video shift drives the sigma schedule, "
+                                                           "and BOTH shifts go to the model, which derives the "
+                                                           "audio schedule from them. 0 = keep the model's own "
+                                                           "audio shift. Any positive value sets it (e.g. 1.0 "
+                                                           "with sigma_shift 1.0 where a model asks for 1.0/1.0). "
+                                                           "Inert on every other model, with sigma_shift at 0, "
+                                                           "and when an external SIGMAS curve drives the "
+                                                           "schedule."}),
             },
             "optional": {
+                # v1327: optional, and FIRST of the optional block so its socket stays
+                # with the other wires. Not wired = the zeroed positive (_zeroed), the
+                # negative of every graph that used to carry a zero-out node for it.
+                "negative": ("CONDITIONING", {"tooltip": "Conditioning to exclude. Not wired: the sampler "
+                                                         "uses the positive with every tensor set to zero "
+                                                         "(the zero-out negative of distilled and cfg 1 "
+                                                         "graphs) -- no separate node, and a text encoder "
+                                                         "whose negative nobody reads skips that encode. "
+                                                         "The console names it."}),
                 "model_low": ("MODEL", {"tooltip": "High + Low: the LOW-noise expert. The 'model' input is the "
                                                    "HIGH-noise expert. (Wan 2.2 ships these as a high/low pair.) "
                                                    "Connect this and set the mode pill to High + Low."}),
@@ -2084,6 +2351,9 @@ class ULSSampler:
         # v1224: the Attention node books every call; the Sampler opens the
         # stage and reads the coverage afterwards (Frank 25.10.: a fallback that
         # nearly tripled a refine was one quiet console line).
+        # v1327: `negative` is an optional input now -- an unwired one arrives
+        # as no key at all; _sample_impl turns None into the zeroed positive.
+        kwargs.setdefault("negative", None)
         _cov = _attention_cover()
         node_id = _current_node_id()
         if _cov is not None:
@@ -2108,7 +2378,14 @@ class ULSSampler:
                sampler_low=SAME_AS_HIGH, scheduler_low=SAME_AS_HIGH,
                sigma_shift_low=-1.0,
                model_low=None, sigmas=None, sigmas_high=None, sigmas_low=None,
-               noise=None):
+               noise=None, sigma_shift_audio=0.0):
+        # v1327: no negative wired -> the zeroed positive. ONE seat for every
+        # path below (single, sigma-driven, all High + Low variants).
+        if negative is None:
+            negative = _zeroed(positive)
+            print("[PLS] Sampler: no negative wired -- using the zeroed positive "
+                  "(%d conditioning entr%s)." % (len(negative), "y" if len(negative) == 1 else "ies"),
+                  flush=True)
         # v685: park the NOISE source for the whole run. EVERY path below --
         # single, sigma-driven, and all three MoE variants -- reaches its noise
         # through _initial_noise, so one context covers them all, and the
@@ -2130,7 +2407,8 @@ class ULSSampler:
                                       start_at_step, end_at_step, return_with_leftover_noise,
                                       dual_moe, boundary, cfg_low, preview_mode, sigma_shift,
                                       handoff_mode, sampler_low, scheduler_low, sigma_shift_low,
-                                      model_low, sigmas, sigmas_high, sigmas_low, noise)
+                                      model_low, sigmas, sigmas_high, sigmas_low, noise,
+                                      sigma_shift_audio)
         finally:
             if gate_id is not None:
                 _PENDING_GATE.pop(str(gate_id), None)
@@ -2140,7 +2418,7 @@ class ULSSampler:
                       start_at_step, end_at_step, return_with_leftover_noise,
                       dual_moe, boundary, cfg_low, preview_mode, sigma_shift,
                       handoff_mode, sampler_low, scheduler_low, sigma_shift_low,
-                      model_low, sigmas, sigmas_high, sigmas_low, noise):
+                      model_low, sigmas, sigmas_high, sigmas_low, noise, sigma_shift_audio=0.0):
         with _NoiseContext(noise):
             return self._run(model, positive, negative, latent_image, seed, steps, cfg,
                              sampler_name, scheduler, denoise, add_noise,
@@ -2150,7 +2428,8 @@ class ULSSampler:
                              sampler_low=sampler_low, scheduler_low=scheduler_low,
                              sigma_shift_low=sigma_shift_low,
                              model_low=model_low, sigmas=sigmas,
-                             sigmas_high=sigmas_high, sigmas_low=sigmas_low)
+                             sigmas_high=sigmas_high, sigmas_low=sigmas_low,
+                             sigma_shift_audio=sigma_shift_audio)
 
     def _run(self, model, positive, negative, latent_image, seed, steps, cfg,
              sampler_name, scheduler, denoise, add_noise,
@@ -2159,7 +2438,8 @@ class ULSSampler:
              sigma_shift=0.0, handoff_mode="Continuous",
              sampler_low=SAME_AS_HIGH, scheduler_low=SAME_AS_HIGH,
              sigma_shift_low=-1.0,
-             model_low=None, sigmas=None, sigmas_high=None, sigmas_low=None):
+             model_low=None, sigmas=None, sigmas_high=None, sigmas_low=None,
+             sigma_shift_audio=0.0):
         # Id of THIS node, so the live preview attaches to it (None -> no preview).
         node_id = _current_node_id()
         # v415: each render starts from the node's serialised preview_mode; drop any
@@ -2199,7 +2479,9 @@ class ULSSampler:
             # knows only ONE -- patching here would install the wrong
             # model_sampling class and drop the audio schedule SILENTLY. Refuse
             # by name instead: Core ships ModelSamplingMiniMaxH3 for this.
-            if _is_ragged_latent((latent_image or {}).get("samples")):
+            if (_is_ragged_latent((latent_image or {}).get("samples"))
+                    and not (_is_av_sampling(model) and (model_low is None or not _shift_low
+                                                         or _is_av_sampling(model_low)))):
                 raise ValueError(
                     "[PLS] Sampler: sigma_shift is not valid for a joint "
                     "audio/video latent -- it would patch the video schedule "
@@ -2210,9 +2492,9 @@ class ULSSampler:
                 )
             if not _ext_sigmas:
                 if _shift_high:
-                    model = _apply_sigma_shift(model, sigma_shift)
+                    model = _apply_sigma_shift(model, sigma_shift, sigma_shift_audio)
                 if _shift_low:
-                    model_low = _apply_sigma_shift(model_low, _low_shift)
+                    model_low = _apply_sigma_shift(model_low, _low_shift, sigma_shift_audio)
         # v839: mirror the scheduler_low honesty line -- an OWN low shift cannot
         # bite in 'Continuous', where ONE schedule is built from the HIGH expert.
         try:
@@ -2235,6 +2517,17 @@ class ULSSampler:
         model, sigmas = _pdd_prepare(model, steps, sampler_name, denoise,
                                      start_at_step, end_at_step, dual_moe,
                                      sigmas, cfg)
+        # v1337: a model on its OWN sigma grid gets a schedule made of grid
+        # points when the stock scheduler would step between them. After PDD
+        # (a bank fills `sigmas` itself), before every path: a wired curve wins.
+        sigmas = _grid_prepare(model, steps, sampler_name, scheduler, denoise,
+                               start_at_step, end_at_step,
+                               return_with_leftover_noise, dual_moe, sigmas)
+        if sigmas is not None:                                    # v1346
+            try:
+                _report_cond_windows(model, sigmas, positive)
+            except Exception as _e:
+                print("[PLS] Sampler: cond-window readout skipped (%s)" % _e)
         if dual_moe:
             # High + Low: the boundary drives the HIGH/LOW split internally, so the
             # manual start/end_at_step + leftover controls are not used here.

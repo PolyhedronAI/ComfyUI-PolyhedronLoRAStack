@@ -1,3 +1,57 @@
+# v407 -- 4.7.0: MiniMax H3 Image, Image Reference, Polyhedron groups, Group Switch, Align
+
+**Server restart + browser reload.** Carries v406 below. Brings the public nodes to the internal state v1346 and makes
+three nodes public, so the current MiniMax H3 Image workflows run on the public pack.
+
+## New nodes
+
+- **Polyhedron Image Reference** (`ULSImageReference`, internal v1078-v1346): one reference-image conditioning node for
+  every family that takes pictures next to its prompt; the family is measured on the loaded text encoder (Qwen-Image
+  2.1, Qwen-Image-Edit, MiniMax H3, MiniMax H3 Image, otherwise Core's reference latents). H3 Image: input pictures
+  (alpha over white, first frame of a batch, inpainting via `inpaint_mask`) and, without a picture, the **blank
+  picture** prime (`blank_picture` off / black / mid grey / white, `blank_start`, `blank_end`). `prompt_in` takes a
+  wired text on its own socket row.
+- **Polyhedron Group Switch** and **Polyhedron Align** (frontend-only, never executed, no route; internal v1330-v1336):
+  Polyhedron groups (hexagon, title wrapped inside the group, a foot bar with colours / Fit / on-off; core groups
+  untouched), a switch row per group (found by id, hidden groups listed), a floating bar that aligns, sizes and
+  distributes nodes AND groups (a group moves with its contents) and makes a Polyhedron group around a selection. Own
+  MIT implementation; the idea of the align bar comes from ComfyUI-NodeAligner (Tenney95, GPL-3.0), no code taken.
+
+## MiniMax H3 Image in the existing nodes (internal v1325-v1346)
+
+- Empty Latent: type "MiniMax H3 Image (24ch, one frame)".
+- Sampler: a model on its own sigma grid gets a schedule made of grid points (v1337); `sigma_shift` is not laid on
+  such a model and says so; the `negative` pin is optional -- unwired it is the zeroed positive (v1327);
+  `sigma_shift_audio` for audio-video models (v1344, new field, appended); with a curve on `sigmas` the console names
+  the steps every time-windowed conditioning really covers (v1346).
+- Power Upscale: `refine_order` off hides the dials that reach nothing (v1346); the joint refine stays inside the fast
+  attention kernel's reach (v1321).
+- Filter: `sharpen_masking` (sharpen on the contours, skin left alone; v1329) and Harmonize (`harmonize`,
+  `harmonize_amount`, `harmonize_ring`, `harmonize_tone`, `harmonize_seam`, `harmonize_window`; v1322-v1324). All new
+  fields appended.
+- MiniMax Reference / Keyframes: text sockets; the carry recognises Core 989d93d (v1342). Pins reorder without a wire
+  jumping to another pin (v1340).
+- Load nodes: a model file that moved into a sub folder is found again (v1326, `nodes/ph_model_path.py`,
+  `web/js/ph_model_relocate.js`).
+- LoRA Stack: the panel follows `uls_config`, the rows that run, when a saved workflow carries two different copies
+  (v1345, twin of the Engine's v1250 guard).
+
+## Pack
+
+- New modules: `nodes/ph_image_ref.py`, `nodes/h3_image.py`, `nodes/uls_grid_math.py`, `nodes/ph_model_path.py`,
+  `nodes/ph_harmonize.py`, `nodes/ph_reference.py` (only its `append_reference` is used; its class is not registered);
+  `web/js/ph_image_ref.js`, `ph_groups_core.js`, `ph_group_title.js`, `ph_group_switch.js`, `ph_align.js`,
+  `ph_model_relocate.js`. No new server route.
+- Kept public-own: `ph_attention.py` (no Veda layer, no ff/head chunks, no TST), `ph_world_weights.py` / `.js` (no VDA,
+  no Splat), `uls_routes.py`, `uls_extras_dom.js`, `uls_stack_dom.js`, README, COMPATIBILITY.
+- Baselines regenerated (declared): NODE_IDS v407 (+ ULSImageReference, 53 ids, none renamed, none removed);
+  WIDGET_ORDER v407 (ULSFilter + harmonize_* + sharpen_masking, ULSSampler + sigma_shift_audio, ULSImageReference new;
+  ULSReference listed because the scan reads `nodes/ph_reference.py`).
+- Guards: 27 new (test_v1078, v1321-v1327, v1329-v1346 except the Splat ones, `_groups_js.py`); public guards
+  test_v1049 / v1201 / v1212 / v631 / v633 follow the internal changes.
+
+---
+
 # v406 -- 4.6.0: Save -- one save, one time in every file name; the keypoints JSON is named after its media
 
 **Server restart.** Carries v405 below.

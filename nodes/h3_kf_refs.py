@@ -11,7 +11,8 @@ the wrong latents.
 
 CORE CAUGHT UP (seen in Core 5c460d8, 2026-10-04): extra_conds now appends
 the refs' latents to the keyframes' itself -> owner() says "core-native" and
-nothing is wrapped; mark() stays harmless.
+nothing is wrapped; mark() stays harmless. Core 989d93d (2026-11-10) moved
+that merge into MiniMaxH3._cond_latents -- recognised as well (v1342).
 
 THE FIX (older Cores): a wrapper around MiniMaxH3.extra_conds that, ONLY for keyframes we
 mark (PLS_KEY), writes cond_video_latents = keyframe latents + reference
@@ -70,12 +71,26 @@ def _wrap(orig):
 _NATIVE_MERGE = 'payload["cond_video_latents"] = payload.get("cond_video_latents", []) +'
 
 
-def core_merges(fn):
+# v1342: Core master (seen 989d93d, 2026-11-10) moved the merge into a helper: extra_conds calls
+# self._cond_latents(keyframes, refs), which returns keyframe latents + reference latents (and the same for the
+# audio latents) -- the packed-layout order. Our wrapper on top would only rewrite the same list, and would
+# drop the audio side and the None filter Core added. Recognised by the helper's source.
+_NATIVE_HELPER = "_cond_latents"
+_NATIVE_HELPER_MERGE = '+ [r["latent"] for r in refs'
+
+
+def core_merges(fn, cls=None):
     """Does Core's own extra_conds already put keyframe + reference latents
     side by side? Read from its source; unreadable source -> False (wrap)."""
     try:
         import inspect
-        return _NATIVE_MERGE in inspect.getsource(fn)
+        src = inspect.getsource(fn)
+        if _NATIVE_MERGE in src:
+            return True
+        helper = getattr(cls, _NATIVE_HELPER, None) if cls is not None else None
+        if helper is not None and ("self.%s(" % _NATIVE_HELPER) in src:
+            return _NATIVE_HELPER_MERGE in inspect.getsource(helper)
+        return False
     except Exception:
         return False
 
@@ -88,7 +103,7 @@ def owner(cls):
         return "ours"
     if any(getattr(fn, m, False) for m in FOREIGN):
         return "director"
-    if core_merges(fn):
+    if core_merges(fn, cls):
         return "core-native"
     return "core"
 

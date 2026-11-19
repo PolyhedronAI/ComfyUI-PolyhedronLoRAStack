@@ -61,7 +61,7 @@ MR = importlib.import_module("plsn1201.ph_minimax_ref")
 it = MR.ULSMiniMaxReference.INPUT_TYPES()
 req, opt = it["required"], it["optional"]
 widgets = [k for k in req if req[k][0] in ("FLOAT", "STRING", "INT") or isinstance(req[k][0], list)] \
-    + [k for k in opt if opt[k][0] in ("FLOAT", "STRING", "INT")]
+    + [k for k in opt if opt[k][0] in ("FLOAT", "STRING", "INT") and not opt[k][1].get("forceInput")]  # AMENDED v1342
 _need(widgets[-2:] == ["tags", "ref_noise"], "N1 ref_noise is the LAST widget, behind tags (%s)" % widgets[-3:])
 spec = opt["ref_noise"]
 _need(spec[0] == "FLOAT" and spec[1]["default"] == 0.001 and spec[1]["min"] == 0.0 and spec[1]["max"] == 1.0,

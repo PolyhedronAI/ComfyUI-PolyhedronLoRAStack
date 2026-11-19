@@ -81,12 +81,14 @@ for c in ast.walk(tree):
                                     if kk.value == "sigma_shift_low":
                                         spec = vv
 _need(order, "L1: ULSSampler INPUT_TYPES not found")
-_need(order[-1] == "sigma_shift_low",
-      "L1: sigma_shift_low is not the LAST required widget (canon law: growth "
-      "goes at the END) -- required ends on %r" % order[-1])
-_need(order[-2] == "scheduler_low",
+# v1344: sigma_shift_audio was appended after it (the same canon law), so
+# sigma_shift_low is now the last-but-one; nothing may sit between them.
+_need(order[-1] == "sigma_shift_audio" and order[-2] == "sigma_shift_low",
+      "L1: sigma_shift_low is not followed by exactly sigma_shift_audio (canon law: "
+      "growth goes at the END) -- required ends on %r" % order[-2:])
+_need(order[-3] == "scheduler_low",
       "L1: sigma_shift_low does not directly follow scheduler_low (%r sits "
-      "between)" % order[-2])
+      "between)" % order[-3])
 _need(spec is not None and isinstance(spec, ast.Tuple), "L1: spec shape drifted")
 _need(getattr(spec.elts[0], "value", None) == "FLOAT", "L1: not a FLOAT widget")
 def _const(v):
@@ -142,11 +144,11 @@ for shift, low, want in ((8.0, -1.0, 8.0), (8.0, 5.0, 5.0), (8.0, 0.0, 0.0),
           "L2: _resolve_low_shift(%r, %r) -> %r, want %r" % (shift, low, got, want))
 
 # ---- L3: the apply block, lifted and DRIVEN with a spy ---------------------
-_need("_apply_sigma_shift(model_low, _low_shift)" in SRC,
+_need("_apply_sigma_shift(model_low, _low_shift" in SRC,      # v1344: + the audio shift
       "L3: the LOW apply must use the RESOLVED value (_low_shift) -- the "
       "one-value-for-both v838 form is the wound this cut heals")
 start = SRC.index("_low_shift = _resolve_low_shift(")
-end = SRC.index("_apply_sigma_shift(model_low, _low_shift)", start)
+end = SRC.index("_apply_sigma_shift(model_low, _low_shift", start)
 end = SRC.index("\n", end)
 block = textwrap.dedent(SRC[SRC.rindex("\n", 0, start) + 1:end])
 block = textwrap.dedent(block)
@@ -157,7 +159,7 @@ block = textwrap.dedent(block)
 # a bare NameError that reads like a broken tree.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _lift as _LIFT
-_RAGGED_SRC, _RAGGED_MISSING = _LIFT.close_over(SRC, ["_is_ragged_latent"], set())
+_RAGGED_SRC, _RAGGED_MISSING = _LIFT.close_over(SRC, ["_is_ragged_latent", "_is_av_sampling"], set())
 _need(not _RAGGED_MISSING,
       "L3: lift of _is_ragged_latent is SHORT of %s -- a GUARD fault, not a "
       "tree fault" % ", ".join(_RAGGED_MISSING))
@@ -167,10 +169,10 @@ def _drive(shift, low, dual=True, sig=None, sig_h=None, sig_l=None,
            latent=None):
     calls = []
 
-    def spy(mdl, s):
+    def spy(mdl, s, a=0.0):      # v1344: + the audio shift
         calls.append((mdl, float(s)))
         return mdl
-    ns = {"_resolve_low_shift": R, "_apply_sigma_shift": spy,
+    ns = {"_resolve_low_shift": R, "_apply_sigma_shift": spy, "sigma_shift_audio": 0.0,
           "sigma_shift": shift, "sigma_shift_low": low, "dual_moe": dual,
           "model": "HI", "model_low": "LO",
           "sigmas": sig, "sigmas_high": sig_h, "sigmas_low": sig_l,
@@ -249,7 +251,7 @@ for sig in ("const STATE_WIDGETS", "const ORDER_V404", "const DISPLAY_ORDER"):
 for line_sig in ("const DUAL_ONLY", "const SINGLE_ONLY",
                  "const SIGMA_INERT", "const INACTIVE_MARK",
                  "const SAME_AS_HIGH", "const DEFAULT_SAMPLER_LOW",
-                 "const DEFAULT_SCHEDULER_LOW", "const DEFAULT_SIGMA_SHIFT_LOW",
+                 "const DEFAULT_SCHEDULER_LOW", "const DEFAULT_SIGMA_SHIFT_LOW", "const DEFAULT_SIGMA_SHIFT_AUDIO",
                  "const DEFAULT_PREVIEW_MODE", "const DEFAULT_SIGMA_SHIFT",
                  "const DEFAULT_HANDOFF_MODE", "const LEN_PHANTOM",
                  "const LEN_PRE_V404", "const LEN_V492_CURRENT",
@@ -306,19 +308,19 @@ const v544 = [true, 0.875, 1.0, 1, "fixed", 8, 1.0, "res_2s", "beta57", 1.0,
               true, 0, 10000, false, "Still · ComfyUI", 0.0, "Continuous",
               "same as high", "same as high"];
 const healed = _looksV544Current(v544) ? _healV544Current(v544) : null;
-out.heal544 = healed ? [healed.length, healed[healed.length - 1]] : null;
+out.heal544 = healed ? [healed.length, healed[19]] : null;
 
 // v492 save (17) must reach 20 through its own heal
 const v492 = v544.slice(0, 17);
 out.heal492 = _looksV492Current(v492)
-    ? (() => { const h = _healV492Current(v492); return [h.length, h[h.length - 1]]; })()
+    ? (() => { const h = _healV492Current(v492); return [h.length, h[19]]; })()
     : null;
 
 // v406/v407 phantom (15, preset string at wv[1]) must reach 20 (straggler fix)
 const phantom = [true, "Custom", 1.0, 1, "fixed", 8, 1.0, "res_2s", "beta57",
                  1.0, true, 0, 10000, false, "x"];
 out.healPhantom = _looksPhantomPreset(phantom)
-    ? (() => { const h = _healPhantomPreset(phantom); return [h.length, h[h.length - 1]]; })()
+    ? (() => { const h = _healPhantomPreset(phantom); return [h.length, h[19]]; })()
     : null;
 
 // pre-v404 migration must carry NO undefined (straggler fix)
@@ -358,8 +360,8 @@ open(mjs, "w", encoding="utf-8").write(harness)
 r = subprocess.run(["node", mjs], capture_output=True, text=True, timeout=60)
 _need(r.returncode == 0, "L4: node harness failed:\n%s" % (r.stderr[-800:],))
 out = json.loads(r.stdout.strip().splitlines()[-1])
-_need(out["orderLen"] == 20 and out["orderLast"] == "sigma_shift_low",
-      "L4: ORDER_V404 must end on sigma_shift_low at length 20 -- got %s/%s"
+_need(out["orderLen"] == 21 and out["orderLast"] == "sigma_shift_audio",
+      "L4: ORDER_V404 must end on sigma_shift_audio at length 21 (v1344) -- got %s/%s"
       % (out["orderLen"], out["orderLast"]))
 _need(out["displayAdj"] == "sigma_shift_low",
       "L4: DISPLAY must put sigma_shift_low directly under sigma_shift")
@@ -369,16 +371,16 @@ _need(out["sigmaInertClean"],
       "L4: sigma_shift_low crept into SIGMA_INERT -- that list RE-ENABLES its "
       "members when no curve is wired and would overwrite the Single greying")
 _need(out["defLow"] == -1.0, "L4: JS default drifted from the -1 sentinel")
-_need(out["heal544"] == [20, -1.0],
-      "L4: a v544..v838 save (19) must heal to 20 with the sentinel -- got %r"
+_need(out["heal544"] == [21, -1.0],
+      "L4: a v544..v838 save (19) must heal to 21 with the sentinel at slot 19 -- got %r"
       % (out["heal544"],))
-_need(out["heal492"] == [20, -1.0],
-      "L4: a v492 save (17) must reach 20 -- got %r" % (out["heal492"],))
-_need(out["healPhantom"] == [20, -1.0],
+_need(out["heal492"] == [21, -1.0],
+      "L4: a v492 save (17) must reach 21 -- got %r" % (out["heal492"],))
+_need(out["healPhantom"] == [21, -1.0],
       "L4: the phantom heal must reach 20 (it had stopped at 17 since v544) "
       "-- got %r" % (out["healPhantom"],))
-_need(out["migrate"] == [20, False],
-      "L4: a pre-v404 migration must be 20 long with NO undefined -- got %r"
+_need(out["migrate"] == [21, False],
+      "L4: a pre-v404 migration must be 21 long with NO undefined -- got %r"
       % (out["migrate"],))
 _need(out["greySingle"], "L4: Single must grey sigma_shift_low (DUAL_ONLY)")
 _need(out["greyCont"], "L4: Continuous must grey sigma_shift_low (ONE "

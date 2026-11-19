@@ -100,8 +100,10 @@ _need(r.get("label") == "denoise \u00b7 3 steps on the curve" and r.get("back") 
 # ---- C4 statics
 _need('const CURVE_UNREAD = ["steps", "scheduler", "steps_low", "scheduler_low"];' in JS, "C4 the four unread dials")
 ams = JS[JS.index("function _applyModeState(node) {"):JS.index("// \u2500\u2500 v1212: a wired curve IS the schedule")]
-_need("const off = !dual || (wired && CURVE_UNREAD.includes(name));" in ams
-      and "_setDisabled(_findWidget(node, name), wired)" in ams and "_curveLabels(node, wired, dual);" in ams,
+# v1346 AMENDED (declared): one OR-verdict per row (dual / wired curve / refine off), one _setDisabled pass
+_need("add(name, !dual || (wired && CURVE_UNREAD.includes(name)) || refOff)" in ams
+      and "for (const name of CURVE_UNREAD) add(name, wired || refOff);" in ams
+      and "_curveLabels(node, wired && !refOff, dual);" in ams,
       "C4 _applyModeState hides them while wired and labels denoise")
 _need('" step" + (x.steps === 1 ? "" : "s") + " on the curve"' in JS and "/pls/pu_sigma_run" in JS,
       "C4 the label says the asked count")

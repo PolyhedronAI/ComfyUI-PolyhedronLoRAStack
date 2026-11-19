@@ -11,7 +11,9 @@
 | [Upscale & Interpolate](#-polyhedron-power-upscale) | ⬡ Polyhedron Power Upscale · ⬡ Polyhedron Fast Upscale · ⬡ Polyhedron Interpolate |
 | [Cine Timeline](#-polyhedron-cine-timeline) | ⬡ Polyhedron Cine Timeline |
 | [Control & checks](#-control-blend--transition-check) | ⬡ Control Fit · ⬡ Control Map · ⬡ Apply Control · ⬡ Polyhedron Blend · ⬡ Transition Check |
-| [Workflow essentials](#-workflow-essentials) | ⬡ Load Model · ⬡ Load CLIP · ⬡ Load VAE · ⬡ Load Upscale Model · ⬡ VAE Codec · ⬡ Seed · ⬡ Int · ⬡ Empty Latent · ⬡ Switch · ⬡ Switch Inverse · ⬡ Media Info · ⬡ MiniMax Reference · ⬡ Reference Board · ⬡ Note · ⬡ Show Text |
+| [Workflow essentials](#-workflow-essentials) | ⬡ Load Model · ⬡ Load CLIP · ⬡ Load VAE · ⬡ Load Upscale Model · ⬡ VAE Codec · ⬡ Seed · ⬡ Int · ⬡ Empty Latent · ⬡ Switch · ⬡ Switch Inverse · ⬡ Media Info · ⬡ MiniMax Reference · ⬡ Image Reference · ⬡ Reference Board · ⬡ Note · ⬡ Show Text |
+| [Groups & layout](#-groups--layout) | Polyhedron groups · ⬡ Polyhedron Group Switch · ⬡ Polyhedron Align |
+| [MiniMax H3 Image](#-minimax-h3-image) | the H3 Image text-to-image model in the existing nodes |
 | [Attention & grading](#-polyhedron-attention) | ⬡ Polyhedron Attention · ⬡ Polyhedron NAG · ⬡ Polyhedron Filter · ⬡ Polyhedron Audio Stretch |
 
 Installed as one custom-node pack — the node names, the package id
@@ -1144,6 +1146,11 @@ goes dim, everything else stays where your eye expects it.
 
 ![The node in High + Low; the Single-only controls are dimmed, not hidden](assets/sampler_dual_overview.png)
 
+**Audio-video models** (MiniMax H3) take `sigma_shift` too: the shift is laid
+on the sampling object and handed to the DiT, and `sigma_shift_audio` gives the
+sound stream its own value. For models with their own sigma grid see
+[MiniMax H3 Image](#-minimax-h3-image).
+
 ## Inputs and outputs
 
 | Pin | Direction | Carries |
@@ -1291,6 +1298,12 @@ torch.compile) -- same picture, compare the ms/frame.
 reads neither `steps` nor `scheduler`: it starts at sigma = `denoise` and runs
 every curve point below it. The two dials hide and `denoise` names the steps
 it buys (on the H3 HyperFlow curve: 0.25 -> 1, 0.5 -> 2, 0.7 -> 3).
+
+**No refine.** With `refine_order` *off* no model pass runs: the pixel path
+(ESRGAN + fit, or a plain fit) delivers the canvas at `final_upscale_by`.
+The refine dials (`upscale_by`, `denoise`, `steps`, `cfg`, sampler,
+scheduler, the tile dials, `sigma_shift`) then hide -- their values stay
+saved and come back with the refine.
 
 # ⬡ Polyhedron Fast Upscale
 
@@ -1533,7 +1546,7 @@ of rendering a checkerboard.
 
 # ⬡ Workflow essentials
 
-Fifteen small nodes that the rest of the suite is wired *from*. None of them
+Sixteen small nodes that the rest of the suite is wired *from*. None of them
 opens a server route, none needs a model download of its own, and each one is
 registered behind its own guard flag, so a changed ComfyUI Core API can take
 one of them out without touching the others.
@@ -1564,6 +1577,7 @@ one of them out without touching the others.
 | **⬡ Polyhedron MiniMax Drift Control** | For a continued scene: the motion of the scene before carries on, the look may change. Patches the model. |
 | **⬡ Polyhedron H3 Latent Upscale** | The learned H3 latent upscaler: sample small, lift the latent here, then a short second pass at the target size. Weights (LBH-123-AI, MIT) offered by the node's Download. |
 | **⬡ Polyhedron MiniMax Second Pass Hold** | The second pass of a continued scene: puts the carried head back at full size and holds it. Between H3 Latent Upscale and the second sampler. |
+| **⬡ Polyhedron Image Reference** | One reference-image conditioning node for every family that takes pictures next to its prompt. The family is measured on the loaded text encoder, not guessed from a file name, and each family gets its own Core recipe: Qwen-Image 2.1, Qwen-Image-Edit, MiniMax H3 (handed to MiniMax Reference) and MiniMax H3 Image, every other family through Core's reference latents. For H3 Image without a picture it can place a **blank picture** (black, mid grey or white) in front of the prompt for an early window of the run (`blank_picture`, `blank_start`, `blank_end`) -- it softens the distilled model's hard text-to-image look. A wired `inpaint_mask` turns the latent output into image_1 with that mask, so the sampler repaints only the masked part. `prompt_in` takes a wired text. |
 | **⬡ Polyhedron Show Text** | Shows any text that reaches it (an info output, a resolved prompt) on the canvas, sized to its content, with the Note's colour row. |
 | **⬡ Polyhedron Reference Board** | Up to 9 images, 3 videos and 3 audios as cards in one node -- tag, role, retention, budget -- instead of loose wires. Its `refs` output fills MiniMax Reference's free slots; `definitions` drafts the official subject/retention lines. Files go through ComfyUI's own upload. |
 
@@ -1576,6 +1590,63 @@ colours as ComfyUI's own right-click › Colors menu — ten choices including
 colour the node will actually take. Fold the row away with the chevron when
 you do not want it. The note has no inputs and no outputs: it is never
 executed and costs nothing when you queue a prompt.
+
+# ⬡ Groups & layout
+
+**Polyhedron groups.** A group can be made a *Polyhedron group* (the Align
+bar's group button, or the group's own context menu). It looks like a normal
+ComfyUI group -- title in the group colour, title wrapped inside the group --
+and gets a slim bar at its foot: the group colours, **Fit** (the group to its
+nodes) and an **on / off** switch that mutes or bypasses everything inside.
+Core groups stay untouched; nothing is converted behind your back.
+
+**⬡ Polyhedron Group Switch** is a frontend-only node: one row per
+Polyhedron group of the workflow, on / off, with the groups it hides listed
+by name. Groups are found by id, so renaming a group does not break the row.
+
+**⬡ Polyhedron Align** is a frontend-only node too. While the graph holds
+one that runs, a fixed floating bar appears below the menus: align left /
+centre / right / top / middle / bottom, equal width / height, distribute
+horizontally / vertically, and "make a Polyhedron group" around the
+selection. It aligns **nodes and groups** -- a group moves with every node
+whose centre lies in it, so two selected groups line up as two whole blocks.
+The bar remembers where it was dragged (per browser); the node's switch turns
+it off, deleting the node removes it. Own implementation under the pack's MIT
+licence; the idea of an align bar comes from ComfyUI-NodeAligner (Tenney95,
+GPL-3.0), no code, icon or style of it is used.
+
+Both nodes run nothing in the queue: they are never executed and add no
+server route.
+
+# ⬡ MiniMax H3 Image
+
+MiniMax's H3 Image (text to image, own DiT, Qwen3-VL text encoder, its own
+image VAE) runs in the existing nodes -- there is no separate H3 Image node
+family:
+
+- **CLIP Text Encode + Empty Latent** make the text-to-image graph;
+  **Empty Latent** has the type *MiniMax H3 Image (24ch, one frame)*, and
+  **Load VAE** takes the model's own image VAE.
+- **Sampler.** H3 Image is distilled onto its own sigma grid. When the stock
+  scheduler would step between the grid points, the Sampler builds the
+  schedule from the grid points themselves; a curve wired to `sigmas` always
+  wins. `sigma_shift` does not apply to a model on its own grid (the Sampler
+  says so). The `negative` pin is optional: unwired, it is the zeroed positive
+  -- right for a cfg-1 distilled model.
+- **A curve on `sigmas`.** With a curve wired, every time-windowed
+  conditioning (start / end percent, e.g. the Image Reference's blank picture)
+  is read through the model's own percent-to-sigma, and the console names the
+  steps it really covers -- the window is a sigma range, not a step count.
+  Example: a blank picture 0-0.25 is steps 1-2 of the own 6-step grid, but
+  steps 1-4 of an 8-step curve shifted 12.
+- **Image Reference** gives H3 Image its input pictures (alpha laid over
+  white, first frame of a batch, inpainting) or, without a picture, the blank
+  picture prime.
+- **Power Upscale** refines the 8 MP result with its own curve on `sigmas`;
+  with `refine_order` *off* it only runs the pixel path (ESRGAN + fit) and
+  hides the dials that path does not read.
+
+The model's licence is MiniMax's; check its terms for your use.
 
 # ⬡ Polyhedron Attention
 
@@ -1651,7 +1722,12 @@ graph runs.
 
 Exposure, temperature, tint, contrast, gamma, saturation, vibrance, highlights,
 shadows, black point and a sharpen pass, plus `.cube` LUT support with its own
-strength. Looks are saved and loaded as presets from the pack's `presets/`
+strength. `sharpen_masking` (0-1) keeps the sharpen on the contours and leaves
+flat areas such as skin alone -- an edge mask, the principle Lightroom uses.
+**Harmonize** (`harmonize`, `harmonize_amount`, `harmonize_ring`,
+`harmonize_tone`, `harmonize_seam`, `harmonize_window`) matches a pasted or
+repainted region to its surroundings in colour and light, with a soft seam
+and, on video, a window over time. Looks are saved and loaded as presets from the pack's `presets/`
 folder; both directions run through one whitelist, so a hand-edited or
 downloaded preset can never push unknown keys into the node.
 

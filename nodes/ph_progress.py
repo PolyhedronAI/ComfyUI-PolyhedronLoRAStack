@@ -100,14 +100,14 @@ def _rates_legacy_path():
 
 def _rates_blank():
     return {"enc": None, "step": None, "dec": None, "runs": 0, "when": "",
-            "peak_gb": None, "peak_mpf": None}
+            "peak_gb": None, "peak_mpf": None, "fit_mpf": None}
 
 
 def _rates_clean(d):
     r = _rates_blank()
     if not isinstance(d, dict):
         return r
-    for k in ("enc", "step", "dec", "peak_gb", "peak_mpf"):
+    for k in ("enc", "step", "dec", "peak_gb", "peak_mpf", "fit_mpf"):
         v = d.get(k)
         r[k] = float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
     try:
@@ -172,6 +172,12 @@ def _rates_learn(section, mpf, enc_s, step_s, dec_s, peak_gb=None):
         r["peak_gb"], r["peak_mpf"] = float(peak_gb), float(mpf)
     r["runs"] = int(r.get("runs", 0)) + 1
     r["when"] = time.strftime("%Y-%m-%d %H:%M")
+    _rates_save()
+    return r
+
+
+def _rates_save():
+    """Write every section to the user directory (never raises)."""
     path = _rates_path()
     try:
         if path:
@@ -181,7 +187,24 @@ def _rates_learn(section, mpf, enc_s, step_s, dec_s, peak_gb=None):
                                         if k != _RATES_LEGACY}}, fh)
     except Exception:
         pass
-    return r
+
+
+def _rates_fit_learn(section, mpf_seen, fit_ratio):
+    """v1321 (Frank 08.11., bridge 360: the refine at 1792x1024 x 243 frames passed sageattention's 32-bit
+    reach, fell back to the model's own backend and ran out of memory): remember the size class that still
+    FITS the fast kernel, measured -- the megapixel-frames of the call seen times the share of its sequence
+    that would have fit, less 1 % for the parts that do not shrink with the canvas (text, audio). The latest
+    measurement wins (the reach is a property of the model and the call, not an average). -> fit_mpf or None."""
+    try:
+        mpf_seen, fit_ratio = float(mpf_seen), float(fit_ratio)
+    except (TypeError, ValueError):
+        return None
+    if not (mpf_seen > 0 and 0 < fit_ratio < 1):
+        return None
+    r = _rates_load(section)
+    r["fit_mpf"] = mpf_seen * max(0.01, fit_ratio - 0.01)
+    _rates_save()
+    return r["fit_mpf"]
 
 
 def _phase_plan(mpf, steps_run, cached, rates):

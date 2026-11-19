@@ -206,7 +206,7 @@ py_defaults = {}
 mreq = re.search(r'"required"\s*:\s*\{(.*?)\n\s*\}\s*,?\s*\n\s*\}', PY_SRC, re.S)
 if not mreq:
     _fail("required INPUT_TYPES block not found")
-for name, dv in re.findall(r'"(\w+)":\s*\((?:[^()]*?)\{"default":\s*("?[\w.\-]+"?)', mreq.group(1)):
+for name, dv in re.findall(r'"(\w+)":\s*\((?:[^()]*?)\{"default":\s*("?[\w.\- ]+"?)', mreq.group(1)):
     py_defaults[name] = dv.strip('"') if dv.startswith('"') else float(dv)
 
 if set(js_defaults) != set(py_defaults):

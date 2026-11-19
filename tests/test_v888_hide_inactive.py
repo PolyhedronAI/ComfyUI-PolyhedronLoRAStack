@@ -304,7 +304,7 @@ ok(node.sizeCalls.length === 0,
 console.log("V4 ok");
 """
     rc, out = _node_harness(os.path.join(JSDIR, "ph_power_upscale.js"),
-                            "_applyModeState", "DUAL_ONLY", ["RESTORE_ONLY", "CURVE_UNREAD"], drive,   # AMENDED v1199: the restore dials' list; v1212: the curve's
+                            "_applyModeState", "DUAL_ONLY", ["RESTORE_ONLY", "CURVE_UNREAD", "REFINE_ONLY"], drive,   # AMENDED v1199: the restore dials' list; v1212: the curve's; v1346: refine off
                             vis_src, node_src)
     if rc:
         _fail("upscale harness: %s" % out.strip())

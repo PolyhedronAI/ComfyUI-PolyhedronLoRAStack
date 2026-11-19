@@ -63,6 +63,7 @@ try:  # package load (ComfyUI) vs direct module load (tools)
     from .uls_sampler import (_apply_sigma_shift, _resolve_low_shift, _low_or,
                               SAME_AS_HIGH, _current_node_id,
                               _latent_parts, _joint_video_half)   # v1004
+    from .uls_sampler import _grid_sigmas   # v1337
     from .ph_logmute import MuteStagingLogs as _MuteInfoLogs
 except ImportError:  # pragma: no cover
     import os as _os
@@ -75,6 +76,7 @@ except ImportError:  # pragma: no cover
     from uls_sampler import (_apply_sigma_shift, _resolve_low_shift, _low_or,
                              SAME_AS_HIGH, _current_node_id,
                              _latent_parts, _joint_video_half)   # v1004
+    from uls_sampler import _grid_sigmas   # v1337
     from ph_logmute import MuteStagingLogs as _MuteInfoLogs
 
 # ComfyUI's VIDEO type (optional) -- the exact Media Loader pattern: the
@@ -1147,6 +1149,65 @@ def _suggest_final_by(w, h, model_scale, resize_method, final_by, snap, area_max
     except Exception:
         return None
     return None
+
+
+class _RefineRefit(RuntimeError):
+    """v1321: the joint refine ran out of memory AFTER the attention said the call is longer than the fast
+    kernel reaches -- the caller lands the canvas inside the measured reach and runs the refine once more."""
+
+    def __init__(self, fit_mpf):
+        super().__init__("refine too long for the fast attention kernel (fit %.0f MPF)" % float(fit_mpf))
+        self.fit_mpf = float(fit_mpf)
+
+
+def _is_oom(exc):
+    """v1321: a CUDA out-of-memory, whatever class torch gives it."""
+    oom = getattr(torch, "OutOfMemoryError", None)
+    if oom is not None and isinstance(exc, oom):
+        return True
+    return "out of memory" in str(exc).lower()
+
+
+def _learn_reach(cov_snap, rsec, mpf):
+    """v1321: an address verdict in the refine's coverage books is a MEASURED reach of the fast kernel --
+    remembered with the model's rates (rates.json), said once. -> fit_mpf or None; never raises."""
+    try:
+        pa = _cover_mod()
+        v = pa.coverage_verdict(cov_snap) if (pa is not None and cov_snap) else None
+        if not (v and v.get("level") == "warn" and v.get("fit_ratio")):
+            return None
+        fit = _rates_fit_learn(rsec, mpf, v["fit_ratio"])
+        if fit:
+            print(f"[PLS] Power Upscale: the fast kernel reaches about {fit:.0f} megapixel-frames on this model "
+                  f"(this refine: {mpf:.0f}) -- remembered; the next run lands its refine inside it by itself")
+        return fit
+    except Exception:
+        return None
+
+
+def _fit_capped_final_by(w, h, final_by, n_frames, snap, fit_mpf):
+    """v1321 pure: the largest final_upscale_by (step 0.01, never below half the dialled one) whose refine
+    canvas -- round(w * f) x round(h * f), snapped to the refine grid, the law the cache key uses -- times the
+    frame count stays inside `fit_mpf` megapixel-frames. -> None when the dialled value already fits (or no
+    reach is known), else (f, (sw, sh)); (None, None) when even half does not fit."""
+    try:
+        f0, n, cap = float(final_by), int(n_frames), float(fit_mpf or 0)
+    except (TypeError, ValueError):
+        return None
+    if not (cap > 0 and n > 0 and f0 > 0):
+        return None
+    def _mpf(f):
+        sw, sh = _snap_to(int(round(w * f)), int(round(h * f)), snap)
+        return sw * sh * n / 1e6, (sw, sh)
+    if _mpf(f0)[0] <= cap:
+        return None
+    f = round(f0 - 0.01, 2)
+    while f >= max(0.25, f0 * 0.5) - 1e-9:
+        m, canvas = _mpf(f)
+        if m <= cap:
+            return f, canvas
+        f = round(f - 0.01, 2)
+    return None, None
 
 
 # v1225: the attention slowdown seen at a refine size, so the NEXT plan at that size is honest (Frank 25.10.:
@@ -2447,12 +2508,12 @@ try:
     from .ph_progress import (_HEARTBEAT_S, _RATES_EMA, _RATES, _rates_section,  # noqa: F401
                               _rates_load, _rates_learn, _phase_plan, _vram_total_gb,
                               _vram_peak_reset, _vram_peak_gb, _memory_note, _Phase,
-                              _peak_line)
+                              _peak_line, _rates_fit_learn)
 except ImportError:  # pragma: no cover - direct-run fallback, as elsewhere here
     from ph_progress import (_HEARTBEAT_S, _RATES_EMA, _RATES, _rates_section,  # noqa: F401
                              _rates_load, _rates_learn, _phase_plan, _vram_total_gb,
                              _vram_peak_reset, _vram_peak_gb, _memory_note, _Phase,
-                             _peak_line)
+                             _peak_line, _rates_fit_learn)
 
 
 def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
@@ -2654,16 +2715,27 @@ def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
         _cov.coverage_begin("Power Upscale joint refine", consumer=node_id,
                             advise=lambda _v: _refine_advice(_v, _ca, _co))
     cov_snap = None
+    _oom = None
     try:
         with _MuteInfoLogs(mute, label="Power Upscale"):
             out = comfy.sample.sample_custom(model, noise, float(cfg), sampler, sig,
                                              positive, negative, packed,
                                              noise_mask=mask, callback=_cb,
                                              disable_pbar=True, seed=int(seed))
+    except Exception as _exc:
+        if not _is_oom(_exc):
+            raise
+        _oom = _exc   # v1321: decided below, once the coverage books are closed
     finally:
         _open_step(steps_run + 99)   # closes whatever phase is open, opens none
         if _cov is not None:
             cov_snap = _cov.coverage_end()
+    if _oom is not None:
+        # v1321: out of memory on the slow fallback, with a measured reach -> the caller lands inside it once
+        _fit = _learn_reach(cov_snap, rsec, mpf)
+        if _fit and cov_ctx and cov_ctx[1] == "after pixel" and cov_ctx[0] is not None:
+            raise _RefineRefit(_fit) from _oom
+        raise _oom
     peaks.append(("sample", stw["peak"]))
     tt.append(time.monotonic())
     vid_out = _joint_video_half(out)
@@ -2694,6 +2766,7 @@ def _joint_refine(model, positive, negative, vae, frames, latent, sigmas, seed,
         _cv = _pa.coverage_verdict(cov_snap) if (_pa is not None and cov_snap) else None
         if _cv and _cv["level"] == "warn" and _cv.get("factor"):
             slow_now = float(_cv["factor"])
+        _learn_reach(cov_snap, rsec, mpf)   # v1321: the next run lands inside the measured reach
     except Exception:
         slow_now = None
     if slow_now and slow_now > 1.05:
@@ -3480,6 +3553,25 @@ class ULSPowerUpscale:
             # v1164: the grid is VAE x patch (H3: 16 x 2 = /32) -- a /16 canvas gave an odd latent side
             # (1072x1872 -> 67x117) and a pinned frame cannot be patchified there
             _jr_snap *= _dit_patch(model, 1)
+        if _joint_on and _order == "after pixel" and _final_runs and str(resize_method) != _NO_RESIZE:
+            # v1321 (Frank 08.11., bridge 360 scene 1): the refine canvas is landed inside the fast attention
+            # kernel's MEASURED reach before anything runs -- the pixel pass then builds that canvas directly.
+            _fit_mpf = (_rates_load(_rates_section("joint", model)) or {}).get("fit_mpf")
+            _capped = _fit_capped_final_by(w, h, final_upscale_by, n_frames,
+                                           _jr_snap, _fit_mpf)
+            if _capped is not None:
+                _cf, _cc = _capped
+                if _cf is None:
+                    print(f"[PLS] Power Upscale: the refine at final_upscale_by {float(final_upscale_by):.2f} is "
+                          f"past the fast kernel's reach ({_fit_mpf:.0f} megapixel-frames measured) and even half "
+                          f"the value does not fit -- fewer frames is the lever; running as dialled")
+                else:
+                    print(f"[PLS] Power Upscale: final_upscale_by {float(final_upscale_by):.2f} -> {_cf:.2f} "
+                          f"({_cc[0]}x{_cc[1]} x{n_frames} frames): the refine stays inside the fast kernel's "
+                          f"measured reach ({_fit_mpf:.0f} megapixel-frames on this model). The dialled value "
+                          f"would fall back to the model's own backend -- ~3x slower, and at this length out of "
+                          f"memory (08.11.). Fewer frames give the full size back.")
+                    final_upscale_by = _cf
         if _joint_on:
             if sigmas is not None:
                 _jr_steps = max(1, len(_sigma_run(
@@ -3747,6 +3839,14 @@ class ULSPowerUpscale:
                         print(f"[PLS] Power Upscale: stage={st['tag']} pixel cache: "
                               f"{'stored' if _ok else 'skipped'} ({_why})")
                 t_pix = time.monotonic()
+                if st.get("sig_run") is None:
+                    # v1337: a model on its OWN sigma grid refines on grid
+                    # points (the Sampler's rule, one seat: _grid_sigmas). The
+                    # step count stays the stage's; a wired curve came first.
+                    _gr = _grid_sigmas(m, st["steps"], samp, sched, st["denoise"],
+                                       who="Power Upscale: stage=%s" % st["tag"])
+                    if _gr is not None:
+                        st["sig_run"] = _gr
                 cur = _refine_tiles(m, positive, negative, vae, cur, grid, seed,
                                     st["steps"], st["cfg"], samp, sched,
                                     st["denoise"], clock, st["tag"],
@@ -3993,11 +4093,37 @@ class ULSPowerUpscale:
             _c = None
             if _jr_hit is not None:
                 _c = (_jr_hit, n_frames, int(_hw), int(_hh))
-            cur, _jr_info = _joint_refine(model, positive, negative, vae, cur, latent,
-                                          sigmas, seed, steps, cfg, sampler_name,
-                                          scheduler, denoise, audio_stream, clock,
-                                          probe=probe, mute=mute_staging_logs, cached=_c,
-                                          vae_tiling=vae_tiling, cov_ctx=(_cov_args, "after pixel"))
+            for _try in (1, 2):   # v1321: a second pass only after an OOM past the fast kernel's reach
+                try:
+                    cur, _jr_info = _joint_refine(model, positive, negative, vae, cur, latent,
+                                                  sigmas, seed, steps, cfg, sampler_name,
+                                                  scheduler, denoise, audio_stream, clock,
+                                                  probe=probe, mute=mute_staging_logs, cached=_c,
+                                                  vae_tiling=vae_tiling, cov_ctx=(_cov_args, "after pixel"))
+                    break
+                except _RefineRefit as _rr:
+                    if _try == 2 or _c is not None:
+                        raise
+                    _free()
+                    try:
+                        comfy.model_management.soft_empty_cache()
+                    except Exception:
+                        pass
+                    _ch, _cw = int(cur.shape[1]), int(cur.shape[2])
+                    _got = _fit_capped_final_by(_cw, _ch, 1.0, int(cur.shape[0]), _jr_snap, _rr.fit_mpf)
+                    if not _got or _got[0] is None:
+                        raise
+                    _nf, (_nw, _nh) = _got
+                    print(f"[PLS] Power Upscale: OUT OF MEMORY in the refine at {_cw}x{_ch} -- the call was "
+                          f"longer than the fast kernel reaches. Running it ONCE more at {_nw}x{_nh} (x{_nf:.2f} "
+                          f"of the canvas, inside the measured {_rr.fit_mpf:.0f} megapixel-frames). The next run "
+                          f"with these settings lands there by itself.")
+                    cur = _lanczos_to(cur, _nw, _nh)
+                    # the latent of THIS canvas is what a next run with these settings asks the cache for
+                    _jr_key = _cache_key(frames, vae, _um_key, (_nw, _nh), resize_method)
+                    if _cov_args is not None:
+                        _cov_args = (_cov_args[0], _cov_args[1], _cov_args[2], _cov_args[3],
+                                     round(float(_cov_args[4]) * _nf, 2), _cov_args[5])
             if _jr_hit is None and not _rs_before:
                 _latent_cache_put(_jr_key, _jr_info["vid_lat"], "after pixel")
             _cover_report_refine(_jr_info, _cov_args, "after pixel")

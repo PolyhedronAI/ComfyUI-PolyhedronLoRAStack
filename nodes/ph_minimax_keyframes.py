@@ -161,6 +161,14 @@ class ULSMiniMaxKeyframes:
                 # it follows frame_fit in the widget order (#577 append law).
                 "tags": ("STRING", {"multiline": True, "default": "",
                                     "tooltip": "Speaking names for the two frames, one per line: 'start = first_frame', 'goal = last_frame'. In the prompt write @start -- the node puts in the LIVE <Picture n> (the last frame is <Picture 2> only when a first frame is wired). @first_frame / @last_frame work without an alias. An unknown or unwired tag stops the run by name."}),
+                # v1342 (Frank 18.11.): wired texts get their OWN socket rows. A wired FIELD (prompt, tags) has
+                # no row of its own any more and its dot lands on another row (on clip in Frank's frontend) -- as
+                # the Image Reference's prompt_in (v1341). Sockets, appended last: the widget order is untouched.
+                "prompt_in": ("STRING", {"forceInput": True,
+                              "tooltip": "Wired text replaces the prompt field (which keeps its text for when the "
+                                         "wire comes off)."}),
+                "tags_in": ("STRING", {"forceInput": True,
+                            "tooltip": "Wired tag lines replace the tags field."}),
             },
         }
 
@@ -183,7 +191,11 @@ class ULSMiniMaxKeyframes:
                    "text run -- t2va and fl2va are one model.")
 
     def build(self, clip, vae, latent, prompt, frame_fit,
-              first_frame=None, last_frame=None, tags=""):
+              first_frame=None, last_frame=None, tags="", prompt_in=None, tags_in=None):
+        if prompt_in is not None:                     # v1342: the wired text wins over the field
+            prompt = str(prompt_in)
+        if tags_in is not None:
+            tags = str(tags_in)
         samples = latent.get("samples") if isinstance(latent, dict) else latent
         size = M.minimax_size_from_latent(samples)
         if size is None:

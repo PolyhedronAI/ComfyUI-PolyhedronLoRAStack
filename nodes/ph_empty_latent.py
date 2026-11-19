@@ -190,6 +190,10 @@ class ULSEmptyLatent:
                                             "WAN / Hunyuan / Mochi / LTXV / Cosmos -> 5D VIDEO latent "
                                             "with that architecture's frame packing; the 'length' "
                                             "control becomes active.\n"
+                                            "MiniMax H3 Image -> one-frame 24ch latent at /16 on the "
+                                            "32 grid (text to image with the CLIP Text Encode, edits "
+                                            "with Image Reference); the model works at 4-20 MP, best "
+                                            "around 16 MP (4096x4096, 5472x3072, 6272x2688).\n"
                                             "Wire the VAE for exact channels/scale; otherwise safe /8 "
                                             "16ch defaults are used (fine for zeros noise)."}),
                 "width": ("INT", {"default": 1024, "min": 16, "max": _MAX_RES, "step": 8,
@@ -387,6 +391,26 @@ class ULSEmptyLatent:
         return (positive, negative, lat,
                 video.shape[4], video.shape[3], w, h)
 
+    def _minimax_image(self, positive, negative, width, height, batch_size,
+                       noise_type, noise_seed, noise_strength):
+        """v1325: the MiniMax H3 IMAGE latent -- Core's MiniMaxH3ImageConditioning
+        builds torch.zeros([1, 24, 1, H // 16, W // 16]) on the 32 canvas grid
+        (Core 0.45.0). One stream, one frame, no audio part: the joint AV latent
+        of the video model would be read as video + audio and break the run."""
+        M = uls_latent_math
+        div = M.MINIMAX_CANVAS_MULTIPLE
+        w = max(div, int(round(width / float(div))) * div)
+        h = max(div, int(round(height / float(div))) * div)
+        shape = (int(batch_size), 24, 1, h // 16, w // 16)
+        samples = uls_noise.make_noise(noise_type, shape, noise_seed, noise_strength)
+        samples = samples.to(comfy.model_management.intermediate_device())
+        note = ""
+        if (w, h) != (int(width), int(height)):
+            note = " (size snapped from %dx%d to the model's 32 grid)" % (int(width), int(height))
+        print("[PLS] Empty Latent: type=minimax_h3_image shape=%s %s%s"
+              % (tuple(samples.shape), uls_noise.noise_log_tag(noise_type, noise_seed), note))
+        return (positive, negative, {"samples": samples}, w // 16, h // 16, w, h)
+
     def generate(self, positive=None, negative=None, latent_type="Image",
                  width=1024, height=1024, length=1,
                  batch_size=1, noise_type="zeros", noise_seed=0,
@@ -401,6 +425,11 @@ class ULSEmptyLatent:
         _legacy_noise_note(noise_type)
         key = uls_latent_math.canonical_type(latent_type)
         vae_ch, vae_sdiv = _vae_geometry(vae)
+
+        if key == "minimax_h3_image":
+            return self._minimax_image(positive, negative, width, height,
+                                       batch_size, noise_type, noise_seed,
+                                       noise_strength)
 
         if key == "minimax_h3":
             return self._minimax_av(positive, negative, width, height, length,

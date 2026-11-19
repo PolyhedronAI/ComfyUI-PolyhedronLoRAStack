@@ -54,6 +54,8 @@ import re
 import os
 
 import folder_paths
+
+from . import ph_model_path  # v1326: a moved model file is found again by its file name
 import comfy.sd
 import comfy.utils
 import torch
@@ -401,6 +403,8 @@ _MODEL_CLASS_CLIP_TYPE = {
     "Boogu": "boogu",
     "Krea2": "krea2",
     "MiniMaxMusic3": "minimax",           # v1041: comfy/sd.py -- CLIPType.MINIMAX + the audio_decoder key
+    "MiniMaxH3": "minimax",               # v1325: model_base.MiniMaxH3 (video, AV) and its subclass
+                                          # MiniMaxH3Image (Core 0.45.0) -- the MRO walk reaches it
 }
 
 # Families that need TWO text encoders (core's DualCLIPLoader).
@@ -694,7 +698,7 @@ class ULSLoadCLIP:
         # dense, but a hand-edited or older workflow must not fail over a hole.
         # v828: the list decorates values with sizes; strip HERE, at the one
         # collection point, so every consumer below sees the bare filename.
-        clip_name = _strip_size(clip_name)
+        clip_name = ph_model_path.relocate(("text_encoders",), _strip_size(clip_name), "Load CLIP")  # v1326
         names = [clip_name] if _is_filled(clip_name) else []
         for i in range(2, _MAX_CLIP_SLOTS + 1):
             value = kwargs.get(f"clip_name_{i}")
@@ -703,7 +707,7 @@ class ULSLoadCLIP:
             # slot keys (hand-edited, older) grew three phantom encoders and
             # was forced into the four-encoder recipe (found driving #1077).
             if value is not None:
-                value = _strip_size(value)
+                value = ph_model_path.relocate(("text_encoders",), _strip_size(value), "Load CLIP")  # v1326
             if _is_filled(value):
                 names.append(str(value))
         if not names:
@@ -884,6 +888,7 @@ class ULSLoadVAE:
 
     def load(self, vae_name, precision="auto", model=None):
         vae_name = _strip_size(vae_name)  # v828: sized list entries
+        vae_name = ph_model_path.relocate(("vae",), vae_name, "Load VAE")  # v1326
         dtype = getattr(torch, self._DTYPES[precision]) if precision in self._DTYPES else None
 
         vae_path = folder_paths.get_full_path_or_raise("vae", vae_name)
@@ -1030,6 +1035,10 @@ def _sized_list(names, folders):
     return [_with_size(n, folders) for n in names]
 
 
+# v1326: the folder types one Load Model slot may draw from (the list below merges exactly these).
+_MODEL_FOLDERS = ("diffusion_models", "unet", "checkpoints", "unet_gguf", "diffusion_models_gguf")
+
+
 def _model_source_list():
     """Merged model filename list (same folders the Select Model Switch scans)."""
     names = set()
@@ -1139,7 +1148,7 @@ class ULSLoadCLIPVision:
 
     def load(self, clip_name, expect="any"):
         import comfy.clip_vision
-        name = _strip_size(clip_name)
+        name = ph_model_path.relocate(("clip_vision",), _strip_size(clip_name), "Load CLIP Vision")  # v1326
         path = folder_paths.get_full_path_or_raise("clip_vision", name)
         with _blocking("Load CLIP Vision", "load:clip_vision", size=_file_mb(path),
                        what="load %s (%.0f MB)" % (name, _file_mb(path)), unit="MB"):
@@ -1229,7 +1238,7 @@ class ULSLoadModel:
                 f"[PLS] Load Model: slot {int(select)} is empty -- pick a "
                 f"model file there or change 'select'."
             )
-        name = str(name)
+        name = ph_model_path.relocate(_MODEL_FOLDERS, str(name), "Load Model")  # v1326
         kind = _detect_kind(name)
 
         if kind == "gguf":

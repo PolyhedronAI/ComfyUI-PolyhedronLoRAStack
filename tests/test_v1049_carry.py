@@ -195,6 +195,7 @@ ref = (ROOT / "nodes" / "ph_minimax_ref.py").read_text(encoding="utf-8")
 opt = ref[ref.index('"optional": {'):ref.index("RETURN_TYPES")]
 import re
 keys = re.findall(r'^\s{16}"(\w+)": \(', opt, re.M)
+keys = [k for k in keys if k not in ("prompt_in", "tags_in")]   # AMENDED v1342: two text sockets appended behind
 _need(keys and keys[-2] == "first_frame" and keys[-3] == "tags" and keys[-1] == "ref_noise",   # AMENDED v1201: + ref_noise behind it
       "C3 first_frame: a socket appended after the last widget (v1201: ref_noise appended behind it)")
 _need("KR.mark(kf, who)" in ref and "cond, {\"minimax_keyframes\": kf_list, \"minimax_frame_count\": frame_count})" in ref,
@@ -252,6 +253,9 @@ if core:
     old_core = ('payload["cond_video_latents"] = [kf["latent"] for kf in keyframes]' in h3
                 and 'payload["cond_video_latents"] = [r["latent"] for r in refs if "latent" in r]' in h3)
     new_core = KR._NATIVE_MERGE in h3
+    # AMENDED v1342: the third kind -- Core 989d93d merges in MiniMaxH3._cond_latents (keyframes, then refs)
+    helper_core = ("self._cond_latents(" in h3 and KR._NATIVE_HELPER_MERGE in h3)
+    new_core = new_core or helper_core
     _need(old_core != new_core,
           "C4 Core is one of the two known kinds: overwrites (we merge) or appends (Core merges) -- "
           "old=%s new=%s" % (old_core, new_core))
@@ -264,6 +268,29 @@ if core:
     _need(KR.owner(NativeH3) == "core-native" and KR.ensure(NativeH3) == "core-native"
           and not getattr(NativeH3.extra_conds, KR.MARK, False),
           "C4 a Core that merges natively is left alone (owner core-native, no wrapper)")
+    # v1342: ... also when the merge sits in the _cond_latents helper (Core 989d93d)
+    class HelperH3:
+        def extra_conds(self, **kw):
+            payload = {}
+            payload.update(self._cond_latents(kw.get("k"), kw.get("r")))
+            return payload
+
+        @staticmethod
+        def _cond_latents(keyframes, refs):
+            return {"cond_video_latents": [kf["latent"] for kf in keyframes] + [r["latent"] for r in refs if "latent" in r]}
+    _need(KR.owner(HelperH3) == "core-native" and KR.ensure(HelperH3) == "core-native"
+          and not getattr(HelperH3.extra_conds, KR.MARK, False),
+          "C4 a Core that merges in its _cond_latents helper is left alone too (v1342)")
+    class HelperNoMerge:
+        def extra_conds(self, **kw):
+            payload = {}
+            payload.update(self._cond_latents(kw.get("k"), kw.get("r")))
+            return payload
+
+        @staticmethod
+        def _cond_latents(keyframes, refs):
+            return {"cond_video_latents": [r["latent"] for r in refs]}
+    _need(KR.owner(HelperNoMerge) == "core", "C4 a helper that does NOT merge is still wrapped")
 else:
     print("  note  Core not found -- the C4 source pin SKIPPED")
 

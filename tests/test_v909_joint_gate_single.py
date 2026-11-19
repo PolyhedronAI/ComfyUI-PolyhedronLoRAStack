@@ -63,18 +63,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _lift as _LIFT
 
 start = SRC.index("_low_shift = _resolve_low_shift(")
-end = SRC.index("_apply_sigma_shift(model_low, _low_shift)", start)
+end = SRC.index("_apply_sigma_shift(model_low, _low_shift", start)
 end = SRC.index("\n", end)
 BLOCK = textwrap.dedent(SRC[SRC.rindex("\n", 0, start) + 1:end])
 
 # What the harness supplies itself; everything else the seam needs is lifted
 # out of the module, arithmetic included (a stubbed resolver would test the
 # stub). _apply_sigma_shift is the ONE stub -- it is the spy.
-PROVIDED = set(["_apply_sigma_shift", "sigma_shift", "sigma_shift_low",
+PROVIDED = set(["_apply_sigma_shift", "sigma_shift", "sigma_shift_low", "sigma_shift_audio",
                 "dual_moe", "model", "model_low", "sigmas", "sigmas_high",
                 "sigmas_low", "latent_image"])
 DEPS_SRC, MISSING = _LIFT.close_over(SRC, ["_is_ragged_latent",
-                                           "_resolve_low_shift"], PROVIDED)
+                                           "_resolve_low_shift", "_is_av_sampling"], PROVIDED)
 _need(not MISSING,
       "the lift is closed" if not MISSING else
       "the lift is short of %s -- a GUARD fault, not a tree fault"
@@ -122,7 +122,7 @@ else:
 
 # --- D: the v870 promises still stand ---------------------------------------
 i_gate = SRC.find('_is_ragged_latent((latent_image or {}).get("samples"))')
-i_patch = SRC.find("model = _apply_sigma_shift(model, sigma_shift)")
+i_patch = SRC.find("model = _apply_sigma_shift(model, sigma_shift")
 _need(i_gate > 0 and i_patch > 0 and i_gate < i_patch,
       "D: the joint refusal still precedes the patch")
 _need("ModelSamplingMiniMaxH3" in SRC,
@@ -140,12 +140,13 @@ def _drive(dual, low, shift=0.0, joint=False, model_low="LO"):
     """Return (patches, refused)."""
     calls = []
 
-    def spy(mdl, s):
+    def spy(mdl, s, a=0.0):      # v1344: + the audio shift
         calls.append((mdl, float(s)))
         return mdl
 
     ns = {"_apply_sigma_shift": spy,
           "sigma_shift": shift, "sigma_shift_low": low, "dual_moe": dual,
+          "sigma_shift_audio": 0.0,
           "model": "HI", "model_low": model_low,
           "sigmas": None, "sigmas_high": None, "sigmas_low": None,
           "latent_image": {"samples": _Nested() if joint else object()}}

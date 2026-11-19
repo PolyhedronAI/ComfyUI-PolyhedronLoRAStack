@@ -148,6 +148,12 @@ try:
     _MMREF_OK = True
 except Exception as e:
     print(f"[PLS] ✗ Polyhedron MiniMax Reference unavailable — import failed: {e!r}")
+_IMGREF_OK = False
+try:
+    from .nodes.ph_image_ref import ULSImageReference
+    _IMGREF_OK = True
+except Exception as e:
+    print(f"[PLS] ✗ Polyhedron Image Reference unavailable — import failed: {e!r}")
 try:
     from .nodes.ph_show_text import ULSShowText
     _SHOWTEXT_OK = True
@@ -360,6 +366,9 @@ if _MINFO_OK:
 if _MMREF_OK:
     NODE_CLASS_MAPPINGS["ULSMiniMaxReference"] = ULSMiniMaxReference
     NODE_DISPLAY_NAME_MAPPINGS["ULSMiniMaxReference"] = "⬡ Polyhedron MiniMax Reference"
+if _IMGREF_OK:
+    NODE_CLASS_MAPPINGS["ULSImageReference"] = ULSImageReference
+    NODE_DISPLAY_NAME_MAPPINGS["ULSImageReference"] = "⬡ Polyhedron Image Reference"
 if _SHOWTEXT_OK:
     NODE_CLASS_MAPPINGS["ULSShowText"] = ULSShowText
     NODE_DISPLAY_NAME_MAPPINGS["ULSShowText"] = "⬡ Polyhedron Show Text"
@@ -491,7 +500,7 @@ _node_count = len(NODE_CLASS_MAPPINGS)
 _bridge_str = "✅" if _BRIDGE_OK else "⚠ unavailable"
 print(f"""
 ⚡ ============================================================
-   Polyhedron Suite  v406
+   Polyhedron Suite  v407
    {_node_count} Nodes  |  Bridge: {_bridge_str}
 ⚡ ============================================================
 """)

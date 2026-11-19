@@ -3,8 +3,8 @@
 
 Rewritten in v388 (the cut without legacy rules). What it holds:
 
-  N  the node set: 52 node ids (v392: + the six nodes of the fox templates' H3 chain; v394: + Control Fit / Map, Apply
-     Control, Blend, Transition Check), each registered behind its own import flag, each with a display name;
+  N  the node set: 53 node ids (v392: + the six nodes of the fox templates' H3 chain; v394: + Control Fit / Map, Apply
+     Control, Blend, Transition Check; v407: + Image Reference), each registered behind its own import flag, each with a display name;
      the V3 registry imports only modules this build ships and maps only registered nodes
   R  the routes: every /uls/... or /pls/... path any web/js file calls is registered by some module of
      this build (the check that would have caught the two 404s of v371-v385: the Seed's noise preview,
@@ -42,7 +42,7 @@ INIT = _read("__init__.py")
 
 # --- N: the node set ------------------------------------------------------------------------------
 ids = sorted(set(re.findall(r'NODE_CLASS_MAPPINGS\["(\w+)"\]', INIT)) | set(re.findall(r'^\s+"(\w+)":\s+\w+,', INIT, re.M)))
-_need(len(ids) == 52, "N  52 node ids registered (%d)" % len(ids))
+_need(len(ids) == 53, "N  53 node ids registered (%d)" % len(ids))
 base = [l.strip() for l in open(os.path.join(ROOT, [f for f in os.listdir(ROOT) if f.startswith("NODE_IDS_baseline_v")][0]),
                                 encoding="utf-8") if l.strip() and not l.startswith("#")]
 _need(sorted(base) == ids, "N  the registered ids are exactly the NODE_IDS baseline")

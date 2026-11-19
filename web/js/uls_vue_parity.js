@@ -176,6 +176,17 @@ function seedRowFor(host, ctrlW, node) {
     }
     return null;
 }
+// v1325: Frontend 1.59 wraps every widget row in its own one-track box
+// (class grid-rows-subgrid). A row put INSIDE that box shares its single track
+// and is drawn on top of the seed row (measured: both at the same y). The new
+// row goes after the box instead -- into the node's own grid, where the older
+// frontends had the rows directly.
+export function controlAnchor(row) {
+    const p = row && row.parentElement;
+    if (p && p.classList && p.classList.contains("grid-rows-subgrid")
+        && p.querySelectorAll('[data-testid="node-widget"]').length === 1) return p;
+    return row;
+}
 export function applyControlRows(node, host) {
     const ctrls = controlWidgets(node);
     if (!ctrls.length) return;
@@ -209,7 +220,7 @@ export function applyControlRows(node, host) {
                 node.setDirtyCanvas(true, true);
             };
             row.appendChild(lab); row.appendChild(sel);
-            anchor.insertAdjacentElement("afterend", row);
+            controlAnchor(anchor).insertAdjacentElement("afterend", row);
         }
         const sel = row.querySelector("select");
         if (sel && sel.value !== String(c.value) && document.activeElement !== sel) sel.value = String(c.value);

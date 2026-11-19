@@ -1869,6 +1869,68 @@ app.registerExtension({
                     this._ulsResize();
                 } catch {}
             }
+            // v1345: the Stack's twin of the Engine's v1250 split guard. The rows live twice in a saved
+            // workflow -- `_uls` (the panel) and the hidden widget `uls_config` (what the backend RUNS).
+            // A workflow written by a tool that set only the widget ran with the panel's OLD rows: the
+            // panel restored from `_uls` and its next sync overwrote the widget (Frank, 18.11.: the
+            // p-h3-image LoRA never loaded, the Hippie round-2 weights never arrived). The widget is the
+            // truth: when the two differ, the panel takes the widget's rows and settings, said in the console.
+            // Only a SAVED uls_config counts: a workflow without widget values (a layout file, a fresh
+            // node) carries no rows to compare -- the widget's default is not a statement.
+            try {
+                const raw = Array.isArray(o.widgets_values)
+                    ? (o.widgets_values.find(v => typeof v === "string" && v.indexOf('"rows"') >= 0) || "") : "";
+                if (raw && typeof raw === "string" && this._uls && o._uls) {
+                    const c = JSON.parse(raw);
+                    if (Array.isArray(c.rows)) {
+                        const _GRP = {
+                            "character": "subject", "lighting": "scene", "artist": "style",
+                            "CHAR": "subject", "LIGH": "scene", "SUBJ": "subject",
+                            "SCEN": "scene", "DETA": "detail", "STYL": "style",
+                            "MOTI": "motion", "CUST": "custom", "ACC": "acc",
+                        };
+                        const eff = r => (typeof r.weight === "number" ? r.weight
+                                        : typeof r.wLow === "number" ? r.wLow
+                                        : typeof r.wHigh === "number" ? r.wHigh : 1.0);
+                        // the panel's live weight is wLow (what _ulsSync writes as `weight`)
+                        const effPanel = r => (typeof r.wLow === "number" ? r.wLow
+                                             : typeof r.wHigh === "number" ? r.wHigh
+                                             : typeof r.weight === "number" ? r.weight : 1.0);
+                        const grp = g => (g && _GRP[g]) ? _GRP[g] : (g || "");
+                        const key = (rows, f) => JSON.stringify(rows.map(r => [!!r.enabled, r.name || "",
+                            Math.round(f(r) * 10000), r.wClip ?? null, grp(r.group)]));
+                        if (key(c.rows, eff) !== key(this._uls.rows, effPanel)) {
+                            const _on = c.rows.filter(r => r.enabled).map(r => r.name + " " + eff(r)).join(", ") || "(none enabled)";
+                            console.warn("[ULS] LoRA Stack #" + this.id + ": the panel's rows differed from uls_config "
+                                + "(the rows that run) -- panel set to uls_config: " + _on);
+                            try {
+                                app.extensionManager?.toast?.add?.({ severity: "warn", life: 12000,
+                                    summary: "LoRA Stack #" + this.id + ": saved copies disagreed",
+                                    detail: "The panel now shows the rows that run (uls_config): " + _on });
+                            } catch {}
+                            this._uls.rows = c.rows.map(r => {
+                                const merged = { ...newRow(), ...r };
+                                const w = eff(r);
+                                merged.wLow = w; merged.wHigh = w;
+                                if (merged.group && _GRP[merged.group]) merged.group = _GRP[merged.group];
+                                return merged;
+                            });
+                            if (typeof c.mult === "number") this._uls.mult = c.mult;
+                            if (typeof c.flatMode === "boolean") this._uls.flatMode = c.flatMode;
+                            if (c.groupOrder && typeof c.groupOrder === "object") this._uls.groupOrder = c.groupOrder;
+                            if (c.group_dare && typeof c.group_dare === "object") this._uls.groupDare = c.group_dare;
+                            if (c.group_trim && typeof c.group_trim === "object") this._uls.groupTrim = c.group_trim;
+                            if (c.group_resolve && typeof c.group_resolve === "object") this._uls.groupResolve = c.group_resolve;
+                            if (c.group_trim_amount && typeof c.group_trim_amount === "object") this._uls.groupTrimAmount = c.group_trim_amount;
+                            if (c.group_mult && typeof c.group_mult === "object") this._uls.groupMult = c.group_mult;
+                            if (c.group_cap && typeof c.group_cap === "object") this._uls.groupCap = c.group_cap;
+                            if (c.apply) this._uls.apply = applyNorm(c.apply);
+                            this._uls.rows.forEach(r => ensurePreview(r.name));
+                            this._ulsResize();
+                        }
+                    }
+                }
+            } catch {}
             // Always re-fetch group modes from backend (single source of truth)
             const _self = this;
             api.fetchApi("/uls/group_modes").then(r => r.json()).then(data => {

@@ -543,7 +543,8 @@ def main():
               "%s: F1 JOINT_UNREAD must be exactly tile_size/tile_overlap/sigma_shift, got %s" % (NAME, lst))
     fn = js[js.index("function _applyVerdict("):]
     fn = fn[:fn.index("\n}\n") + 3]
-    _need("_setDisabled(_findWidget(node, name), joint)" in fn,
+    # v1346 AMENDED (declared): the gate is the joint verdict OR refine_order 'off' (REFINE_ONLY)
+    _need("_setDisabled(_findWidget(node, name), joint || (refOff && REFINE_ONLY.includes(name)))" in fn,
           "%s: F1 the dials hide through _setDisabled (v888 mechanics), gated on the joint verdict" % NAME)
     _need('(p === "joint")' in fn and '(p === "" && t.indexOf("H3") === 0)' in fn,
           "%s: F1 'joint' is read off the PATH (v1008), the H3 text only for a legacy save" % NAME)

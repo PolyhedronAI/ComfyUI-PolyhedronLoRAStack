@@ -61,3 +61,22 @@ reasoning in `nodes/vfi/NOTICE.md`. Used by ⬡ Polyhedron Interpolate.
 modified; the LICENSE file sits next to it, provenance in
 `nodes/vendor/taehv/SOURCE.md`. Used by ⬡ Polyhedron Sampler for the
 "Video · TAE (taeh3)" live preview.
+
+## Ideas taken, no code
+
+**⬡ Polyhedron Align** -- the idea of a node align bar comes from
+**ComfyUI-NodeAligner** (Tenney95, GPL-3.0). No code, icon or style of it is
+used; the geometry and the icons are written from scratch under this pack's
+MIT licence.
+
+**⬡ Polyhedron Image Reference**, blank picture -- the idea of a blank
+picture's vision rows in front of the prompt for the first steps comes from
+**KJNodes**' MiniMax H3 Prompt Weight, mode "text with empty image"
+(kijai, GPL-3.0). Our own implementation, no code taken.
+
+## Groups
+
+Polyhedron groups, the Group Switch and the Align bar are frontend-only. A
+Polyhedron group is a normal ComfyUI group with the flag `ph_group`; without
+this pack it loads and behaves as an ordinary group. Core groups are never
+changed unless you turn them into Polyhedron groups yourself.

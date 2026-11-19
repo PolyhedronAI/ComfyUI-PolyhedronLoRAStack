@@ -21,8 +21,10 @@ def main():
     fn = s.split("export function applyControlRows(node, host) {", 1)[1].split("\nexport function", 1)[0]
     check('/control_after_generate$/.test(String(w.name || ""))' in s and "!w.hidden" in s,
           "S  every unhidden control_after_generate widget gets a row (generic, not Seed-only)")
-    check("if (!row) {" in fn and 'anchor.insertAdjacentElement("afterend", row);' in fn,
-          "S  the row is added once, straight after the owner row")
+    # v1325 (declared re-grounding): after controlAnchor(anchor) -- the owner row, or the one-track box
+    # Frontend 1.59 wraps it in (test_v1325 H9 drives controlAnchor)
+    check("if (!row) {" in fn and 'controlAnchor(anchor).insertAdjacentElement("afterend", row);' in fn,
+          "S  the row is added once, straight after the owner row (or its 1.59 box)")
     check("grid-column:1 / -1" in fn and "grid-template-columns:subgrid" in fn,
           "S  the row spans both grid columns on the grid's own columns")
     check("c.value = sel.value;" in fn and "if (c.callback) c.callback(c.value, app.canvas, node);" in fn,

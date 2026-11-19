@@ -44,7 +44,15 @@ CANON = ("exposure", "temperature", "tint", "contrast", "gamma", "shadows",
          # v1000 (F3): appended -- DECLARED, same law
          "sharpen_threshold",
          # v1001 (F4): appended -- DECLARED, same law
-         "detail_amount")
+         "detail_amount",
+         # v1322 (harmonize): four appended -- DECLARED, same law
+         "harmonize", "harmonize_amount", "harmonize_ring", "harmonize_tone",
+         # v1323 (seam): appended -- DECLARED, same law
+         "harmonize_seam",
+         # v1324 (window): appended -- DECLARED, same law
+         "harmonize_window",
+         # v1329 (edge masking): appended -- DECLARED, same law
+         "sharpen_masking")
 
 
 def _fail(msg):

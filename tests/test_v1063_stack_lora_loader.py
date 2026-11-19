@@ -103,11 +103,17 @@ for p in files:
     for fn, line, mod in node_imports(p):
         found.append((p.relative_to(ROOT).as_posix(), fn, line, mod))
 allowed = [f for f in found if f[0] == "nodes/ph_basics.py" and f[1] == "_load_gguf"]
-rest = [f for f in found if f not in allowed]
+# v1328: the second named exception -- h3_image.core_class delegates MiniMax H3 Image to Core's OWN
+# conditioning node (comfy_extras.nodes_minimax_h3, Core >= 0.45.0) on purpose, so the pack follows Core's
+# recipe; inside one function, and a Core without the node is refused by name (test_v1325 H1).
+h3_allowed = [f for f in found if f[0] == "nodes/h3_image.py" and f[1] == "core_class"]
+rest = [f for f in found if f not in allowed and f not in h3_allowed]
 _need(not rest, "D1 PACK-WIDE: no core node module in %d files (code, not prose)%s"
       % (len(files), "" if not rest else " -- %r" % rest))
 _need(len(allowed) == 1 and "UnetLoaderGGUF" in (NODES / "ph_basics.py").read_text(encoding="utf-8"),
-      "D1 the one exception: ph_basics._load_gguf (UnetLoaderGGUF, third party) %r" % allowed)
+      "D1 the first exception: ph_basics._load_gguf (UnetLoaderGGUF, third party) %r" % allowed)
+_need(len(h3_allowed) == 1 and h3_allowed[0][3] == "comfy_extras.nodes_minimax_h3",
+      "D1 the second exception: h3_image.core_class, exactly one import, only nodes_minimax_h3 %r" % h3_allowed)
 probe = ("import nodes\nfrom comfy_extras.nodes_audio import x\ndef f():\n    import importlib\n"
          "    importlib.import_module('comfy_extras.nodes_flux')\n    sys.modules.get('nodes')\n"
          "    sys.modules['nodes']\n    __import__('nodes')\n")

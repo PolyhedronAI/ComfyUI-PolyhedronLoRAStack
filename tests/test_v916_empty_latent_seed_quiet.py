@@ -52,8 +52,9 @@ py = open(os.path.join(ROOT, "nodes", "ph_empty_latent.py"), encoding="utf-8").r
 if "seed={noise_seed}" in py or "noise=%s seed=%s" in py:
     _fail("P3 a raw seed fragment survives in ph_empty_latent.py")
 n_helper = py.count("uls_noise.noise_log_tag(noise_type, noise_seed)")
-if n_helper != 4:
-    _fail("P3 expected the helper at 4 print sites, found %d" % n_helper)
+# v1325: + the MiniMax H3 Image lane's print (declared re-grounding, 4 -> 5)
+if n_helper != 5:
+    _fail("P3 expected the helper at 5 print sites, found %d" % n_helper)
 
 # P4
 js = open(os.path.join(ROOT, "web", "js", "ph_empty_latent.js"), encoding="utf-8").read()
@@ -69,5 +70,5 @@ if "splice" in body or "widgets.filter" in body:
     _fail("P4 _hideLegacyNoise must not remove widgets from the array")
 
 print("[test_v916_empty_latent_seed_quiet] OK - seedless tag names the real "
-      "seeder and drops the value, 4 print sites on the helper, hidden control "
+      "seeder and drops the value, 5 print sites on the helper, hidden control "
       "pinned to fixed and still hidden (4 pins)")

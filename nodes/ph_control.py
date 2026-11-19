@@ -631,7 +631,10 @@ def model_family(model):
         dm = getattr(getattr(model, "model", None), "diffusion_model", None)
     mod = type(dm).__module__ if dm is not None else ""
     if "minimax" in mod:
-        return "video"
+        # v1325: MiniMax H3 IMAGE lives in the same module (Core 0.45.0) but is
+        # no video model -- named as its own family, so a video Fun ControlNet
+        # on it is refused by apply()'s family check instead of patched in.
+        return "MiniMax H3 Image" if type(dm).__name__ == "MiniMaxH3ImageModel" else "video"
     if "qwen_image21" in mod:
         return "image"
     return None
@@ -767,6 +770,8 @@ def resolve_file(folder, value, node, what):
                              % (node, spec["label"], name, WW.fmt_bytes(spec["bytes"]), folder, spec["url"]))
         return path
     import folder_paths
+    from . import ph_model_path
+    name = ph_model_path.relocate((folder,), name, node)  # v1326: a moved file is found again by its file name
     return folder_paths.get_full_path_or_raise(folder, name)
 
 

@@ -250,7 +250,8 @@ except ValueError as e:
 for cls, name in ((MR.ULSMiniMaxReference, "Reference"), (KF.ULSMiniMaxKeyframes, "Keyframes")):
     it = cls.INPUT_TYPES()
     widgets = [k for sec in ("required", "optional") for k, v in it.get(sec, {}).items()
-               if isinstance(v[0], list) or v[0] in ("STRING", "FLOAT", "INT", "BOOLEAN")]
+               if (isinstance(v[0], list) or v[0] in ("STRING", "FLOAT", "INT", "BOOLEAN"))
+               and not (len(v) > 1 and isinstance(v[1], dict) and v[1].get("forceInput"))]   # AMENDED v1342: sockets are no widgets
     # AMENDED v1201: the Reference appended ref_noise behind tags (the #577 law) -- tags stays the widget before it
     if widgets[-1] == "tags" or (name == "Reference" and widgets[-2:] == ["tags", "ref_noise"]):
         _ok("P5 `tags` is the last widget of %s (Reference: + ref_noise, v1201)" % name)

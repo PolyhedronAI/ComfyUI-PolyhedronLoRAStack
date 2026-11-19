@@ -37,16 +37,21 @@ function reorder(node) {
     known.sort((a, b) => rank.get(a.name) - rank.get(b.name));
     const next = known.concat(rest);
     if (next.every((p, i) => p === ins[i])) return false;
-    node.inputs = next;
+    // v1340: the links learn their NEW slot BEFORE the array is swapped -- the live frontend re-reads each
+    // pin's link from target_slot when node.inputs is assigned (measured 17.11. on the Image Reference, v1339).
     const links = node.graph && node.graph.links;
     if (links) {
-        for (let i = 0; i < node.inputs.length; i++) {
-            const lid = node.inputs[i] ? node.inputs[i].link : null;
+        // ALL ids first: in the live frontend a pin's link is read through the links' target_slot, so reading
+        // it after a slot was rewritten in this loop returns another pin's wire (measured 17.11., v1340)
+        const ids = next.map((p) => (p ? p.link : null));
+        for (let i = 0; i < next.length; i++) {
+            const lid = ids[i];
             if (lid == null) continue;
             const l = (typeof links.get === "function") ? links.get(lid) : links[lid];
             if (l) l.target_slot = i;
         }
     }
+    node.inputs = next;
     return true;
 }
 

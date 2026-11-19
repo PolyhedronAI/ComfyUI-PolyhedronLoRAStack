@@ -238,7 +238,7 @@ else:
     _ok("frames_b64 normalises x0 before every preview path")
 
 i_guard = SRC.find("_is_ragged_latent((latent_image or {}).get(\"samples\"))")
-i_shift = SRC.find("model = _apply_sigma_shift(model, sigma_shift)")
+i_shift = SRC.find("model = _apply_sigma_shift(model, sigma_shift")
 if i_guard < 0:
     _fail("the sigma_shift refusal for joint latents is missing")
 elif i_shift < 0 or i_guard > i_shift:

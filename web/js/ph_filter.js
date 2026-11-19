@@ -36,6 +36,8 @@ const CANON_DEFAULTS = {
     shadows: 0.0, highlights: 0.0, saturation: 0.0, vibrance: 0.0, hue_shift: 0.0,
     lut_name: "none", lut_strength: 1.0, sharpen_amount: 0.0, sharpen_radius: 1.0,
     preset: "none", auto_mode: "off", sharpen_threshold: 0.0, detail_amount: 1.0,
+    harmonize: "auto", harmonize_amount: 1.0, harmonize_ring: 8, harmonize_tone: "colour and light", harmonize_seam: 32, harmonize_window: 0,
+    sharpen_masking: 0.0,
 };
 
 const PREVIEW_MIN_H = 140;   // floor for the reserved preview height (px)
@@ -445,7 +447,64 @@ function _previewRadius(radius, proxyW, srcW) {
     return radius * proxyW / srcW;
 }
 
-function _sharpenBuf(buf, width, height, amount, radius, threshold) {
+// v1329 sharpen_masking -- the constants of nodes/ph_filter.py (MASK_*).
+const MASK_SIGMA_K = 2.0;
+const MASK_LO = 0.04;
+const MASK_HI = 0.07;
+
+function _edgeMaskBuf(buf, width, height, radius, masking) {
+    // OP-FOR-OP mirror of _edge_mask_np in nodes/ph_filter.py: luminance
+    // (mean of r, g, b), blurred with sigma = MASK_SIGMA_K * radius (replicate
+    // edges), central-difference gradient (edge-clamped) times sigma,
+    // smoothstep from MASK_LO * masking to MASK_HI * masking. Returns a
+    // Float32Array [width * height], 1 on contours.
+    const n = width * height;
+    const lum = new Float32Array(n);
+    for (let i = 0; i < n; i++) lum[i] = (buf[i * 3] + buf[i * 3 + 1] + buf[i * 3 + 2]) / 3;
+    const sigma = MASK_SIGMA_K * Math.max(radius, 0.1);
+    const k = _gaussKernel(sigma);
+    const half = k.half, w = k.w;
+    const tmp = new Float32Array(n), ls = new Float32Array(n);
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            let v = 0;
+            for (let i = -half; i <= half; i++) {
+                let yy = y + i;
+                yy = yy < 0 ? 0 : (yy >= height ? height - 1 : yy);
+                v += w[i + half] * lum[yy * width + x];
+            }
+            tmp[y * width + x] = v;
+        }
+    }
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            let v = 0;
+            for (let i = -half; i <= half; i++) {
+                let xx = x + i;
+                xx = xx < 0 ? 0 : (xx >= width ? width - 1 : xx);
+                v += w[i + half] * tmp[y * width + xx];
+            }
+            ls[y * width + x] = v;
+        }
+    }
+    const lo = MASK_LO * masking, hi = MASK_HI * masking;
+    const mask = new Float32Array(n);
+    for (let y = 0; y < height; y++) {
+        const yu = y > 0 ? y - 1 : 0, yd = y < height - 1 ? y + 1 : height - 1;
+        for (let x = 0; x < width; x++) {
+            const xl = x > 0 ? x - 1 : 0, xr = x < width - 1 ? x + 1 : width - 1;
+            const gx = (ls[y * width + xr] - ls[y * width + xl]) * 0.5;
+            const gy = (ls[yd * width + x] - ls[yu * width + x]) * 0.5;
+            const g = Math.sqrt(gx * gx + gy * gy) * sigma;
+            let t = (g - lo) / (hi - lo);
+            t = t < 0 ? 0 : (t > 1 ? 1 : t);
+            mask[y * width + x] = t * t * (3 - 2 * t);
+        }
+    }
+    return mask;
+}
+
+function _sharpenBuf(buf, width, height, amount, radius, threshold, masking) {
     // OP-FOR-OP mirror of _sharpen_np in nodes/ph_filter.py: unsharp mask
     // out = x + amount * (x - gaussian_blur(x)), separable blur with
     // replicate (edge-clamp) borders, clamped to 0..1. buf: Float32Array
@@ -488,10 +547,13 @@ function _sharpenBuf(buf, width, height, amount, radius, threshold) {
     // layer -- a difference smaller than it adds nothing, a larger one is
     // shortened by it. Soft coring, no hard edge where the threshold bites.
     const t = threshold > 0 ? threshold : 0;
+    // v1329: masking > 0 keeps the detail layer on contours only
+    const mask = masking > 0 ? _edgeMaskBuf(buf, width, height, radius, masking) : null;
     const out = new Float32Array(n * 3);
     for (let i = 0; i < out.length; i++) {
         let d = buf[i] - blur[i];
         if (t > 0) d = d > t ? d - t : (d < -t ? d + t : 0);
+        if (mask) d *= mask[(i / 3) | 0];
         let v = buf[i] + amount * d;
         out[i] = v < 0 ? 0 : (v > 1 ? 1 : v);
     }
@@ -512,7 +574,8 @@ const GRADE_WIDGETS = ["exposure", "temperature", "tint", "contrast", "gamma",
 const LIVE_WIDGETS = GRADE_WIDGETS.concat(["lut_name", "lut_strength",
                                            "sharpen_amount", "sharpen_radius",
                                            "auto_mode", "sharpen_threshold",
-                                           "detail_amount"]);
+                                           "detail_amount", "harmonize", "harmonize_amount",
+                                           "sharpen_masking"]);
 
 function _pfParams(node) {
     const p = {};
@@ -583,6 +646,8 @@ function _pfRecompute(node) {
     const sharpR = wSharpR ? Number(wSharpR.value) : 1;
     const wSharpT = (node.widgets || []).find((x) => x.name === "sharpen_threshold");
     const sharpT = wSharpT ? Number(wSharpT.value) / 255 : 0;   // levels -> full scale
+    const wSharpM = (node.widgets || []).find((x) => x.name === "sharpen_masking");
+    const sharpM = wSharpM ? Number(wSharpM.value) : 0;          // v1329 edge masking
     if (!node._pfGraded) {
         node._pfGraded = document.createElement("canvas");
     }
@@ -597,6 +662,18 @@ function _pfRecompute(node) {
     let b0 = new Float32Array(npx * 3);
     for (let i = 0, f = 0; i < a.length; i += 4, f += 3) {
         b0[f] = a[i] / 255; b0[f + 1] = a[i + 1] / 255; b0[f + 2] = a[i + 2] / 255;
+    }
+    // stage -2 (v1322): harmonize, before everything else -- the blend of
+    // the run's harmonized frame by harmonize_amount (the run is linear in it)
+    const hd = node._pfHarmData;
+    const hAmt = _pfHarmAmount(node);
+    if (hd && hAmt > 0 && hd.width === src.width && hd.height === src.height) {
+        const h = hd.data;
+        for (let i = 0, f = 0; i < h.length; i += 4, f += 3) {
+            b0[f] += hAmt * (h[i] / 255 - b0[f]);
+            b0[f + 1] += hAmt * (h[i + 1] / 255 - b0[f + 1]);
+            b0[f + 2] += hAmt * (h[i + 2] / 255 - b0[f + 2]);
+        }
     }
     const det = _pfDetail(node);
     if (det.state === "ready" && det.amount > 0) {
@@ -614,7 +691,7 @@ function _pfRecompute(node) {
         fbuf[f] = rgb[0]; fbuf[f + 1] = rgb[1]; fbuf[f + 2] = rgb[2];
     }
     if (sharpA > 0) fbuf = _sharpenBuf(fbuf, src.width, src.height, sharpA,
-                                       _previewRadius(sharpR, src.width, node._pfSrcW), sharpT);
+                                       _previewRadius(sharpR, src.width, node._pfSrcW), sharpT, sharpM);
     for (let i = 0, f = 0; i < o.length; i += 4, f += 3) {
         o[i] = Math.round(fbuf[f] * 255);
         o[i + 1] = Math.round(fbuf[f + 1] * 255);
@@ -668,7 +745,8 @@ function _pfReset(node) {
     node.setDirtyCanvas(true, true);
 }
 
-const PRESET_KEYS = Object.keys(CANON_DEFAULTS).filter((k) => k !== "preset");
+// v1322: harmonize belongs to the wiring, not to a look -- never in a preset
+const PRESET_KEYS = Object.keys(CANON_DEFAULTS).filter((k) => k !== "preset" && !k.startsWith("harmonize"));
 
 function _pfApplyParams(node, params) {
     // Write a sanitized preset onto the widgets (values only -- the canon
@@ -831,6 +909,13 @@ function _pfDraw(node) {
         : null;
     if (dText) _pfBadge(ctx, r.x + 6, r.y + 42, dText);
 
+    // Harmonize says what it moved, or why it did not (v1322).
+    if (node._pfHarmNote) {
+        const hm = (node.widgets || []).find((x) => x.name === "harmonize");
+        _pfBadge(ctx, r.x + 6, r.y + 60, hm && hm.value === "off" ? "harmonize off"
+            : node._pfHarmNote);
+    }
+
     // The automatic says what it does (a node shows, it does not only log).
     const au = _pfAuto(node);
     if (au.mode !== "off") {
@@ -893,6 +978,7 @@ function _pfLoad(node, item) {
     node._pfAutoStats = Array.isArray(item.auto) ? item.auto : null;
     node._pfSrcW = Number(item.src_width) || 0;   // the run's width (radius scale)
     _pfLoadDetail(node, item);
+    _pfLoadHarm(node, item);
     img.onload = () => {
         node._pfImg = img;
         node._pfNote = null;
@@ -928,6 +1014,45 @@ function _pfLoad(node, item) {
         _pfDraw(node);
     };
     img.src = viewURL(item);
+}
+
+function _pfHarmAmount(node) {
+    // v1322: the share of the harmonized frame the preview blends in -- the
+    // run's result is linear in harmonize_amount, so this IS the run.
+    const m = (node.widgets || []).find((x) => x.name === "harmonize");
+    if (m && m.value === "off") return 0;
+    const w = (node.widgets || []).find((x) => x.name === "harmonize_amount");
+    return w ? Math.max(0, Math.min(1, Number(w.value) || 0)) : 1;
+}
+
+function _pfLoadHarm(node, item) {
+    // v1322: the run's harmonized first frame (amount 1), loaded beside the
+    // source; a stale load (an older item) is dropped when it lands.
+    node._pfHarmItem = item && item.harmonized && item.harmonized.filename ? item.harmonized : null;
+    node._pfHarmNote = item && item.harmonize_note ? String(item.harmonize_note) : null;
+    node._pfHarmData = null;
+    const want = node._pfHarmItem;
+    if (!want) return;
+    const img = new Image();
+    img.onload = () => {
+        if (node._pfHarmItem !== want) return;
+        try {
+            const c = document.createElement("canvas");
+            c.width = img.naturalWidth; c.height = img.naturalHeight;
+            const cx = c.getContext("2d");
+            cx.drawImage(img, 0, 0);
+            node._pfHarmData = cx.getImageData(0, 0, c.width, c.height);
+        } catch (e) {
+            node._pfHarmData = null;
+        }
+        _pfSchedule(node);
+    };
+    img.onerror = () => {
+        if (node._pfHarmItem !== want) return;
+        node._pfHarmNote = "harmonize preview expired -- run once";
+        _pfDraw(node);
+    };
+    img.src = viewURL(want);
 }
 
 function _pfLoadDetail(node, item) {
@@ -1048,6 +1173,9 @@ app.registerExtension({
             node._pfDetailItem = null;
             node._pfDetailData = null;
             node._pfDetailNote = null;
+            node._pfHarmItem = null;
+            node._pfHarmData = null;
+            node._pfHarmNote = null;
 
             // Live preview: every grading + LUT widget schedules a recompute
             // on change. The original callback is preserved (canon widgets

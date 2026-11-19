@@ -418,6 +418,14 @@ class ULSMiniMaxReference:
                                                    "default (nearly clean -- the tightest practical hold). Higher = a looser "
                                                    "hold: the prompt and LoRAs get more say, the likeness can soften or "
                                                    "distort. 0 = perfectly clean. One value for every picture."}),
+                # v1342 (Frank 18.11.): wired texts get their OWN socket rows. A wired FIELD (prompt, tags) has
+                # no row of its own any more and its dot lands on another row (on clip in Frank's frontend) -- as
+                # the Image Reference's prompt_in (v1341). Sockets, appended last: the widget order is untouched.
+                "prompt_in": ("STRING", {"forceInput": True,
+                              "tooltip": "Wired text replaces the prompt field (which keeps its text for when the "
+                                         "wire comes off)."}),
+                "tags_in": ("STRING", {"forceInput": True,
+                            "tooltip": "Wired tag lines replace the tags field."}),
             },
         }
 
@@ -440,6 +448,10 @@ class ULSMiniMaxReference:
 
     def build(self, clip, vae, latent, prompt, ref_image_size,
               megapixels_1, megapixels_2, megapixels_3, **opt):
+        if opt.get("prompt_in") is not None:          # v1342: the wired text wins over the field
+            prompt = str(opt["prompt_in"])
+        if opt.get("tags_in") is not None:
+            opt["tags"] = str(opt["tags_in"])
         samples = latent.get("samples") if isinstance(latent, dict) else latent
         size = M.minimax_size_from_latent(samples)
         if size is None:

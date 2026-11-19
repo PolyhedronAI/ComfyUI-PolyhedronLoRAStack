@@ -25,11 +25,12 @@ ULSControlFit	target_fps,source_fps,start,frames,grid,at_the_end,width,height,si
 ULSControlMap	mode,draw_hands,draw_face,stick_width,low,high,depth_resolution,keypoints,preview
 ULSEmptyLatent	latent_type,width,height,length,batch_size,noise_type,noise_seed,noise_strength,duration_seconds
 ULSFastUpscale	size_mode,upscale_by,width,height,resize_method,device,divisible_by,per_batch,mute_staging_logs,keep_proportion,crop_position,pad_color
-ULSFilter	exposure,temperature,tint,contrast,gamma,shadows,highlights,saturation,vibrance,hue_shift,lut_name,lut_strength,sharpen_amount,sharpen_radius,preset,auto_mode,sharpen_threshold,detail_amount
+ULSFilter	exposure,temperature,tint,contrast,gamma,shadows,highlights,saturation,vibrance,hue_shift,lut_name,lut_strength,sharpen_amount,sharpen_radius,preset,auto_mode,sharpen_threshold,detail_amount,harmonize,harmonize_amount,harmonize_ring,harmonize_tone,harmonize_seam,harmonize_window,sharpen_masking
 ULSFreeVRAM	value,mode
 ULSH3LatentUpscale	upscaler,size_mode,scale,width,height,megapixels,align,temporal_chunking,free_vram_first
 ULSH3SemanticBridge	adapter,alpha,magnitude_match
 ULSImagePickFrame	frame_index,mode,count
+ULSImageReference	prompt,negative_prompt,family,ref_size,inpaint_grow,inpaint_feather,blank_picture,blank_start,blank_end
 ULSInspector	
 ULSInt	value,preset_config
 ULSInterpolate	ckpt_name,rate_mode,multiplier,source_fps,target_fps,precision,ensemble,fast_mode,scale_factor,static_skip,cut_guard,audio_mode
@@ -53,10 +54,11 @@ ULSMusicSave	project,name,format,tiled_decode,tile_size,overlap
 ULSNag	nag_scale,nag_alpha,nag_tau,start_percent,end_percent
 ULSNote	title,text
 ULSPowerUpscale	dual_moe,upscale_by,denoise,steps,cfg,upscale_by_low,denoise_low,steps_low,cfg_low,seed,sampler_name,scheduler,tile_size,tile_overlap,sigma_shift,sampler_low,scheduler_low,result_preview,process_preview,mute_staging_logs,resize_method,per_batch,vae_tiling,pixel_stage,final_upscale_by,sigma_shift_low,refine_order,audio_stream,pixel_speed,restore_color,restore_overlap,restore_frames,restore_model,restore_order
+ULSReference	megapixels_1,megapixels_2,zero_negative,steps,megapixels_3,size_grid,scale_mode
 ULSReferenceBoard	board
 ULSResolveInspector	analysis_depth,max_layers,device
 ULSRoughCutGate	after_step,timeout
-ULSSampler	dual_moe,boundary,cfg_low,seed,steps,cfg,sampler_name,scheduler,denoise,add_noise,start_at_step,end_at_step,return_with_leftover_noise,preview_mode,sigma_shift,handoff_mode,sampler_low,scheduler_low,sigma_shift_low
+ULSSampler	dual_moe,boundary,cfg_low,seed,steps,cfg,sampler_name,scheduler,denoise,add_noise,start_at_step,end_at_step,return_with_leftover_noise,preview_mode,sigma_shift,handoff_mode,sampler_low,scheduler_low,sigma_shift_low,sigma_shift_audio
 ULSSave	filename_prefix,media_kind,image_format,image_quality,video_preset,quality,frame_rate,autoplay,pingpong,loop_count,trim_to_audio,save_metadata,save_output,mask_polarity
 ULSSeamCheck	
 ULSSeamFix	trim_head,level_fix,fix_frames,fade_ms

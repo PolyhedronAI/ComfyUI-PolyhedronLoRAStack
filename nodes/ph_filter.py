@@ -31,6 +31,25 @@ import uuid
 
 import numpy as np
 
+
+def _load_harmonize():
+    """v1322: the harmonize core (nodes/ph_harmonize.py) -- as the pack's module, else loaded by path from beside
+    this file (harnesses exec this file alone)."""
+    try:
+        from . import ph_harmonize as mod
+        return mod
+    except Exception:
+        pass
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(globals().get("__file__", "."))), "ph_harmonize.py")
+    spec = importlib.util.spec_from_file_location("ph_harmonize_local", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_harm = _load_harmonize()
+
 # v1010: the shared progress instrument (green bar + console + learned ETA).
 # A harness that loads this file alone gets silent stand-ins -- the node's
 # work never depends on its instruments.
@@ -82,7 +101,14 @@ FILTER_CANON = (
     "preset",
     "auto_mode",       # v998 F2 -- appended; runs FIRST in the pipeline
     "sharpen_threshold",  # v1000 F3 -- appended; part of the last stage
-    "detail_amount",      # v1001 F4 -- appended; runs FIRST (before auto)
+    "detail_amount",      # v1001 F4 -- appended; runs FIRST, before auto
+    "harmonize",          # v1322 -- appended; runs FIRST of all, before detail
+    "harmonize_amount",   # v1322
+    "harmonize_ring",     # v1322
+    "harmonize_tone",     # v1322
+    "harmonize_seam",     # v1323 -- appended
+    "harmonize_window",   # v1324 -- appended
+    "sharpen_masking",    # v1329 -- appended; part of the last stage
 )
 
 # Long edge of the in-node preview image (px). The preview is a downscaled
@@ -489,7 +515,8 @@ def _apply_lut_np(x, size, data, dmin, dmax, strength):
 # Keys a preset may carry: the full look (color + LUT + sharpen), never the
 # preset selector itself. The route sanitizes every load/save through
 # _sanitize_preset before anything touches disk or widgets.
-PRESET_KEYS = tuple(k for k in FILTER_CANON if k != "preset")
+# v1322: harmonize belongs to the wiring (reference / mask), not to a look -- it stays out of presets
+PRESET_KEYS = tuple(k for k in FILTER_CANON if k != "preset" and not k.startswith("harmonize"))
 
 
 def _sanitize_preset(params):
@@ -533,11 +560,61 @@ def _gauss_kernel(radius):
     return half, (w / w.sum()).astype(np.float32)
 
 
-def _sharpen_np(x, amount, radius, threshold=0.0):
+# v1329 sharpen_masking: an edge mask like Lightroom's "Masking". The
+# luminance (mean of r, g, b) is blurred with sigma = MASK_SIGMA_K * radius,
+# its gradient (central differences, edge-clamped) is multiplied by that sigma
+# -- the contrast across the blur width, so the same masking value means the
+# same edges on the 768 px preview (radius scaled) and on the full frame --
+# and a smoothstep from MASK_LO * masking to MASK_HI * masking makes the mask.
+# Measured 15.11.2026 on Frank's H3 Image portrait (1792x2240 and 2688x3360):
+# skin (forehead, nose, shoulder) stays under 0.02, real contours lie above
+# 0.06; at masking 0.7 the skin keeps its detail (+3 % instead of +15 % with
+# the plain mask) while the contours get more than with the plain mask.
+MASK_SIGMA_K = 2.0
+MASK_LO = 0.04
+MASK_HI = 0.07
+
+
+def _blur_axis_np(a, axis, half, w):
+    pad = [(0, 0)] * a.ndim
+    pad[axis] = (half, half)
+    p = np.pad(a, pad, mode="edge")
+    out = np.zeros(a.shape, dtype=np.float32)
+    for i in range(2 * half + 1):
+        sl = [slice(None)] * a.ndim
+        sl[axis] = slice(i, i + a.shape[axis])
+        out += w[i] * p[tuple(sl)]
+    return out
+
+
+def _edge_mask_np(x, radius, masking):
+    """Edge mask for sharpen_masking: [..., H, W] in 0..1, 1 on contours.
+    Mirrored op for op by _edgeMaskBuf in ph_filter.js."""
+    m = float(masking)
+    lum = (x[..., 0] + x[..., 1] + x[..., 2]) / np.float32(3.0)
+    sigma = MASK_SIGMA_K * max(float(radius), 0.1)
+    half, w = _gauss_kernel(sigma)
+    ls = _blur_axis_np(_blur_axis_np(lum.astype(np.float32), lum.ndim - 2, half, w),
+                       lum.ndim - 1, half, w)
+    hgt, wid = ls.shape[-2], ls.shape[-1]
+    xi = np.arange(wid)
+    yi = np.arange(hgt)
+    gx = (ls[..., np.minimum(xi + 1, wid - 1)] - ls[..., np.maximum(xi - 1, 0)]) * np.float32(0.5)
+    gy = (ls[..., np.minimum(yi + 1, hgt - 1), :] - ls[..., np.maximum(yi - 1, 0), :]) * np.float32(0.5)
+    g = np.sqrt(gx * gx + gy * gy) * np.float32(sigma)
+    lo = np.float32(MASK_LO * m)
+    hi = np.float32(MASK_HI * m)
+    t = np.clip((g - lo) / (hi - lo), 0.0, 1.0)
+    return (t * t * (np.float32(3.0) - np.float32(2.0) * t)).astype(np.float32)
+
+
+def _sharpen_np(x, amount, radius, threshold=0.0, masking=0.0):
     """Unsharp mask: out = x + amount * (x - gaussian_blur(x)), separable
     blur with replicate (edge-clamp) borders, clamped to 0..1.
     x: float32 [..., H, W, 3]. Mirrored op for op by _sharpenBuf in
-    ph_filter.js -- the parity guard drives both on the same image."""
+    ph_filter.js -- the parity guard drives both on the same image.
+    v1329: masking > 0 multiplies the detail layer by _edge_mask_np -- only
+    contours are sharpened, fine texture (skin pores) is left alone."""
     if not (float(amount) > 0.0):
         return x
     x = np.asarray(x, dtype=np.float32)
@@ -563,6 +640,8 @@ def _sharpen_np(x, amount, radius, threshold=0.0):
         # noise): at the SAME sharpness 1-3 levels give +0.3..0.4 dB and up
         # to 12 % less noise in flat areas than the plain mask.
         d = np.sign(d) * np.maximum(np.abs(d) - np.float32(t), np.float32(0.0))
+    if float(masking) > 0.0:
+        d = d * _edge_mask_np(x, radius, masking)[..., None]
     return np.clip(x + np.float32(float(amount)) * d, 0.0, 1.0).astype(np.float32)
 
 
@@ -607,7 +686,10 @@ class ULSFilter:
         "click on something that should be neutral. auto_mode corrects "
         "first, once per batch; the sliders work on top of it. Connect "
         "detail_source (the picture before an edit or re-render, same size) "
-        "to carry its lost contours back -- before everything else. "
+        "to carry its lost contours back. Harmonize runs first of all: "
+        "connect harmonize_to and the image takes that picture's colour, "
+        "connect harmonize_mask and the masked area takes the colour of its "
+        "own surroundings (both: only the masked area takes the reference). "
         "The color controls act on the IMAGE output and move the preview "
         "live; the divider compares the original (left) against the graded "
         "result (right). A .cube LUT from the pack's luts/ folder is applied "
@@ -658,9 +740,25 @@ class ULSFilter:
                                       "tooltip": "Unsharp-mask threshold in 8-bit levels, as in Photoshop. Differences smaller than this are not sharpened (grain and noise stay calm), larger ones are sharpened minus it. 1-3 levels with a higher amount (2-3) sharpen as much as the plain mask with less noise. 0 = off. Click-drag to scrub live."}),
                 "detail_amount": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
                                   "tooltip": "Detail from the original, used only when detail_source is connected: contours the processing lost and the original still has come back (noise, ringing and compression blocks stay out). 1 = as measured best, 2 = double. Click-drag to scrub live."}),
+                "harmonize": (["auto", "off", "to reference", "mask to its ring"], {"default": "auto",
+                              "tooltip": "Carry the colour of one area onto another, FIRST in the pipeline. 'to reference': the image (or only the inside of harmonize_mask) takes the colour of harmonize_to -- e.g. reference stills matched to the photo they must fit. 'mask to its ring': a painted / inpainted / pasted area takes the LIGHT of its surroundings -- a white balance from the ring around the mask (median, so the room's own lamps do not tip it) and one brightness factor measured along the seam; the painted content keeps its own contrast (a white door stays white). 'auto': a connected harmonize_to means 'to reference', else a connected harmonize_mask means 'mask to its ring', else nothing. Measured once over the whole batch (no flicker on video)."}),
+                "harmonize_amount": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                                     "tooltip": "How much of the harmonized colour is taken: 0 = none, 1 = the measured match. The mask edge stays as soft as the mask. Click-drag to scrub live."}),
+                "harmonize_ring": ("INT", {"default": 8, "min": 2, "max": 256, "step": 1,
+                                   "tooltip": "'mask to its ring' only: width in pixels of the band measured on each side of the seam, starting 2 px off the mask edge. Small = the light right at the seam (8 matched a hand-made correction best), large = the room further out."}),
+                "harmonize_tone": (["colour and light", "colour only"], {"default": "colour and light",
+                                   "tooltip": "'colour and light' matches hue, warmth AND brightness (to reference: also contrast; ring: one brightness factor from the seam); 'colour only' keeps the area's own lightness and moves only its colour."}),
+                "harmonize_seam": ("INT", {"default": 32, "min": 0, "max": 128, "step": 1,
+                                   "tooltip": "'mask to its ring' only: width in pixels of a soft transition across the mask edge. The step that can remain at the seam (one light for the whole mask cannot fit every stretch of it) is measured along the edge and shared by both sides, fading out this far from the edge -- pixels just OUTSIDE the mask change too, like a hand-made soft blend. 0 = the inside only, hard seam."}),
+                "harmonize_window": ("INT", {"default": 0, "min": 0, "max": 10000, "step": 1,
+                                     "tooltip": "'to reference' on a clip only: 0 = one correction for the whole clip. A number of frames = the correction FOLLOWS the clip: every frame's colour is measured, smoothed over this many frames (centred) and moved onto the reference -- for clips that drift (warm at the start, grey later). Large enough not to flicker: about 2-4 seconds of frames (48-96 at 24 fps)."}),
+                "sharpen_masking": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05,
+                                    "tooltip": "Unsharp-mask edge masking, as 'Masking' in Lightroom: 0 = sharpen everything; higher values sharpen only contours (eyes, lashes, lips, hair, hems) and leave fine texture such as skin pores and grain as it is. 0.5-0.8 for portraits. Click-drag to scrub live."}),
             },
             "optional": {
                 "detail_source": ("IMAGE", {"tooltip": "The picture BEFORE the processing that lost detail (the original of an edit, restore or re-render at the SAME size). Its lost contours are carried back onto image, first in the pipeline. One frame for all, or one per frame."}),
+                "harmonize_to": ("IMAGE", {"tooltip": "Harmonize: the picture(s) whose colour the image takes (any size, any number of frames -- only their colour statistics count). Made for lit surfaces; a picture of a glowing screen on black would take the reference's brightness too (its black turns brown) -- leave such pictures unharmonized."}),
+                "harmonize_mask": ("MASK", {"tooltip": "Harmonize: the area that changes (white). With harmonize_to only this area takes the reference colour; alone it takes the colour of its own surroundings. One mask for all frames or one per frame; another size is resized."}),
             },
         }
 
@@ -674,7 +772,10 @@ class ULSFilter:
               shadows, highlights, saturation, vibrance, hue_shift,
               lut_name, lut_strength, sharpen_amount, sharpen_radius, preset,
               auto_mode="off", sharpen_threshold=0.0, detail_amount=1.0,
-              detail_source=None):
+              harmonize="auto", harmonize_amount=1.0, harmonize_ring=8,
+              harmonize_tone="colour and light", harmonize_seam=32, harmonize_window=0,
+              sharpen_masking=0.0,
+              detail_source=None, harmonize_to=None, harmonize_mask=None):
         # Color pipeline + LUT + sharpen stages are ACTIVE (ground truth:
         # _grade_np -> _apply_lut_np -> _sharpen_np). The preset widget is
         # deliberately NOT applied here: presets write widget values in the
@@ -712,6 +813,39 @@ class ULSFilter:
             except Exception as e:  # the detail must never kill the run
                 item["detail_note"] = "detail source unreadable"
                 print("[PLS] Polyhedron Filter: detail skipped: %r" % (e,))
+        # harmonize (v1322): measured once over the batch, applied first of all
+        harm, hmask = None, None
+        try:
+            mode, hnote = _harm.resolve(harmonize, harmonize_to is not None, harmonize_mask is not None)
+            if mode != "off" and float(harmonize_amount) > 0.0:
+                src0 = image.detach().cpu().numpy() if hasattr(image, "detach") else np.asarray(image, dtype=np.float32)
+                n, h, w = int(src0.shape[0]), int(src0.shape[1]), int(src0.shape[2])
+                if harmonize_mask is not None:
+                    mnp = (harmonize_mask.detach().cpu().numpy() if hasattr(harmonize_mask, "detach")
+                           else np.asarray(harmonize_mask, dtype=np.float32))
+                    hmask, mnote = _harm.fit_mask(mnp, n, h, w)
+                    if mnote:
+                        print("[PLS] Polyhedron Filter: " + mnote)
+                ref = None
+                if harmonize_to is not None:
+                    ref = (harmonize_to.detach().cpu().numpy() if hasattr(harmonize_to, "detach")
+                           else np.asarray(harmonize_to, dtype=np.float32))
+                plan = _harm.measure(src0, mode, int(harmonize_ring), harmonize_tone, ref, hmask, int(harmonize_seam),
+                                     int(harmonize_window))
+                hnote = _harm.describe(plan)
+                if plan.get("mode") != "off":
+                    harm = plan
+                    full = _harm.apply(src0[0:1], plan, 1.0, None if hmask is None else hmask[0:1])
+                    item["harmonized"] = self._make_preview(full)
+            elif mode != "off":
+                hnote = "harmonize: amount 0 -- off"
+            if hnote:
+                item["harmonize_note"] = hnote
+                print("[PLS] Polyhedron Filter: " + hnote)
+        except Exception as e:  # harmonize must never kill the run
+            harm = None
+            item["harmonize_note"] = "harmonize failed: %r" % (e,)
+            print("[PLS] Polyhedron Filter: harmonize skipped: %r" % (e,))
         ui = {"ph_filter": [item]}
         if auto is not None:
             print("[PLS] Polyhedron Filter: auto %s -> wb_r %.3f wb_b %.3f brightness %+.3f "
@@ -723,7 +857,7 @@ class ULSFilter:
         if lut_name != "none" and float(lut_strength) > 0.0:
             lut = _load_lut(lut_name)  # None on failure -> honest console note
 
-        if (dsrc is None and auto is None and lut is None and float(sharpen_amount) == 0.0
+        if (harm is None and dsrc is None and auto is None and lut is None and float(sharpen_amount) == 0.0
                 and _is_neutral(exposure, temperature, tint, contrast, gamma,
                                 shadows, highlights, saturation, vibrance, hue_shift)):
             return {"ui": ui, "result": (image,)}
@@ -736,7 +870,9 @@ class ULSFilter:
         params = (exposure, temperature, tint, contrast, gamma,
                   shadows, highlights, saturation, vibrance, hue_shift)
 
-        def _process(chunk, dchunk=None):
+        def _process(chunk, dchunk=None, hchunk=None, start=0):
+            if harm is not None:
+                chunk = _harm.apply(chunk, harm, float(harmonize_amount), hchunk, start)
             if dchunk is not None:
                 chunk = _detail_np(dchunk, chunk, float(detail_amount), grid)
             out = _grade_np(_apply_auto_np(chunk, auto) if auto is not None else chunk, *params)
@@ -745,7 +881,7 @@ class ULSFilter:
                 out = _apply_lut_np(out, size, data, dmin, dmax, float(lut_strength))
             if float(sharpen_amount) > 0.0:
                 out = _sharpen_np(out, float(sharpen_amount), float(sharpen_radius),
-                                  float(sharpen_threshold) / 255.0)
+                                  float(sharpen_threshold) / 255.0, float(sharpen_masking))
             return out
 
         if torch is not None and hasattr(image, "cpu"):
@@ -760,12 +896,13 @@ class ULSFilter:
                     dch = None
                     if dsrc is not None:
                         dch = dsrc[0:1] if dsrc.shape[0] == 1 else dsrc[i:i + step]
-                    out[i:i + step] = _process(src[i:i + step], dch)
+                    hch = None if hmask is None else hmask[i:i + step]
+                    out[i:i + step] = _process(src[i:i + step], dch, hch, i)
                     _prog.tick(min(step, int(src.shape[0]) - i))
             return {"ui": ui, "result": (torch.from_numpy(out).to(image.device, dtype=image.dtype),)}
 
         arr = np.asarray(image, dtype=np.float32)
-        out = _process(arr, None if dsrc is None else np.asarray(dsrc, dtype=np.float32))
+        out = _process(arr, None if dsrc is None else np.asarray(dsrc, dtype=np.float32), hmask)
         return {"ui": ui, "result": (out,)}
 
     # ------------------------------------------------------------------

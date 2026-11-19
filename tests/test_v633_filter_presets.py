@@ -105,9 +105,11 @@ if "Every numeric field doubles as a slider" not in PY_SRC:
 # RE-GROUNDED v1000: sharpen_threshold is the 14th FLOAT control (declared
 # canon append) and carries the sentence like the other thirteen.
 # RE-GROUNDED v1001: detail_amount is the 15th.
-if PY_SRC.count("Click-drag to scrub live.") != 15:
+# RE-GROUNDED v1322: harmonize_amount is the 16th (DECLARED: the canon grew at its end).
+# RE-GROUNDED v1329: sharpen_masking is the 17th (DECLARED: the canon grew at its end).
+if PY_SRC.count("Click-drag to scrub live.") != 17:
     _fail("every FLOAT control must carry the scrub sentence in its own "
-          "field tooltip (expected 15)")
+          "field tooltip (expected 17)")
 for needle, msg in [
     ('"\\u{1F6C8} Click-drag a value: scrubs it live. Click once: type it."',
      "the info sign must sit UNCOLORED inline at the start of the scrub sentence"),

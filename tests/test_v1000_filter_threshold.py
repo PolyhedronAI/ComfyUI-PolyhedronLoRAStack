@@ -177,7 +177,8 @@ check("_previewRadius(sharpR, src.width, node._pfSrcW)" in JS_SRC
       "P8 the preview must scale the radius by proxy / run width")
 check(re.search(r'const LIVE_WIDGETS = GRADE_WIDGETS\.concat\(\[[^\]]*"sharpen_threshold"', JS_SRC) is not None,
       "P6 sharpen_threshold must be a live preview widget")
-check(re.search(r"_sharpenBuf\(fbuf, src\.width, src\.height, sharpA,\s*_previewRadius\(sharpR, src\.width, node\._pfSrcW\), sharpT\)", JS_SRC) is not None
+# RE-GROUNDED v1329: the preview also passes sharpM (edge masking) behind the threshold -- DECLARED
+check(re.search(r"_sharpenBuf\(fbuf, src\.width, src\.height, sharpA,\s*_previewRadius\(sharpR, src\.width, node\._pfSrcW\), sharpT(, sharpM)?\)", JS_SRC) is not None
       and "Number(wSharpT.value) / 255" in JS_SRC, "P6 the preview must pass the threshold in full scale")
 check('"sharpen_amount": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 4.0,' in PY_SRC,
       "P6 sharpen_amount max 4.0 (a threshold needs 2-3)")
@@ -187,7 +188,9 @@ check('"sharpen_threshold": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 32.0, 
 MUT = [
     ("JS coring sign", "js", "if (t > 0) d = d > t ? d - t : (d < -t ? d + t : 0);",
      "if (t > 0) d = d > t ? d + t : (d < -t ? d - t : 0);"),
-    ("PY levels not converted", "py", "float(sharpen_threshold) / 255.0)", "float(sharpen_threshold))"),
+    # RE-GROUNDED v1329: the call carries sharpen_masking behind the threshold -- DECLARED, same wound
+    ("PY levels not converted", "py", "float(sharpen_threshold) / 255.0, float(sharpen_masking))",
+     "float(sharpen_threshold), float(sharpen_masking))"),
     ("JS threshold ignored", "js", "const t = threshold > 0 ? threshold : 0;", "const t = 0;"),
 ]
 caught = 0

@@ -26,7 +26,7 @@ import { setHidden, refit } from "./ph_widget_vis.js";
 // v531 doctrine: every JS file caches INDIVIDUALLY in Firefox -> self-proving banner.
 // (v548: this file never had one - which is exactly why the v547 silent no-op below
 // stayed invisible for a whole live round.)
-console.info("[PLS] ph_power_upscale.js v1212 loaded");
+console.info("[PLS] ph_power_upscale.js v1346 loaded");
 
 const NODE_TYPE = "ULSPowerUpscale";
 // live only in High + Low — the stage-L dials (plan_stages ignores them in Single)
@@ -152,19 +152,24 @@ function _reorderInputsToDisplay(node) {
         if (ins[i] !== next[i]) { changed = true; break; }
     }
     if (!changed) return true;   // already in display order -> idempotent no-op
-    node.inputs = next;
     // Repair the link table: LLink.target_slot must match the NEW slot index, or links
     // render (and disconnect) against the wrong socket. Full array on purpose:
     // sockets AND wired-widget inputs.
+    // v1340: the links learn their NEW slot BEFORE the array is swapped -- the live frontend re-reads each
+    // pin's link from target_slot when node.inputs is assigned (measured 17.11. on the Image Reference, v1339).
     const links = node.graph && node.graph.links;
     if (links) {
-        for (let i = 0; i < node.inputs.length; i++) {
-            const lid = node.inputs[i] ? node.inputs[i].link : null;
+        // ALL ids first: in the live frontend a pin's link is read through the links' target_slot, so reading
+        // it after a slot was rewritten in this loop returns another pin's wire (measured 17.11., v1340)
+        const ids = next.map((p) => (p ? p.link : null));
+        for (let i = 0; i < next.length; i++) {
+            const lid = ids[i];
             if (lid == null) continue;
             const l = (typeof links.get === "function") ? links.get(lid) : links[lid];
             if (l) l.target_slot = i;
         }
     }
+    node.inputs = next;
     if (typeof node.setDirtyCanvas === "function") node.setDirtyCanvas(true, true);
     return true;
 }
@@ -578,6 +583,14 @@ function _setDisabled(w, disabled) {
 // v1199: the restore dials live only while a restore model is picked (the house's v888 hide, slots untouched)
 const RESTORE_ONLY = ["restore_color", "restore_overlap", "restore_frames", "restore_order"];
 
+// v1346: with refine_order='off' NO model pass runs -- the pixel path (ESRGAN + fit,
+// or a plain fit) delivers the canvas at final_upscale_by. The backend says it in the
+// console ("upscale_by, denoise, steps, cfg and the tile dials reach nothing"); the
+// node said nothing and showed "steps 1" (Frank 19.11.: "Warum haben wir hier nur einen
+// Step?" -- there was no step at all). These rows hide (the v888 law, slots kept, #577).
+const REFINE_ONLY = ["upscale_by", "denoise", "steps", "cfg", "sampler_name", "scheduler",
+                     "tile_size", "tile_overlap", "sigma_shift"];
+
 // ── Apply the mode state: stage-L dials live only in High + Low ──────────────
 // No widget is shown/hidden and no input is added/removed, so the node never
 // resizes. model_low / upscale_model_low stay as ComfyUI created them.
@@ -585,25 +598,29 @@ function _applyModeState(node) {
     const pill = _findWidget(node, "dual_moe");
     const dual = pill ? !!pill.value : false;
     const wired = _curveWired(node);                               // v1212
-
-    let moved = false;
-    for (const name of DUAL_ONLY) {
-        const off = !dual || (wired && CURVE_UNREAD.includes(name));
-        if (_setDisabled(_findWidget(node, name), off)) moved = true;
-    }
-    for (const name of CURVE_UNREAD) {                             // v1212: the stage-H twins
-        if (DUAL_ONLY.includes(name)) continue;
-        if (_setDisabled(_findWidget(node, name), wired)) moved = true;
-    }
+    const ro = _findWidget(node, "refine_order");                  // v1346
+    const refOff = !!ro && String(ro.value == null ? "" : ro.value).trim() === "off";
     const rm = _findWidget(node, "restore_model");
     const rOff = !rm || ["", "off"].includes(String(rm.value == null ? "off" : rm.value).trim());   // v1199
-    for (const name of RESTORE_ONLY) {
-        if (_setDisabled(_findWidget(node, name), rOff)) moved = true;
+
+    // v1346: ONE verdict per row -- the OR of every reason it reaches nothing.
+    // (Before, the DUAL_ONLY and CURVE_UNREAD loops each set a row, and a row
+    // in both lists could be shown by the second loop after the first hid it.)
+    const hide = new Map();
+    const add = (n, v) => hide.set(n, (hide.get(n) || false) || !!v);
+    for (const name of DUAL_ONLY) add(name, !dual || (wired && CURVE_UNREAD.includes(name)) || refOff);
+    for (const name of CURVE_UNREAD) add(name, wired || refOff);  // v1212: the stage-H twins
+    for (const name of REFINE_ONLY) add(name, refOff);            // v1346: no refine -> no refine dials
+    for (const name of RESTORE_ONLY) add(name, rOff);
+
+    let moved = false;
+    for (const [name, off] of hide) {
+        if (_setDisabled(_findWidget(node, name), off)) moved = true;
     }
 
     // v888: ONE refit per pass, and only when a row really appeared or went.
     if (moved) refit(node);
-    _curveLabels(node, wired, dual);                               // v1212
+    _curveLabels(node, wired && !refOff, dual);                    // v1212 (v1346: no label without a refine)
     if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
 }
 
@@ -744,9 +761,12 @@ function _applyVerdict(node, text, fromLoad, path) {
     }
     const p = String((fromLoad ? node.properties.pu_path : path) || "");
     const joint = (p === "joint") || (p === "" && t.indexOf("H3") === 0);   // legacy v1004-v1007 save
+    // v1346: refine_order 'off' hides these too (REFINE_ONLY) -- the verdict must not show them again
+    const ro = _findWidget(node, "refine_order");
+    const refOff = !!ro && String(ro.value == null ? "" : ro.value).trim() === "off";
     let moved = false;
     for (const name of JOINT_UNREAD) {
-        if (_setDisabled(_findWidget(node, name), joint)) moved = true;
+        if (_setDisabled(_findWidget(node, name), joint || (refOff && REFINE_ONLY.includes(name)))) moved = true;
     }
     if (moved) refit(node);
     if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
@@ -1377,6 +1397,17 @@ app.registerExtension({
                 const _rcb = rmw.callback;
                 rmw.callback = function () {
                     const rr = _rcb ? _rcb.apply(this, arguments) : undefined;
+                    _applyModeState(self);
+                    return rr;
+                };
+            }
+
+            // v1346: refine_order 'off' hides the refine dials, any other order shows them
+            const row = _findWidget(self, "refine_order");
+            if (row) {
+                const _ocb = row.callback;
+                row.callback = function () {
+                    const rr = _ocb ? _ocb.apply(this, arguments) : undefined;
                     _applyModeState(self);
                     return rr;
                 };
