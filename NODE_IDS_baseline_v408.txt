@@ -1,4 +1,4 @@
-# NODE_IDS baseline v407 - the strings every saved workflow stores.
+# NODE_IDS baseline v408 - the strings every saved workflow stores.
 #
 # A node_id is written into each workflow JSON as {"type": "..."}. Move it
 # and every workflow that used the node turns into a red 'missing node' box.
@@ -21,6 +21,7 @@
 #       ULSMiniMaxKeyframes, ULSMiniMaxSecondPassHold -- the fox templates' H3 chain (47 node ids; none renamed, none removed).
 # v394: + ULSApplyControl, ULSBlend, ULSControlFit, ULSControlMap, ULSTransitionCheck (52 node ids; none renamed, none removed).
 # v407: + ULSImageReference (53 node ids; none renamed, none removed).
+# v408: unchanged (template only).
 ULSAccelerator
 ULSAnySwitch
 ULSAnySwitchInv

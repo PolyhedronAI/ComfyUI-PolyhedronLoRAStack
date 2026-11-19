@@ -848,7 +848,7 @@ The same single-line pattern works for FLUX, SDXL and SD 1.5.
 
 ## Example workflows
 
-Eleven ready-to-load starter workflows ship in
+Twelve ready-to-load starter workflows ship in
 [`example_workflows/`](example_workflows/) and appear in ComfyUI's template
 browser (**Workflow → Browse Templates**) under this pack's name once it is
 installed:
@@ -865,6 +865,7 @@ installed:
 | `polyhedron_minimax_h3_fox_continue` | Cine Timeline, two scenes in one press; scene 2 continues scene 1 (motion carry) | as above |
 | `polyhedron_minimax_h3_fox_continue_refs` | as CONTINUE, with three reference pictures in both scenes (ref2va) | as above |
 | `polyhedron_minimax_h3_flf_sitdown` | Cine Timeline + MiniMax Keyframes, a first and a last frame, plus pose, depth and canny from one video blended to one control (Control Fit → Control Map → Blend → Apply Control), Transition Check | as the fox |
+| `polyhedron_minimax_h3_image_fox` | MiniMax H3 Image, text to one 8 MP picture: Image Reference blank picture (mid grey 0-0.25), Sampler on an 8-step curve, Power Upscale refine, ESRGAN, Filter clarity | off, no LoRA |
 | `polyhedron_minimax_h3_text_to_video` | **Cine Timeline** → Polyhedron Sampler, MiniMax H3 (video **and** audio), upscale and interpolation branches | H3 fl2v turbo 8-step + HyperFlow 8-step on, with the matching Sigma List preset |
 
 Compact WAN 2.2 dual-noise graphs built around the Stack: a grouped canvas
@@ -1645,6 +1646,19 @@ family:
 - **Power Upscale** refines the 8 MP result with its own curve on `sigmas`;
   with `refine_order` *off* it only runs the pixel path (ESRGAN + fit) and
   hides the dials that path does not read.
+
+**The template** -- `polyhedron_minimax_h3_image_fox`, built only from this pack,
+no LoRA, no accelerator: a red fox in a snowy pine clearing at golden hour,
+3200 x 2560, blank picture mid grey 0-0.25, euler on an 8-step curve shifted 12
+at cfg 1, a 2-step refine (0.16 -> 0.08 -> 0), ESRGAN 4x Universal Neutral with
+lanczos 0.65 to 2080 x 1664, contour clarity 0.35, seed 2094697662. This is what
+it renders, as it ships, in one run:
+
+![The H3 Image fox template, as it renders in one run](assets/h3_image_fox.jpg)
+
+The blank picture's effect depends on the motif: on some pictures it calms
+the hard look, on others it makes things harsher -- switch `blank_picture` off
+for an A/B.
 
 The model's licence is MiniMax's; check its terms for your use.
 

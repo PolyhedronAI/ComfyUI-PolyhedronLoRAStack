@@ -1,3 +1,16 @@
+# v408 -- 4.8.0: H3 Image fox template
+
+**Browser reload** (no node changed). Carries v407 below.
+
+- New template `example_workflows/polyhedron_minimax_h3_image_fox` (+ thumbnail): MiniMax H3 Image text to one 8 MP
+  picture, built only from this pack, no LoRA, no accelerator -- a red fox in a snowy pine clearing at golden hour,
+  3200 x 2560, Image Reference blank picture mid grey 0-0.25, Sampler euler on an 8-step curve shifted 12 at cfg 1,
+  Power Upscale refine 2 steps on its own curve (0.16 -> 0.08 -> 0), Power Upscale with refine off for ESRGAN 4x
+  Universal Neutral + lanczos 0.65 (2080 x 1664), Filter contour clarity 0.35, seed 2094697662. Field run 19.11.2026.
+- README: the template in the table (twelve templates now) and in "MiniMax H3 Image" with its picture
+  (`assets/h3_image_fox.jpg`).
+- Baselines renamed to v408 (contents unchanged); banner and badge v408.
+
 # v407 -- 4.7.0: MiniMax H3 Image, Image Reference, Polyhedron groups, Group Switch, Align
 
 **Server restart + browser reload.** Carries v406 below. Brings the public nodes to the internal state v1346 and makes

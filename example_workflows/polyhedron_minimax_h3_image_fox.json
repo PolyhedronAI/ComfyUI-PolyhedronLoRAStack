@@ -1,0 +1,3615 @@
+{
+ "id": "af1e2b8c-d675-4ff7-bbb8-06c6fabb304d",
+ "revision": 0,
+ "last_node_id": 52,
+ "last_link_id": 179,
+ "nodes": [
+  {
+   "id": 1,
+   "type": "ULSLoadModel",
+   "pos": [
+    0,
+    -220
+   ],
+   "size": [
+    656,
+    186
+   ],
+   "flags": {},
+   "order": 0,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "model",
+     "nameLocked": null,
+     "removable": null,
+     "type": "MODEL",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      2,
+      3,
+      4
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "model_name",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "info",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": null
+    }
+   ],
+   "title": "⬡ Load Model",
+   "properties": {
+    "Node name for S&R": "ULSLoadModel"
+   },
+   "widgets_values": [
+    1,
+    "default",
+    "minimax_h3_image_pruned_int8_convrot.safetensors · 19.5 GB",
+    "— select model —",
+    "— select model —",
+    "— select model —",
+    "— select model —",
+    "— select model —"
+   ],
+   "widgets_values_named": {
+    "select": 1,
+    "weight_dtype": "default",
+    "model_1": "minimax_h3_image_pruned_int8_convrot.safetensors · 19.5 GB",
+    "model_2": "— select model —",
+    "model_3": "— select model —",
+    "model_4": "— select model —",
+    "model_5": "— select model —",
+    "model_6": "— select model —"
+   }
+  },
+  {
+   "id": 2,
+   "type": "ULSLoadCLIP",
+   "pos": [
+    0,
+    110
+   ],
+   "size": [
+    656,
+    190
+   ],
+   "flags": {},
+   "order": 10,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "model",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "MODEL",
+     "pos": null,
+     "link": 3
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "clip",
+     "nameLocked": null,
+     "removable": null,
+     "type": "CLIP",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      5,
+      66
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "info",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": null
+    }
+   ],
+   "title": "⬡ Load CLIP",
+   "properties": {
+    "Node name for S&R": "ULSLoadCLIP"
+   },
+   "widgets_values": [
+    "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors · 14.6 GB",
+    "minimax",
+    "default",
+    "— none —",
+    "— none —",
+    "— none —",
+    "default"
+   ],
+   "widgets_values_named": {
+    "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors · 14.6 GB",
+    "type": "minimax",
+    "device": "default",
+    "clip_name_2": "— none —",
+    "clip_name_3": "— none —",
+    "clip_name_4": "— none —",
+    "weight_dtype": "default"
+   }
+  },
+  {
+   "id": 3,
+   "type": "ULSLoadVAE",
+   "pos": [
+    0,
+    380
+   ],
+   "size": [
+    656,
+    118
+   ],
+   "flags": {},
+   "order": 11,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "model",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "MODEL",
+     "pos": null,
+     "link": 4
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "vae",
+     "nameLocked": null,
+     "removable": null,
+     "type": "VAE",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      67,
+      75,
+      113,
+      121
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "info",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": null
+    }
+   ],
+   "title": "⬡ Load VAE · image",
+   "properties": {
+    "Node name for S&R": "ULSLoadVAE"
+   },
+   "widgets_values": [
+    "minimax_h3_image_vae_fp16.safetensors · 1.1 GB",
+    "auto"
+   ],
+   "widgets_values_named": {
+    "vae_name": "minimax_h3_image_vae_fp16.safetensors · 1.1 GB",
+    "precision": "auto"
+   }
+  },
+  {
+   "id": 5,
+   "type": "ULSAttention",
+   "pos": [
+    726,
+    -220
+   ],
+   "size": [
+    300,
+    418
+   ],
+   "flags": {},
+   "order": 14,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "model",
+     "nameLocked": null,
+     "removable": null,
+     "type": "MODEL",
+     "pos": null,
+     "link": 2
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "latent",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "LATENT",
+     "pos": null,
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "model",
+     "nameLocked": null,
+     "removable": null,
+     "type": "MODEL",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      130,
+      131,
+      179
+     ]
+    }
+   ],
+   "title": "⬡ Attention · default",
+   "properties": {
+    "Node name for S&R": "ULSAttention"
+   },
+   "widgets_values": [
+    "default (leave the model alone)",
+    true,
+    "same as main",
+    0,
+    "same as main",
+    0,
+    3,
+    true,
+    true,
+    "off",
+    "(put a Veda predictor into models/veda)",
+    "32",
+    1,
+    1,
+    0
+   ],
+   "widgets_values_named": {
+    "attention": "default (leave the model alone)",
+    "fallback": true,
+    "attention_first": "same as main",
+    "first_steps": 0,
+    "attention_last": "same as main",
+    "last_steps": 0,
+    "sparse_time_window": 3,
+    "sparse_sink": true,
+    "live_check": true,
+    "sparse_layer": "off",
+    "veda_predictor": "(put a Veda predictor into models/veda)",
+    "veda_keep": "32",
+    "ff_chunks": 1,
+    "head_chunks": 1,
+    "tst_tau": 0
+   }
+  },
+  {
+   "id": 6,
+   "type": "ULSNote",
+   "pos": [
+    1533,
+    1170
+   ],
+   "size": [
+    377,
+    420
+   ],
+   "flags": {},
+   "order": 1,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [],
+   "properties": {
+    "Node name for S&R": "ULSNote"
+   },
+   "widgets_values": [
+    "",
+    "The negative is kept, not wired\n\nThe CLIP Text Encode carries a short negative (ANATOMY, IMAGE, SCENE).\n\nThe model runs at CFG 1: the sampler reads the positive only, a negative\nhas nothing to push against. So the Sampler's negative pin is left open\non purpose -- unwired it is the zeroed positive -- and the CLIP Text\nEncode does not encode the negative text at all (no extra pass).\n\nTo use the negative: raise cfg above 1 and wire the CLIP Text Encode's\nnegative to the Sampler's negative."
+   ],
+   "widgets_values_named": {
+    "title": "",
+    "text": "The negative is kept, not wired\n\nThe CLIP Text Encode carries a short negative (ANATOMY, IMAGE, SCENE).\n\nThe model runs at CFG 1: the sampler reads the positive only, a negative\nhas nothing to push against. So the Sampler's negative pin is left open\non purpose -- unwired it is the zeroed positive -- and the CLIP Text\nEncode does not encode the negative text at all (no extra pass).\n\nTo use the negative: raise cfg above 1 and wire the CLIP Text Encode's\nnegative to the Sampler's negative."
+   }
+  },
+  {
+   "id": 7,
+   "type": "ULSNote",
+   "pos": [
+    721,
+    300
+   ],
+   "size": [
+    737,
+    900
+   ],
+   "flags": {},
+   "order": 2,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [],
+   "title": "HOW THIS WORKFLOW RUNS",
+   "properties": {
+    "Node name for S&R": "ULSNote"
+   },
+   "widgets_values": [
+    "H3 IMAGE FOX -- no LoRAs",
+    "H3 IMAGE FOX -- no LoRAs (Polyhedron Suite v407)\n\nMiniMax H3 Image int8, 3200 x 2560 (8 MP), seed 2094697662 fixed.\n\nBlank picture MID GREY 0-0.25 (Image Reference): the prompt is encoded together with an empty grey picture for the first part of the run, then as text only. The window is read on the model's own sigma grid (sigma >= 0.9275): the first 2 of its 6 native steps, but steps 1-4 of 8 on the curve used here. The Sampler prints the real steps in the console. The effect depends on the motif -- switch blank_picture off for an A/B.\n\nSampling: euler on an 8-step curve (1, .931506, .839236, .703462, .5, .296538, .160764, .068494, 0) shifted 12, cfg 1. No LoRA, no accelerator -- the look comes from the curve.\n\nRefine: Power Upscale with its own curve 1, 0.08, 0 on sigmas, denoise 0.16 -> 2 steps.\nUpscale: Power Upscale, refine OFF -- no model pass: ESRGAN 4x Universal Neutral, then lanczos 0.65 = 2080 x 1664.\nClarity: Filter, sharpen masked to edges 0.35 (masking 0.7).\n\nModels: minimax_h3_image_pruned_int8_convrot, text encoder qwen3vl_32b_minimax_h3_nvfp4_awq, image VAE minimax_h3_image_vae_fp16, upscaler 4x_UniversalUpscalerV2-Neutral_115000_swaG. The loaders find them in any sub folder."
+   ],
+   "widgets_values_named": {
+    "title": "H3 IMAGE FOX -- no LoRAs",
+    "text": "H3 IMAGE FOX -- no LoRAs (Polyhedron Suite v407)\n\nMiniMax H3 Image int8, 3200 x 2560 (8 MP), seed 2094697662 fixed.\n\nBlank picture MID GREY 0-0.25 (Image Reference): the prompt is encoded together with an empty grey picture for the first part of the run, then as text only. The window is read on the model's own sigma grid (sigma >= 0.9275): the first 2 of its 6 native steps, but steps 1-4 of 8 on the curve used here. The Sampler prints the real steps in the console. The effect depends on the motif -- switch blank_picture off for an A/B.\n\nSampling: euler on an 8-step curve (1, .931506, .839236, .703462, .5, .296538, .160764, .068494, 0) shifted 12, cfg 1. No LoRA, no accelerator -- the look comes from the curve.\n\nRefine: Power Upscale with its own curve 1, 0.08, 0 on sigmas, denoise 0.16 -> 2 steps.\nUpscale: Power Upscale, refine OFF -- no model pass: ESRGAN 4x Universal Neutral, then lanczos 0.65 = 2080 x 1664.\nClarity: Filter, sharpen masked to edges 0.35 (masking 0.7).\n\nModels: minimax_h3_image_pruned_int8_convrot, text encoder qwen3vl_32b_minimax_h3_nvfp4_awq, image VAE minimax_h3_image_vae_fp16, upscaler 4x_UniversalUpscalerV2-Neutral_115000_swaG. The loaders find them in any sub folder."
+   }
+  },
+  {
+   "id": 8,
+   "type": "ULSEmptyLatent",
+   "pos": [
+    2746.9,
+    -220
+   ],
+   "size": [
+    350,
+    350
+   ],
+   "flags": {},
+   "order": 3,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "positive",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "CONDITIONING",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "negative",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "CONDITIONING",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "vae",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "VAE",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "clip_vision_output",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "CLIP_VISION_OUTPUT",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "start_image",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "IMAGE",
+     "pos": null,
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "positive",
+     "nameLocked": null,
+     "removable": null,
+     "type": "CONDITIONING",
+     "pos": null,
+     "slot_index": null,
+     "links": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "negative",
+     "nameLocked": null,
+     "removable": null,
+     "type": "CONDITIONING",
+     "pos": null,
+     "slot_index": null,
+     "links": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "latent",
+     "nameLocked": null,
+     "removable": null,
+     "type": "LATENT",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      68
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "latent_width",
+     "nameLocked": null,
+     "removable": null,
+     "type": "INT",
+     "pos": null,
+     "slot_index": null,
+     "links": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "latent_height",
+     "nameLocked": null,
+     "removable": null,
+     "type": "INT",
+     "pos": null,
+     "slot_index": null,
+     "links": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "width",
+     "nameLocked": null,
+     "removable": null,
+     "type": "INT",
+     "pos": null,
+     "slot_index": null,
+     "links": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "height",
+     "nameLocked": null,
+     "removable": null,
+     "type": "INT",
+     "pos": null,
+     "slot_index": null,
+     "links": null
+    }
+   ],
+   "title": "⬡ Empty Latent · 8 MP 3200 x 2560",
+   "properties": {
+    "Node name for S&R": "ULSEmptyLatent"
+   },
+   "widgets_values": [
+    "MiniMax H3 Image (24ch, one frame)",
+    3200,
+    2560,
+    81,
+    1,
+    "zeros",
+    0,
+    "fixed",
+    1,
+    0
+   ],
+   "widgets_values_named": {
+    "latent_type": "MiniMax H3 Image (24ch, one frame)",
+    "width": 3200,
+    "height": 2560,
+    "length": 81,
+    "batch_size": 1,
+    "noise_type": "zeros",
+    "noise_seed": 0,
+    "control_after_generate": "fixed",
+    "noise_strength": 1,
+    "duration_seconds": 0
+   }
+  },
+  {
+   "id": 9,
+   "type": "ULSSeed",
+   "pos": [
+    3166.9,
+    -220
+   ],
+   "size": [
+    320,
+    647
+   ],
+   "flags": {},
+   "order": 4,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "seed",
+     "nameLocked": null,
+     "removable": null,
+     "type": "INT",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      73,
+      115,
+      123
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "seed_string",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "noise",
+     "nameLocked": null,
+     "removable": null,
+     "type": "NOISE",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      72
+     ]
+    }
+   ],
+   "title": "⬡ Seed · Noise",
+   "properties": {
+    "Node name for S&R": "ULSSeed",
+    "pls_last_used": 2094697662,
+    "pls_preview_h": 365
+   },
+   "widgets_values": [
+    2094697662,
+    "fixed",
+    "gaussian",
+    1,
+    64,
+    64,
+    1,
+    null,
+    null
+   ],
+   "widgets_values_named": {
+    "seed": 2094697662,
+    "control_after_generate": "fixed",
+    "noise_type": "gaussian",
+    "noise_strength": 1,
+    "preview_width": 64,
+    "preview_height": 64,
+    "noise_character": 1,
+    "🎲 Roll": null,
+    "↺ Reuse last": null
+   }
+  },
+  {
+   "id": 10,
+   "type": "ULSCLIPTextEncode",
+   "pos": [
+    1533,
+    -220
+   ],
+   "size": [
+    753.2,
+    1200
+   ],
+   "flags": {},
+   "order": 13,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "clip",
+     "nameLocked": null,
+     "removable": null,
+     "type": "CLIP",
+     "pos": null,
+     "link": 5
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "pos_external",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "STRING",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "neg_external",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "STRING",
+     "pos": null,
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "positive",
+     "nameLocked": null,
+     "removable": null,
+     "type": "CONDITIONING",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "negative",
+     "nameLocked": null,
+     "removable": null,
+     "type": "CONDITIONING",
+     "pos": null,
+     "slot_index": null,
+     "links": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "positive_text",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      69
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "negative_text",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "full_text",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    }
+   ],
+   "title": "⬡ CLIP Text Encode · red fox · two segments (look, scene, light, camera | fox, face, finish)",
+   "properties": {
+    "Node name for S&R": "ULSCLIPTextEncode"
+   },
+   "widgets_values": [
+    2,
+    "// LOOK\nA photorealistic wildlife photograph, completely free of the plastic look of AI images and the artificial feel of CG rendering. It looks as if it were taken on location with a long telephoto lens at snow height, with real optics and natural colour, a realistic exposure and fine detail in the fur and in the snow. The background is softly out of focus.\n\n// SCENE\nA wide, calm clearing in a northern pine forest on a quiet winter evening. Deep fresh snow lies in soft rounded drifts, untouched except for one neat line of small paw prints that leads from the left edge of the frame to the fox. Tall dark pine trunks stand around the clearing on both sides, with heavy snow resting on their lower branches. A faint haze of fog hangs between the trees in the distance, so the far trunks fade into a pale blue-grey.\n\n// LIGHT\nA low, warm golden-hour sun shines from the left between the trunks and lays long blue tree shadows diagonally across the snow. The warmth stays in the sunlit snow crust, in the fog where the sunbeams pass through it and in a bright warm rim light along the fox's back, ears and tail. The shadow side of the animal is filled with cool, soft light bouncing up from the snow. Natural light only.\n\n// CAMERA\nA wide landscape frame at snow height. The fox stands in the middle third of the frame in a three-quarter view, its body turned to the right and its head turned toward the camera. The whole animal and its line of paw prints are in the picture, with snow all around it.",
+    "// SUBJECT\nA single adult red fox, a lean, healthy wild animal in its thick winter coat: rich rusty orange fur on the back and flanks, a clean white chest and throat, black legs sinking into the snow up to the wrists, the black backs of its ears and frosted whiskers. Its long bushy tail with a white tip rests on the snow. It is alert, its ears pointed forward, and its breath shows as a small cloud of steam in the cold air. A few fine snowflakes drift down through the sunlight and settle on its fur.\n\n// FACE\nIts face is lit cleanly by the low sun. The amber eyes are clear and bright, with one small sharp catchlight in each eye, and the focus is sharp on the eyes and on the fur of the face.\n\n// FINISH\nAuthentic shallow depth of field with optical bokeh in the background. Extremely subtle natural film grain, no signs of sharpening, HDR processing or AI retouching. No text, letters or numbers in the picture.",
+    "",
+    "",
+    "",
+    "",
+    true,
+    "// ANATOMY\nbad anatomy, deformed animal, extra legs, missing legs, fused legs, extra tail, two tails, extra ears, distorted snout, cartoon fox, plush toy,\n// IMAGE\nblurry, out of focus, low quality, jpeg artifacts, oversaturated, overexposed, underexposed, washed out, heavy noise, watermark, text, subtitles, logo, signature, frame border,\n// SCENE\nsummer, green grass, bare ground, rain, city, buildings, people, dog",
+    "comma",
+    true,
+    true,
+    "append",
+    "//"
+   ],
+   "widgets_values_named": {
+    "segments": 2,
+    "pos_1": "// LOOK\nA photorealistic wildlife photograph, completely free of the plastic look of AI images and the artificial feel of CG rendering. It looks as if it were taken on location with a long telephoto lens at snow height, with real optics and natural colour, a realistic exposure and fine detail in the fur and in the snow. The background is softly out of focus.\n\n// SCENE\nA wide, calm clearing in a northern pine forest on a quiet winter evening. Deep fresh snow lies in soft rounded drifts, untouched except for one neat line of small paw prints that leads from the left edge of the frame to the fox. Tall dark pine trunks stand around the clearing on both sides, with heavy snow resting on their lower branches. A faint haze of fog hangs between the trees in the distance, so the far trunks fade into a pale blue-grey.\n\n// LIGHT\nA low, warm golden-hour sun shines from the left between the trunks and lays long blue tree shadows diagonally across the snow. The warmth stays in the sunlit snow crust, in the fog where the sunbeams pass through it and in a bright warm rim light along the fox's back, ears and tail. The shadow side of the animal is filled with cool, soft light bouncing up from the snow. Natural light only.\n\n// CAMERA\nA wide landscape frame at snow height. The fox stands in the middle third of the frame in a three-quarter view, its body turned to the right and its head turned toward the camera. The whole animal and its line of paw prints are in the picture, with snow all around it.",
+    "pos_2": "// SUBJECT\nA single adult red fox, a lean, healthy wild animal in its thick winter coat: rich rusty orange fur on the back and flanks, a clean white chest and throat, black legs sinking into the snow up to the wrists, the black backs of its ears and frosted whiskers. Its long bushy tail with a white tip rests on the snow. It is alert, its ears pointed forward, and its breath shows as a small cloud of steam in the cold air. A few fine snowflakes drift down through the sunlight and settle on its fur.\n\n// FACE\nIts face is lit cleanly by the low sun. The amber eyes are clear and bright, with one small sharp catchlight in each eye, and the focus is sharp on the eyes and on the fur of the face.\n\n// FINISH\nAuthentic shallow depth of field with optical bokeh in the background. Extremely subtle natural film grain, no signs of sharpening, HDR processing or AI retouching. No text, letters or numbers in the picture.",
+    "pos_3": "",
+    "pos_4": "",
+    "pos_5": "",
+    "pos_6": "",
+    "use_negative": true,
+    "neg_1": "// ANATOMY\nbad anatomy, deformed animal, extra legs, missing legs, fused legs, extra tail, two tails, extra ears, distorted snout, cartoon fox, plush toy,\n// IMAGE\nblurry, out of focus, low quality, jpeg artifacts, oversaturated, overexposed, underexposed, washed out, heavy noise, watermark, text, subtitles, logo, signature, frame border,\n// SCENE\nsummer, green grass, bare ground, rain, city, buildings, people, dog",
+    "separator": "comma",
+    "strip_comments": true,
+    "strip_newlines": true,
+    "external_mode": "append",
+    "comment_markers": "//"
+   },
+   "pls_field_heights": {
+    "pos_1": 368,
+    "pos_2": 590,
+    "pos_3": 62,
+    "pos_4": 64,
+    "pos_5": 64,
+    "pos_6": 64,
+    "neg_1": 745
+   },
+   "extensions": {
+    "pls_field_heights": {
+     "pos_1": 368,
+     "pos_2": 590,
+     "pos_3": 62,
+     "pos_4": 64,
+     "pos_5": 64,
+     "pos_6": 64,
+     "neg_1": 745
+    }
+   }
+  },
+  {
+   "id": 21,
+   "type": "PolyhedronGroupSwitch",
+   "pos": [
+    -12,
+    1814
+   ],
+   "size": [
+    400,
+    352
+   ],
+   "flags": {},
+   "order": 5,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [],
+   "properties": {
+    "ph_hidden": [
+     "1",
+     "2",
+     "3",
+     "4",
+     "5",
+     "6",
+     "7",
+     "8",
+     "9",
+     "10"
+    ],
+    "ph_off": "bypass",
+    "ph_rule": "free"
+   },
+   "color": "#333",
+   "bgcolor": "#1a1a2a"
+  },
+  {
+   "id": 22,
+   "type": "PolyhedronAlign",
+   "pos": [
+    -12,
+    2226
+   ],
+   "size": [
+    250,
+    52
+   ],
+   "flags": {},
+   "order": 6,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [],
+   "properties": {
+    "ph_bar": true
+   },
+   "color": "#333",
+   "bgcolor": "#1a1a2a"
+  },
+  {
+   "id": 31,
+   "type": "ULSImageReference",
+   "pos": [
+    1980,
+    1170
+   ],
+   "size": [
+    696.9,
+    462
+   ],
+   "flags": {},
+   "order": 16,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "clip",
+     "nameLocked": null,
+     "removable": null,
+     "type": "CLIP",
+     "pos": null,
+     "link": 66
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "vae",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "VAE",
+     "pos": null,
+     "link": 67
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "latent",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "LATENT",
+     "pos": null,
+     "link": 68
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "image_1",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "IMAGE",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "inpaint_mask",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "MASK",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "prompt_in",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "STRING",
+     "pos": null,
+     "link": 69
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "positive",
+     "nameLocked": null,
+     "removable": null,
+     "type": "CONDITIONING",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      74,
+      111,
+      119
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "negative",
+     "nameLocked": null,
+     "removable": null,
+     "type": "CONDITIONING",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      112,
+      120
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "latent",
+     "nameLocked": null,
+     "removable": null,
+     "type": "LATENT",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      94
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "info",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "prompt_text",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    }
+   ],
+   "title": "⬡ Image Reference · blank picture MID GREY 0-0.25 = sigma >= 0.93 = steps 1-4 of 8 on this curve",
+   "properties": {
+    "Node name for S&R": "ULSImageReference"
+   },
+   "widgets_values": [
+    "",
+    "",
+    "auto",
+    1024,
+    16,
+    8,
+    "mid grey",
+    0,
+    0.25
+   ],
+   "widgets_values_named": {
+    "prompt": "",
+    "negative_prompt": "",
+    "family": "auto",
+    "ref_size": 1024,
+    "inpaint_grow": 16,
+    "inpaint_feather": 8,
+    "blank_picture": "mid grey",
+    "blank_start": 0,
+    "blank_end": 0.25
+   }
+  },
+  {
+   "id": 32,
+   "type": "ULSSampler",
+   "pos": [
+    3855.3999999999996,
+    609
+   ],
+   "size": [
+    690.6,
+    362
+   ],
+   "flags": {},
+   "order": 19,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "model",
+     "nameLocked": null,
+     "removable": null,
+     "type": "MODEL",
+     "pos": null,
+     "link": 179
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "positive",
+     "nameLocked": null,
+     "removable": null,
+     "type": "CONDITIONING",
+     "pos": null,
+     "link": 74
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "latent_image",
+     "nameLocked": null,
+     "removable": null,
+     "type": "LATENT",
+     "pos": null,
+     "link": 94
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "negative",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "CONDITIONING",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "model_low",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "MODEL",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "sigmas",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "SIGMAS",
+     "pos": null,
+     "link": 104
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "sigmas_high",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "SIGMAS",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "sigmas_low",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "SIGMAS",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "noise",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "NOISE",
+     "pos": null,
+     "link": 72
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "seed",
+     "nameLocked": null,
+     "removable": null,
+     "type": "INT",
+     "widget": {
+      "name": "seed"
+     },
+     "link": 73
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "LATENT",
+     "nameLocked": null,
+     "removable": null,
+     "type": "LATENT",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      76
+     ]
+    }
+   ],
+   "title": "⬡ Sampler · euler · 8 steps on the curve · cfg 1",
+   "properties": {
+    "Node name for S&R": "ULSSampler"
+   },
+   "widgets_values": [
+    false,
+    0.875,
+    1,
+    2094697662,
+    "fixed",
+    8,
+    1,
+    "euler",
+    "simple",
+    1,
+    true,
+    0,
+    10000,
+    false,
+    "Still · ComfyUI",
+    0,
+    "Continuous",
+    "same as high",
+    "same as high",
+    -1,
+    0
+   ],
+   "widgets_values_named": {
+    "dual_moe": false,
+    "boundary": 0.875,
+    "handoff_mode": "Continuous",
+    "seed": 2094697662,
+    "control_after_generate": "fixed",
+    "steps": 8,
+    "cfg": 1,
+    "cfg_low": 1,
+    "sampler_name": "euler",
+    "sampler_low": "same as high",
+    "scheduler": "simple",
+    "scheduler_low": "same as high",
+    "sigma_shift": 0,
+    "sigma_shift_low": -1,
+    "sigma_shift_audio": 0,
+    "denoise": 1,
+    "add_noise": true,
+    "start_at_step": 0,
+    "end_at_step": 10000,
+    "return_with_leftover_noise": false,
+    "preview_mode": "Still · ComfyUI"
+   }
+  },
+  {
+   "id": 33,
+   "type": "ULSVAE",
+   "pos": [
+    4616.0,
+    579
+   ],
+   "size": [
+    495.2,
+    350
+   ],
+   "flags": {},
+   "order": 21,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "vae",
+     "nameLocked": null,
+     "removable": null,
+     "type": "VAE",
+     "pos": null,
+     "link": 75
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "pixels",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "IMAGE",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "samples",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "LATENT",
+     "pos": null,
+     "link": 76
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "audio_vae",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "VAE",
+     "pos": null,
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "latent",
+     "nameLocked": null,
+     "removable": null,
+     "type": "LATENT",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "image",
+     "nameLocked": null,
+     "removable": null,
+     "type": "IMAGE",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      77,
+      109
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "audio",
+     "nameLocked": null,
+     "removable": null,
+     "type": "AUDIO",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    }
+   ],
+   "title": "⬡ VAE · decode",
+   "properties": {
+    "Node name for S&R": "ULSVAE"
+   },
+   "widgets_values": [
+    "decode",
+    "auto",
+    512,
+    64,
+    64,
+    8,
+    true,
+    "auto"
+   ],
+   "widgets_values_named": {
+    "mode": "decode",
+    "tiling": "auto",
+    "tile_size": 512,
+    "tile_overlap": 64,
+    "temporal_size": 64,
+    "temporal_overlap": 8,
+    "mute_staging_logs": true,
+    "h3_still_fix": "auto"
+   }
+  },
+  {
+   "id": 34,
+   "type": "ULSSave",
+   "pos": [
+    5181.2,
+    579
+   ],
+   "size": [
+    440,
+    714
+   ],
+   "flags": {},
+   "order": 22,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "image",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "IMAGE",
+     "pos": null,
+     "link": 77
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "video",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "VIDEO",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "audio",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "AUDIO",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "mask",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "MASK",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "keypoints",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "POSE_KEYPOINT",
+     "pos": null,
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "path",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "fps",
+     "nameLocked": null,
+     "removable": null,
+     "type": "FLOAT",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    }
+   ],
+   "title": "⬡ Save · 8 MP base",
+   "properties": {
+    "Node name for S&R": "ULSSave"
+   },
+   "widgets_values": [
+    "%date:yyyy-MM-dd%/PH_%date:hhmmss%_H3IMAGE_FOX_8MP",
+    "image",
+    "png",
+    100,
+    "H.264 MP4 (delivery)",
+    17,
+    24,
+    false,
+    false,
+    0,
+    false,
+    true,
+    true,
+    "white = transparent (Load Image -- default)",
+    ""
+   ],
+   "widgets_values_named": {
+    "filename_prefix": "%date:yyyy-MM-dd%/PH_%date:hhmmss%_H3IMAGE_FOX_8MP",
+    "media_kind": "image",
+    "image_format": "png",
+    "image_quality": 100,
+    "video_preset": "H.264 MP4 (delivery)",
+    "quality": 17,
+    "frame_rate": 24,
+    "autoplay": false,
+    "pingpong": false,
+    "loop_count": 0,
+    "trim_to_audio": false,
+    "save_metadata": true,
+    "save_output": true,
+    "mask_polarity": "white = transparent (Load Image -- default)",
+    "ph_save_preview": ""
+   }
+  },
+  {
+   "id": 41,
+   "type": "ULSSigmaList",
+   "pos": [
+    3166.8999999999996,
+    609
+   ],
+   "size": [
+    618.5,
+    304
+   ],
+   "flags": {},
+   "order": 7,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "sigmas",
+     "nameLocked": null,
+     "removable": null,
+     "type": "SIGMAS",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      104
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "steps",
+     "nameLocked": null,
+     "removable": null,
+     "type": "INT",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    }
+   ],
+   "title": "⬡ Sigma List · 8-step curve (HyperFlow grid, NO HyperFlow LoRA) · shift 12",
+   "properties": {
+    "Node name for S&R": "ULSSigmaList",
+    "_slUserValues": {
+     "sigmas_text": "1, 0.931506, 0.839236, 0.703462, 0.5, 0.296538, 0.160764, 0.068494, 0",
+     "shift": 12,
+     "enforce_terminal_zero": true
+    }
+   },
+   "widgets_values": [
+    "1, 0.931506, 0.839236, 0.703462, 0.5, 0.296538, 0.160764, 0.068494, 0",
+    12,
+    true,
+    "hyperflow_8step_h3_raw"
+   ],
+   "widgets_values_named": {
+    "sigmas_text": "1, 0.931506, 0.839236, 0.703462, 0.5, 0.296538, 0.160764, 0.068494, 0",
+    "shift": 12,
+    "enforce_terminal_zero": true,
+    "preset": "hyperflow_8step_h3_raw"
+   }
+  },
+  {
+   "id": 45,
+   "type": "ULSSigmaList",
+   "pos": [
+    5691.2,
+    579
+   ],
+   "size": [
+    507.2,
+    304
+   ],
+   "flags": {},
+   "order": 8,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "sigmas",
+     "nameLocked": null,
+     "removable": null,
+     "type": "SIGMAS",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      114
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "steps",
+     "nameLocked": null,
+     "removable": null,
+     "type": "INT",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    }
+   ],
+   "title": "⬡ Sigma List · refine curve 1, 0.08, 0 · denoise 0.16 -> runs 0.16, 0.08, 0",
+   "properties": {
+    "Node name for S&R": "ULSSigmaList"
+   },
+   "widgets_values": [
+    "1, 0.08, 0",
+    1,
+    true,
+    "custom"
+   ],
+   "widgets_values_named": {
+    "sigmas_text": "1, 0.08, 0",
+    "shift": 1,
+    "enforce_terminal_zero": true,
+    "preset": "custom"
+   }
+  },
+  {
+   "id": 46,
+   "type": "ULSPowerUpscale",
+   "pos": [
+    5691.2,
+    953
+   ],
+   "size": [
+    932.7,
+    762
+   ],
+   "flags": {},
+   "order": 23,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "image",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "IMAGE",
+     "pos": null,
+     "link": 109
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "video",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "VIDEO",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "model",
+     "nameLocked": null,
+     "removable": null,
+     "type": "MODEL",
+     "pos": null,
+     "link": 130
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "model_low",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "MODEL",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "positive",
+     "nameLocked": null,
+     "removable": null,
+     "type": "CONDITIONING",
+     "pos": null,
+     "link": 111
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "negative",
+     "nameLocked": null,
+     "removable": null,
+     "type": "CONDITIONING",
+     "pos": null,
+     "link": 112
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "vae",
+     "nameLocked": null,
+     "removable": null,
+     "type": "VAE",
+     "pos": null,
+     "link": 113
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "upscale_model",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "UPSCALE_MODEL",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "upscale_model_low",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "UPSCALE_MODEL",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "latent",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "LATENT",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "sigmas",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "SIGMAS",
+     "pos": null,
+     "link": 114
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "seed",
+     "nameLocked": null,
+     "removable": null,
+     "type": "INT",
+     "widget": {
+      "name": "seed"
+     },
+     "link": 115
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "image",
+     "nameLocked": null,
+     "removable": null,
+     "type": "IMAGE",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      116,
+      117
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "video",
+     "nameLocked": null,
+     "removable": null,
+     "type": "VIDEO",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    }
+   ],
+   "title": "⬡ Power Upscale · REFINE 2 steps 0.16 -> 0.08 -> 0 (curve on sigmas) · 8 MP, no resize",
+   "properties": {
+    "Node name for S&R": "ULSPowerUpscale",
+    "pls_widgets_canon": 588,
+    "pu_verdict": "Tile refine after pixel: 1 stage · 4 tiles · 2 steps from σ 0.16 (2-step curve) · no pixel model",
+    "pu_path": "tile"
+   },
+   "widgets_values": [
+    false,
+    1,
+    0.16,
+    1,
+    1,
+    1.3,
+    0.25,
+    5,
+    1.9,
+    2094697662,
+    "fixed",
+    "euler",
+    "sgm_uniform",
+    1792,
+    64,
+    0,
+    "same as high",
+    "same as high",
+    true,
+    "latent2rgb",
+    true,
+    "lanczos (gpu)",
+    8,
+    "Off",
+    "fit only",
+    1,
+    -1,
+    "after pixel",
+    "keep",
+    "off",
+    "lab",
+    1,
+    0,
+    "off",
+    "after refine",
+    "",
+    ""
+   ],
+   "widgets_values_named": {
+    "dual_moe": false,
+    "upscale_by": 1,
+    "upscale_by_low": 1.3,
+    "final_upscale_by": 1,
+    "denoise": 0.16,
+    "denoise_low": 0.25,
+    "steps": 1,
+    "steps_low": 5,
+    "cfg": 1,
+    "cfg_low": 1.9,
+    "seed": 2094697662,
+    "control_after_generate": "fixed",
+    "sampler_name": "euler",
+    "sampler_low": "same as high",
+    "scheduler": "sgm_uniform",
+    "scheduler_low": "same as high",
+    "tile_size": 1792,
+    "tile_overlap": 64,
+    "sigma_shift": 0,
+    "sigma_shift_low": -1,
+    "result_preview": true,
+    "process_preview": "latent2rgb",
+    "mute_staging_logs": true,
+    "resize_method": "lanczos (gpu)",
+    "per_batch": 8,
+    "vae_tiling": "Off",
+    "pixel_stage": "fit only",
+    "refine_order": "after pixel",
+    "audio_stream": "keep",
+    "pixel_speed": "off",
+    "restore_color": "lab",
+    "restore_overlap": 1,
+    "restore_frames": 0,
+    "restore_model": "off",
+    "restore_order": "after refine",
+    "pls_pu_result": "",
+    "pls_pu_process": ""
+   }
+  },
+  {
+   "id": 47,
+   "type": "ULSSave",
+   "pos": [
+    6681.200000000001,
+    579
+   ],
+   "size": [
+    484,
+    714
+   ],
+   "flags": {},
+   "order": 24,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "image",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "IMAGE",
+     "pos": null,
+     "link": 116
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "video",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "VIDEO",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "audio",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "AUDIO",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "mask",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "MASK",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "keypoints",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "POSE_KEYPOINT",
+     "pos": null,
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "path",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "fps",
+     "nameLocked": null,
+     "removable": null,
+     "type": "FLOAT",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    }
+   ],
+   "title": "⬡ Save · 8 MP refined",
+   "properties": {
+    "Node name for S&R": "ULSSave"
+   },
+   "widgets_values": [
+    "%date:yyyy-MM-dd%/PH_%date:hhmmss%_H3IMAGE_FOX_REFINED",
+    "image",
+    "png",
+    100,
+    "H.264 MP4 (delivery)",
+    17,
+    24,
+    false,
+    false,
+    0,
+    false,
+    true,
+    true,
+    "white = transparent (Load Image -- default)",
+    ""
+   ],
+   "widgets_values_named": {
+    "filename_prefix": "%date:yyyy-MM-dd%/PH_%date:hhmmss%_H3IMAGE_FOX_REFINED",
+    "media_kind": "image",
+    "image_format": "png",
+    "image_quality": 100,
+    "video_preset": "H.264 MP4 (delivery)",
+    "quality": 17,
+    "frame_rate": 24,
+    "autoplay": false,
+    "pingpong": false,
+    "loop_count": 0,
+    "trim_to_audio": false,
+    "save_metadata": true,
+    "save_output": true,
+    "mask_polarity": "white = transparent (Load Image -- default)",
+    "ph_save_preview": ""
+   }
+  },
+  {
+   "id": 48,
+   "type": "ULSLoadUpscaleModel",
+   "pos": [
+    7235.200000000001,
+    579
+   ],
+   "size": [
+    440,
+    78
+   ],
+   "flags": {},
+   "order": 9,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "upscale_model",
+     "nameLocked": null,
+     "removable": null,
+     "type": "UPSCALE_MODEL",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      122
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "info",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    }
+   ],
+   "title": "⬡ Load Upscale Model",
+   "properties": {
+    "Node name for S&R": "ULSLoadUpscaleModel"
+   },
+   "widgets_values": [
+    "4x_UniversalUpscalerV2-Neutral_115000_swaG.pth · 64 MB"
+   ],
+   "widgets_values_named": {
+    "model_name": "4x_UniversalUpscalerV2-Neutral_115000_swaG.pth · 64 MB"
+   }
+  },
+  {
+   "id": 49,
+   "type": "ULSPowerUpscale",
+   "pos": [
+    7235.200000000001,
+    727
+   ],
+   "size": [
+    932.7,
+    1748
+   ],
+   "flags": {},
+   "order": 25,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "image",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "IMAGE",
+     "pos": null,
+     "link": 117
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "video",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "VIDEO",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "model",
+     "nameLocked": null,
+     "removable": null,
+     "type": "MODEL",
+     "pos": null,
+     "link": 131
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "model_low",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "MODEL",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "positive",
+     "nameLocked": null,
+     "removable": null,
+     "type": "CONDITIONING",
+     "pos": null,
+     "link": 119
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "negative",
+     "nameLocked": null,
+     "removable": null,
+     "type": "CONDITIONING",
+     "pos": null,
+     "link": 120
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "vae",
+     "nameLocked": null,
+     "removable": null,
+     "type": "VAE",
+     "pos": null,
+     "link": 121
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "upscale_model",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "UPSCALE_MODEL",
+     "pos": null,
+     "link": 122
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "upscale_model_low",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "UPSCALE_MODEL",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "latent",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "LATENT",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "sigmas",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "SIGMAS",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "seed",
+     "nameLocked": null,
+     "removable": null,
+     "type": "INT",
+     "widget": {
+      "name": "seed"
+     },
+     "link": 123
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "image",
+     "nameLocked": null,
+     "removable": null,
+     "type": "IMAGE",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      124,
+      125
+     ]
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "video",
+     "nameLocked": null,
+     "removable": null,
+     "type": "VIDEO",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    }
+   ],
+   "title": "⬡ Power Upscale · NO refine (refine_order off) · ESRGAN 4x Universal Neutral + lanczos 0.65 = 2080 x 1664",
+   "properties": {
+    "Node name for S&R": "ULSPowerUpscale",
+    "pls_widgets_canon": 588,
+    "pu_verdict": "Refine OFF (refine_order=off) -- pixel path only · pixel model behind the last decode",
+    "pu_path": "tile"
+   },
+   "widgets_values": [
+    false,
+    1,
+    0.16,
+    1,
+    1,
+    1.3,
+    0.25,
+    5,
+    1.9,
+    2094697662,
+    "fixed",
+    "euler",
+    "sgm_uniform",
+    1792,
+    64,
+    0,
+    "same as high",
+    "same as high",
+    true,
+    "latent2rgb",
+    true,
+    "lanczos (gpu)",
+    8,
+    "Off",
+    "model + fit",
+    0.65,
+    -1,
+    "off",
+    "keep",
+    "off",
+    "lab",
+    1,
+    0,
+    "off",
+    "after refine",
+    "",
+    ""
+   ],
+   "widgets_values_named": {
+    "dual_moe": false,
+    "upscale_by": 1,
+    "upscale_by_low": 1.3,
+    "final_upscale_by": 0.65,
+    "denoise": 0.16,
+    "denoise_low": 0.25,
+    "steps": 1,
+    "steps_low": 5,
+    "cfg": 1,
+    "cfg_low": 1.9,
+    "seed": 2094697662,
+    "control_after_generate": "fixed",
+    "sampler_name": "euler",
+    "sampler_low": "same as high",
+    "scheduler": "sgm_uniform",
+    "scheduler_low": "same as high",
+    "tile_size": 1792,
+    "tile_overlap": 64,
+    "sigma_shift": 0,
+    "sigma_shift_low": -1,
+    "result_preview": true,
+    "process_preview": "latent2rgb",
+    "mute_staging_logs": true,
+    "resize_method": "lanczos (gpu)",
+    "per_batch": 8,
+    "vae_tiling": "Off",
+    "pixel_stage": "model + fit",
+    "refine_order": "off",
+    "audio_stream": "keep",
+    "pixel_speed": "off",
+    "restore_color": "lab",
+    "restore_overlap": 1,
+    "restore_frames": 0,
+    "restore_model": "off",
+    "restore_order": "after refine",
+    "pls_pu_result": "",
+    "pls_pu_process": ""
+   }
+  },
+  {
+   "id": 50,
+   "type": "ULSSave",
+   "pos": [
+    8225.2,
+    579
+   ],
+   "size": [
+    484,
+    714
+   ],
+   "flags": {},
+   "order": 26,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "image",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "IMAGE",
+     "pos": null,
+     "link": 124
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "video",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "VIDEO",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "audio",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "AUDIO",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "mask",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "MASK",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "keypoints",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "POSE_KEYPOINT",
+     "pos": null,
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "path",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "fps",
+     "nameLocked": null,
+     "removable": null,
+     "type": "FLOAT",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    }
+   ],
+   "title": "⬡ Save · final 2080 x 1664",
+   "properties": {
+    "Node name for S&R": "ULSSave"
+   },
+   "widgets_values": [
+    "%date:yyyy-MM-dd%/PH_%date:hhmmss%_H3IMAGE_FOX_FINAL",
+    "image",
+    "png",
+    100,
+    "H.264 MP4 (delivery)",
+    17,
+    24,
+    false,
+    false,
+    0,
+    false,
+    true,
+    true,
+    "white = transparent (Load Image -- default)",
+    ""
+   ],
+   "widgets_values_named": {
+    "filename_prefix": "%date:yyyy-MM-dd%/PH_%date:hhmmss%_H3IMAGE_FOX_FINAL",
+    "media_kind": "image",
+    "image_format": "png",
+    "image_quality": 100,
+    "video_preset": "H.264 MP4 (delivery)",
+    "quality": 17,
+    "frame_rate": 24,
+    "autoplay": false,
+    "pingpong": false,
+    "loop_count": 0,
+    "trim_to_audio": false,
+    "save_metadata": true,
+    "save_output": true,
+    "mask_polarity": "white = transparent (Load Image -- default)",
+    "ph_save_preview": ""
+   }
+  },
+  {
+   "id": 51,
+   "type": "ULSFilter",
+   "pos": [
+    8779.2,
+    579
+   ],
+   "size": [
+    701.5,
+    1598
+   ],
+   "flags": {},
+   "order": 27,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "image",
+     "nameLocked": null,
+     "removable": null,
+     "type": "IMAGE",
+     "pos": null,
+     "link": 125
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "detail_source",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "IMAGE",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "harmonize_to",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "IMAGE",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "harmonize_mask",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "MASK",
+     "pos": null,
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "image",
+     "nameLocked": null,
+     "removable": null,
+     "type": "IMAGE",
+     "pos": null,
+     "slot_index": null,
+     "links": [
+      126
+     ]
+    }
+   ],
+   "title": "⬡ Filter · contour clarity 0.35 (sharpen masked to edges, masking 0.7)",
+   "properties": {
+    "Node name for S&R": "ULSFilter"
+   },
+   "widgets_values": [
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    "none",
+    1,
+    0.35,
+    1.1,
+    "none",
+    "off",
+    3,
+    1,
+    "auto",
+    1,
+    8,
+    "colour and light",
+    32,
+    0,
+    0.7
+   ],
+   "widgets_values_named": {
+    "exposure": 0,
+    "temperature": 0,
+    "tint": 0,
+    "contrast": 0,
+    "gamma": 1,
+    "shadows": 0,
+    "highlights": 0,
+    "saturation": 0,
+    "vibrance": 0,
+    "hue_shift": 0,
+    "lut_name": "none",
+    "lut_strength": 1,
+    "sharpen_amount": 0.35,
+    "sharpen_radius": 1.1,
+    "preset": "none",
+    "auto_mode": "off",
+    "sharpen_threshold": 3,
+    "detail_amount": 1,
+    "harmonize": "auto",
+    "harmonize_amount": 1,
+    "harmonize_ring": 8,
+    "harmonize_tone": "colour and light",
+    "harmonize_seam": 32,
+    "harmonize_window": 0,
+    "sharpen_masking": 0.7
+   }
+  },
+  {
+   "id": 52,
+   "type": "ULSSave",
+   "pos": [
+    9539.2,
+    579
+   ],
+   "size": [
+    518,
+    714
+   ],
+   "flags": {},
+   "order": 28,
+   "mode": 0,
+   "inputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "image",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "IMAGE",
+     "pos": null,
+     "link": 126
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "video",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "VIDEO",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "audio",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "AUDIO",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "mask",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "MASK",
+     "pos": null,
+     "link": null
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "keypoints",
+     "nameLocked": null,
+     "removable": null,
+     "shape": 7,
+     "type": "POSE_KEYPOINT",
+     "pos": null,
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "path",
+     "nameLocked": null,
+     "removable": null,
+     "type": "STRING",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    },
+    {
+     "color_off": null,
+     "color_on": null,
+     "dir": null,
+     "label": null,
+     "locked": null,
+     "name": "fps",
+     "nameLocked": null,
+     "removable": null,
+     "type": "FLOAT",
+     "pos": null,
+     "slot_index": null,
+     "links": []
+    }
+   ],
+   "title": "⬡ Save · final + contour clarity 0.35",
+   "properties": {
+    "Node name for S&R": "ULSSave"
+   },
+   "widgets_values": [
+    "%date:yyyy-MM-dd%/PH_%date:hhmmss%_H3IMAGE_FOX_FINAL_CLARITY035",
+    "image",
+    "png",
+    100,
+    "H.264 MP4 (delivery)",
+    17,
+    24,
+    false,
+    false,
+    0,
+    false,
+    true,
+    true,
+    "white = transparent (Load Image -- default)",
+    ""
+   ],
+   "widgets_values_named": {
+    "filename_prefix": "%date:yyyy-MM-dd%/PH_%date:hhmmss%_H3IMAGE_FOX_FINAL_CLARITY035",
+    "media_kind": "image",
+    "image_format": "png",
+    "image_quality": 100,
+    "video_preset": "H.264 MP4 (delivery)",
+    "quality": 17,
+    "frame_rate": 24,
+    "autoplay": false,
+    "pingpong": false,
+    "loop_count": 0,
+    "trim_to_audio": false,
+    "save_metadata": true,
+    "save_output": true,
+    "mask_polarity": "white = transparent (Load Image -- default)",
+    "ph_save_preview": ""
+   }
+  }
+ ],
+ "links": [
+  [
+   2,
+   1,
+   0,
+   5,
+   0,
+   "MODEL"
+  ],
+  [
+   3,
+   1,
+   0,
+   2,
+   0,
+   "MODEL"
+  ],
+  [
+   4,
+   1,
+   0,
+   3,
+   0,
+   "MODEL"
+  ],
+  [
+   5,
+   2,
+   0,
+   10,
+   0,
+   "CLIP"
+  ],
+  [
+   72,
+   9,
+   2,
+   32,
+   8,
+   "NOISE"
+  ],
+  [
+   74,
+   31,
+   0,
+   32,
+   1,
+   "CONDITIONING"
+  ],
+  [
+   75,
+   3,
+   0,
+   33,
+   0,
+   "VAE"
+  ],
+  [
+   76,
+   32,
+   0,
+   33,
+   2,
+   "LATENT"
+  ],
+  [
+   77,
+   33,
+   1,
+   34,
+   0,
+   "IMAGE"
+  ],
+  [
+   94,
+   31,
+   2,
+   32,
+   2,
+   "LATENT"
+  ],
+  [
+   104,
+   41,
+   0,
+   32,
+   5,
+   "SIGMAS"
+  ],
+  [
+   109,
+   33,
+   1,
+   46,
+   0,
+   "IMAGE"
+  ],
+  [
+   111,
+   31,
+   0,
+   46,
+   4,
+   "CONDITIONING"
+  ],
+  [
+   112,
+   31,
+   1,
+   46,
+   5,
+   "CONDITIONING"
+  ],
+  [
+   113,
+   3,
+   0,
+   46,
+   6,
+   "VAE"
+  ],
+  [
+   114,
+   45,
+   0,
+   46,
+   10,
+   "SIGMAS"
+  ],
+  [
+   116,
+   46,
+   0,
+   47,
+   0,
+   "IMAGE"
+  ],
+  [
+   117,
+   46,
+   0,
+   49,
+   0,
+   "IMAGE"
+  ],
+  [
+   119,
+   31,
+   0,
+   49,
+   4,
+   "CONDITIONING"
+  ],
+  [
+   120,
+   31,
+   1,
+   49,
+   5,
+   "CONDITIONING"
+  ],
+  [
+   121,
+   3,
+   0,
+   49,
+   6,
+   "VAE"
+  ],
+  [
+   122,
+   48,
+   0,
+   49,
+   7,
+   "UPSCALE_MODEL"
+  ],
+  [
+   124,
+   49,
+   0,
+   50,
+   0,
+   "IMAGE"
+  ],
+  [
+   125,
+   49,
+   0,
+   51,
+   0,
+   "IMAGE"
+  ],
+  [
+   126,
+   51,
+   0,
+   52,
+   0,
+   "IMAGE"
+  ],
+  [
+   130,
+   5,
+   0,
+   46,
+   2,
+   "MODEL"
+  ],
+  [
+   131,
+   5,
+   0,
+   49,
+   2,
+   "MODEL"
+  ],
+  [
+   179,
+   5,
+   0,
+   32,
+   0,
+   "MODEL"
+  ],
+  [
+   66,
+   2,
+   0,
+   31,
+   0,
+   "CLIP"
+  ],
+  [
+   67,
+   3,
+   0,
+   31,
+   1,
+   "VAE"
+  ],
+  [
+   68,
+   8,
+   2,
+   31,
+   2,
+   "LATENT"
+  ],
+  [
+   69,
+   10,
+   2,
+   31,
+   5,
+   "STRING"
+  ],
+  [
+   73,
+   9,
+   0,
+   32,
+   9,
+   "INT"
+  ],
+  [
+   115,
+   9,
+   0,
+   46,
+   11,
+   "INT"
+  ],
+  [
+   123,
+   9,
+   0,
+   49,
+   11,
+   "INT"
+  ]
+ ],
+ "groups": [
+  {
+   "id": 1,
+   "title": "① MODELS · MiniMax H3 Image int8 · text encoder Qwen3-VL 32B · image VAE",
+   "bounding": [
+    -10,
+    -320,
+    676,
+    850
+   ],
+   "color": "#3f789e",
+   "flags": {
+    "ph_group": true
+   }
+  },
+  {
+   "id": 3,
+   "title": "③ ATTENTION · default, the model's own",
+   "bounding": [
+    716,
+    -320,
+    320,
+    550
+   ],
+   "color": "#3f789e",
+   "flags": {
+    "ph_group": true
+   }
+  },
+  {
+   "id": 4,
+   "title": "④ NEGATIVE · kept, not wired (cfg 1 reads only the positive)",
+   "bounding": [
+    1523,
+    1070,
+    397,
+    552
+   ],
+   "color": "#3f789e",
+   "flags": {
+    "ph_group": true
+   }
+  },
+  {
+   "id": 5,
+   "title": "⑥ LATENT · MiniMax H3 Image · 3200 x 2560 (8 MP, landscape)",
+   "bounding": [
+    2736.9,
+    -320,
+    370,
+    482
+   ],
+   "color": "#8A8",
+   "flags": {
+    "ph_group": true
+   }
+  },
+  {
+   "id": 6,
+   "title": "⑦ SEED · NOISE · 2094697662 fixed",
+   "bounding": [
+    3156.9,
+    -320,
+    340,
+    779
+   ],
+   "color": "#A88",
+   "flags": {
+    "ph_group": true
+   }
+  },
+  {
+   "id": 7,
+   "title": "⑤ PROMPT · red fox in a snowy pine clearing at golden hour · two segments · text goes through the Image Reference",
+   "bounding": [
+    1523,
+    -320,
+    773.2,
+    1340
+   ],
+   "color": "#b58b2a",
+   "flags": {
+    "ph_group": true
+   }
+  },
+  {
+   "id": 8,
+   "title": "⑧ SAMPLING · euler · 8 steps on the curve · cfg 1 · seed 2094697662",
+   "bounding": [
+    3845.3999999999996,
+    509,
+    710.6,
+    494
+   ],
+   "color": "#A88",
+   "flags": {
+    "ph_group": true
+   }
+  },
+  {
+   "id": 9,
+   "title": "⑨ DECODE · image VAE",
+   "bounding": [
+    4606.0,
+    509,
+    515.2,
+    452
+   ],
+   "color": "#88A",
+   "flags": {
+    "ph_group": true
+   }
+  },
+  {
+   "id": 10,
+   "title": "⑩ SAVE · the 8 MP base",
+   "bounding": [
+    5171.2,
+    509,
+    460,
+    816
+   ],
+   "color": "#3f789e",
+   "flags": {
+    "ph_group": true
+   }
+  },
+  {
+   "id": 15,
+   "title": "⑤b IMAGE REFERENCE · no picture wired · blank picture MID GREY 0-0.25 (sigma >= 0.93 = steps 1-4 of 8 on the 8-step curve)",
+   "bounding": [
+    1970,
+    1070,
+    716.9,
+    594
+   ],
+   "color": "#3f789e",
+   "flags": {
+    "ph_group": true
+   }
+  },
+  {
+   "id": 197,
+   "title": "⑦c SIGMAS · 8-step curve (HyperFlow grid, NO HyperFlow LoRA) · shift 12 = 1, .994, .984, .966, .923, .835, .697, .469, 0",
+   "bounding": [
+    3156.8999999999996,
+    509,
+    638.5,
+    436
+   ],
+   "color": "#A88",
+   "flags": {
+    "ph_group": true
+   }
+  },
+  {
+   "id": 618,
+   "title": "⑪ REFINE · 2 steps 0.16 -> 0.08 -> 0 (own curve on sigmas) + SAVE",
+   "bounding": [
+    5681.2,
+    509,
+    1494.0,
+    1238
+   ],
+   "color": "#3f789e",
+   "flags": {
+    "ph_group": true
+   }
+  },
+  {
+   "id": 619,
+   "title": "⑫ UPSCALE · no refine · ESRGAN 4x Universal Neutral · lanczos 0.65 to 2080 x 1664 + SAVE",
+   "bounding": [
+    7225.200000000001,
+    509,
+    1494,
+    1998
+   ],
+   "color": "#3f789e",
+   "flags": {
+    "ph_group": true
+   }
+  },
+  {
+   "id": 620,
+   "title": "⑬ CLARITY · sharpen masked to edges 0.35 (masking 0.7) + SAVE",
+   "bounding": [
+    8769.2,
+    509,
+    1298,
+    1700
+   ],
+   "color": "#3f789e",
+   "flags": {
+    "ph_group": true
+   }
+  }
+ ],
+ "config": {},
+ "extra": {
+  "ds": {
+   "scale": 1.1918176537727343,
+   "offset": [
+    -131.83063542797788,
+    -589.717119665516
+   ]
+  },
+  "frontendVersion": "1.58.5"
+ },
+ "extensions": {
+  "seed_widgets": {
+   "8": 6,
+   "9": 0,
+   "32": 3,
+   "46": 10,
+   "49": 10
+  }
+ },
+ "version": 0.4,
+ "seed_widgets": {
+  "8": 6,
+  "9": 0,
+  "32": 3,
+  "46": 10,
+  "49": 10
+ }
+}
