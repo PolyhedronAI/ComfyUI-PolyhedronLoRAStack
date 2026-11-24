@@ -49,6 +49,10 @@ def _need(cond, msg):
 
 FILES = {"ph_fx.js": "plsShowLockedValue(w, !!locked);", "ph_pixel.js": "plsShowLockedValue(w, !!locked);",
          "ph_music_master.js": "plsShowLockedValue(w, !!locked);", "ph_fx_crt.js": "plsShowLockedValue(w, !!locked);",
+         "ph_fx_holo.js": "plsShowLockedValue(w, !!locked);",   # v1281: FX Holo
+         "ph_fx_blueprint.js": "plsShowLockedValue(w, !!locked);",   # AMENDED v1292: FX Blueprint
+         "ph_fx_depthlook.js": "plsShowLockedValue(w, !!locked);",   # AMENDED v1293: FX Depth Look
+         "ph_fx_gen.js": "plsShowLockedValue(w, !!locked);",   # AMENDED v1365: FX Generator
          "ph_sigma_list.js": "plsShowLockedValue(w, !!off);"}
 # the public cut carries only some of these nodes: the guard checks what the tree has (at least one)
 FILES = {f: c for f, c in FILES.items() if os.path.isfile(os.path.join(JS, f))}

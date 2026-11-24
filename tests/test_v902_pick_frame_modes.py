@@ -244,7 +244,7 @@ def main():
           "R5: the legacy class must honour the mode, got %r" % (out_l.ids,))
 
     class _Out(object):
-        def __init__(self, v):
+        def __init__(self, v, *more):                # v1385: a second output (the mask) rides along
             self.v = v
 
     fake_io = types.SimpleNamespace(NodeOutput=_Out)
@@ -279,14 +279,16 @@ def main():
                         "ULSImagePickFrame")
     v3 = _widget_names(os.path.join(ROOT, "nodes", "uls_pick_frame_v3.py"),
                        "ULSImagePickFrameV3")
-    _need(leg == v3,
+    # v1385: the legacy scan reads the required block; the V3 list goes on with the
+    # optional sockets (names, mask) -- guard v1385 holds their order.
+    _need(leg == v3[:len(leg)] and v3[len(leg):] == ["names", "mask"],
           "R6: both forms must expose the SAME inputs in the SAME order, or "
           "a saved graph resolves differently depending on which one "
           "registers; legacy %r vs V3 %r" % (leg, v3))
     _need(leg[:2] == ["images", "frame_index"],
           "R6: the original two inputs must keep their slots (#577), got %r"
           % (leg,))
-    _need(leg[2:] == ["mode", "count"],
+    _need(leg[2:4] == ["mode", "count"],            # v1385 appended name (+ the sockets names, mask)
           "R6: the new widgets must be APPENDED after frame_index, got %r"
           % (leg,))
 

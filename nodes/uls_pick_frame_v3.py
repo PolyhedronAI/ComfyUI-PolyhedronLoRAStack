@@ -48,8 +48,10 @@ _FRAME_INDEX_TOOLTIP = (
 )
 
 _DESCRIPTION = (
-    "Picks one frame from a video batch. Companion to "
-    "ULSWanFrameInflate. -1 picks the middle frame."
+    "Picks frames from an image batch: the middle, first or last one, "
+    "one by index, a range, every Nth -- or one by its NAME from a "
+    "wired names list (a turnaround's view E). A mask follows. "
+    "Companion to ULSWanFrameInflate: -1 picks the middle frame."
 )
 
 
@@ -88,20 +90,36 @@ class ULSImagePickFrameV3(io.ComfyNode):
                     default=1, min=1, max=4096, step=1,
                     tooltip=_pf.COUNT_TOOLTIP,
                 ),
+                # v1385: APPENDED -- a view by its name; names and mask are sockets.
+                io.String.Input(
+                    "name",
+                    default="", multiline=False,
+                    tooltip=_pf.NAME_TOOLTIP,
+                ),
+                io.String.Input(
+                    "names",
+                    default="", multiline=False, force_input=True, optional=True,
+                    tooltip=_pf.NAMES_TOOLTIP,
+                ),
+                io.Mask.Input(
+                    "mask", optional=True,
+                    tooltip=_pf.MASK_TOOLTIP,
+                ),
             ],
             outputs=[
                 io.Image.Output(display_name="image"),
+                io.Mask.Output(display_name="mask"),
             ],
         )
 
     @classmethod
-    def execute(cls, images, frame_index, mode=None, count=1) -> io.NodeOutput:
+    def execute(cls, images, frame_index, mode=None, count=1, name="", names=None, mask=None) -> io.NodeOutput:
         # v902: delegates to nodes/uls_pick_frame_core.py, the one place the
         # rule lives. This class and the legacy one share a node id and are
         # mutually exclusive, so a rule kept in both would only ever be
         # wrong on machines running the other -- the v898 failure shape.
         if mode is None:
             mode = _pf.MODES[0]
-        picked, note = _pf.select(images, mode, frame_index, count)
+        picked, note, got = _pf.select(images, mode, frame_index, count, names, name, True)
         print(f"[ULSImagePickFrame] ✓ {note}")
-        return io.NodeOutput(picked)
+        return io.NodeOutput(picked, _pf.select_mask(mask, got, picked) if got else mask)

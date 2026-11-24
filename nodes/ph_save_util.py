@@ -251,6 +251,7 @@ def rgb_and_mask_to_rgba_uint8(rgb_float, mask_float):
 
 
 import datetime as _dt
+import sys
 import re as _re2
 
 # Windows-illegal filename characters. `folder_paths.get_save_image_path` does NOT
@@ -265,13 +266,42 @@ _DATE_MAP = (("yyyy", "%Y"), ("yy", "%y"), ("MM", "%m"), ("dd", "%d"),
              ("hh", "%H"), ("mm", "%M"), ("ss", "%S"))
 
 
+# v1351: ONE clock per queue run. Every Save read the clock itself, so the clip, the sheet and the frame folder of one
+# run were stamped a second apart (20.11.: PH_160959_360_CORD_00001_.mp4 beside PH_160958_360_CORD_SHEET) and a run
+# folder %date:yyyy-MM-dd%/PH_%date:hhmmss%_X/ split in two. The moment is taken at the run's first save and held
+# for every later save of the same prompt id (the core sets PromptServer.instance.last_prompt_id per run).
+_RUN_CLOCK = {"id": None, "now": None}
+
+
+def _current_prompt_id():
+    # read the server module only if the core has loaded it (no import of our own: a guard or a script must not
+    # pull the whole web server in)
+    srv = sys.modules.get("server")
+    try:
+        return getattr(srv.PromptServer.instance, "last_prompt_id", None)
+    except Exception:
+        return None
+
+
+def run_now(prompt_id=None):
+    """The moment of the current queue run (the first call within a prompt id fixes it); outside a run (no prompt
+    id, e.g. a guard or a script) simply now."""
+    pid = prompt_id if prompt_id is not None else _current_prompt_id()
+    if pid is None:
+        return _dt.datetime.now()
+    if _RUN_CLOCK["id"] != pid or _RUN_CLOCK["now"] is None:
+        _RUN_CLOCK["id"] = pid
+        _RUN_CLOCK["now"] = _dt.datetime.now()
+    return _RUN_CLOCK["now"]
+
+
 def expand_filename_tokens(prefix, width=0, height=0, now=None):
     """Expand the ComfyUI filename tokens we can resolve without the prompt graph:
     %width% / %height% and %date:FORMAT% (yyyy MM dd hh mm ss). Non-date %...%
     tokens (e.g. %Node.widget%) are left untouched for the core to handle. Pure
     (a fixed `now` makes it deterministic for the guard)."""
     s = str(prefix or "")
-    now = now or _dt.datetime.now()
+    now = now or run_now()
     s = s.replace("%width%", str(int(width))).replace("%height%", str(int(height)))
 
     def _repl(m):
@@ -294,7 +324,7 @@ def freeze_date_tokens(prefix, now=None):
     keypoints JSON) carry the same time -- a second boundary between two of them split the names (06.11.:
     PH_112605_..._keypoints.json beside PH_112606_..._.mp4)."""
     s = str(prefix or "")
-    now = now or _dt.datetime.now()
+    now = now or run_now()
 
     def _repl(m):
         fmt = m.group(1)

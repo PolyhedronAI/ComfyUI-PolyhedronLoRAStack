@@ -1,3 +1,68 @@
+# v409 -- 4.9.0: Media Loader shows the file on disk, one clock per run, Pick Frame by name, blank picture with strength
+
+**Server restart + browser reload** (Ctrl+F5: an open tab keeps the old scripts). Carries v408 below. Saved workflows
+load and compute as before: every new widget and output is appended.
+
+## Media Loader (internal v1360, v1361)
+
+- The Selection shows the file as it is on disk now. A selection restored from a workflow carried the time stamp the
+  workflow was saved with, so two workflows naming the same file asked for the same preview URL and the browser handed
+  back the picture it had cached for the first. The stamp now comes from the folder's listing (time and size); the
+  run itself always loaded the current file -- only the picture in the Selection was wrong.
+- Two spellings of one folder (slash or backslash, case, a trailing separator) are the same folder.
+- Counter-check: when the picture in the Selection has another size than the listing reports for the file, it is
+  loaded once more under a fresh URL before the size badge is set.
+
+## Save naming (internal v1351)
+
+- One clock per queue run: the moment of the run's first save is held for every later save of the same run, so
+  `%date:...%` tokens no longer land a second apart and a run folder (`%date:yyyy-MM-dd%/PH_%date:hhmmss%_X/...`)
+  stays one folder. Every prefix that goes through the shared helpers takes it.
+
+## Pick Frame (internal v1385)
+
+- New mode **name** with the widget `name` and the socket `names`: the frame called `name` in a wired list
+  ('S, SE, E, ...') is taken -- a view by its name, not by its number. Case-blind, with clear errors (no list, no
+  name, an unknown name, a list that does not name every frame, a name held twice).
+- Optional `mask` in, second output `mask`: the same frame(s) of a mask batch.
+- The six old modes, their defaults and the first output are untouched.
+
+## Control Fit and Apply Control (internal v1384, v1386)
+
+- Control Fit: `size_mode` **match the reference figure** with the new optional input `reference` (a picture with
+  alpha or on a flat backdrop). The control's figure is scaled and moved once for all frames so that it stands as tall
+  as the reference's figure, on its floor line and on its centre; the info names the scale and what was reached.
+- Control Fit: two outputs appended, **cycle_frames** (looped: the output frames one pass of the source takes) and
+  **contact_frame** (a frame with the figure's widest stride).
+- Apply Control: with nothing picked the node takes the ONE control file on disk that fits the model and names it in
+  the info. None fits: the error lists what is in models/model_patches and points to the Download. Several fit: the
+  error lists them and asks for a pick.
+- Every node with a model door: a file that is installed while the widget still says "(none)" gets a **Use it**
+  button instead of the Download offer.
+
+## Image Reference: the blank picture (internal v1354)
+
+- `blank_strength` (default 1): each step inside the blank window = plain + strength x (blank - plain). 1 = the
+  prompt beside the blank, as before; 2 = twice the change the blank makes. Every value but 1 runs the model twice a
+  step inside the window; 0 = not used, and the info says so.
+- `blank_colour` (default #808080) and the fifth choice `colour` of `blank_picture`: any colour (#rrggbb or #rgb).
+- `blank_anchor` (default off): the blank as a real picture, the way Core reads one -- vision rows and the VAE's
+  reference latent of a 1024 px blank. MiniMax H3 Image only; needs the VAE.
+- No guider of our own: the mix is made of two conditionings and works with any sampler. Three widgets appended;
+  saved workflows load unchanged and give the same result.
+
+## Align and model relocation (internal v1347, v1355, v1356)
+
+- Polyhedron Align: the bar can be parked in the top bar (a button, or drag it onto the tab row); the state is the
+  setting `Polyhedron.Align.ParkInTopBar` and survives a restart. A floating bar stays where it was put.
+- A model found at a new place is said in the browser console only; the bubble on the page is gone. The move itself
+  is unchanged.
+
+## Guards
+
+- New: test_v1347, v1351, v1354, v1355, v1356, v1360, v1361, v1384, v1385, v1386. Amended: test_v657, v902, v1279, v1326, v1338.
+- Baselines renamed to v409 (`ULSImagePickFrame` gains `name`, `ULSImageReference` the three blank widgets, all appended); banner and badge v409.
+
 # v408 -- 4.8.0: H3 Image fox template
 
 **Browser reload** (no node changed). Carries v407 below.

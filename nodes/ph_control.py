@@ -35,7 +35,8 @@ import numpy as np
 
 GRIDS = ["17n+5 (video latent grid)", "8n+1", "4n+1", "any"]
 END = ["hold last frame", "loop", "cut"]
-SIZE_MODES = ["fit (pad)", "fill (crop)", "stretch"]
+SIZE_MODES = ["fit (pad)", "fill (crop)", "stretch", "match the reference figure"]
+SIZE_MATCH = SIZE_MODES[3]
 MAP_MODES = ["pose (SDPose)", "depth (Depth Anything 3)", "canny", "gray", "scribble", "soft edges",
              "keypoints (draw only)"]
 POSE_TYPE = "POSE_KEYPOINT"
@@ -152,8 +153,143 @@ def take_block(images, block, index, mask=None):
     return images[a:b], mask, (index, blocks, a, b)
 
 
+# ------------------------------------------------------------------------------ v1384: match a reference figure
+# A control figure (a rig's render, its drawn keypoints) must stand where the figure of the reference picture
+# stands, as tall as it: then every direction of one walk is led at the same size, on the same floor line.
+TORSO_BAND = (0.15, 0.50)      # share of the height below the head's top: the rows the centre is read from
+CONTACT_NEAR = 0.98            # a stride this near the widest counts as a contact too (the earliest is taken)
+
+
+def figure_numbers(vis):
+    """vis (N,H,W) bool -- one figure over its frames -> dict(top, foot, centre, height) or None when empty.
+    top: the head's top when it stands upright (10th percentile of the frames' top rows), foot: the floor line
+    (the lowest row any frame reaches), centre: the median over the frames of the torso rows' mean column."""
+    import numpy as np
+    v = np.asarray(vis, bool)
+    if v.ndim == 2:
+        v = v[None]
+    tops, bots, cxs = [], [], []
+    for m in v:
+        ys = np.nonzero(m.any(1))[0]
+        if not len(ys):
+            continue
+        t, b = int(ys[0]), int(ys[-1])
+        h = b - t + 1
+        band = m[t + int(TORSO_BAND[0] * h):t + max(int(TORSO_BAND[0] * h) + 1, int(TORSO_BAND[1] * h))]
+        xs = np.nonzero(band)[1]
+        tops.append(t); bots.append(b)
+        cxs.append(float(xs.mean()) if len(xs) else float(np.nonzero(m)[1].mean()))
+    if not tops:
+        return None
+    top = float(np.percentile(tops, 10))
+    foot = float(max(bots))
+    return {"top": top, "foot": foot, "centre": float(np.median(cxs)), "height": foot - top + 1.0}
+
+
+def reference_vis(reference):
+    """The figure of a reference picture (1,H,W,3 or 4) as a bool map: its alpha when it has one that cuts
+    something out, else everything that is not the flat colour of the picture's border."""
+    import numpy as np
+    r = reference[0] if reference.ndim == 4 else reference
+    a = np.asarray(r.cpu().float().numpy() if hasattr(r, "cpu") else r, np.float32)
+    if a.shape[-1] >= 4:
+        v = a[..., 3] > 0.5
+        if v.any() and not v.all():
+            return v
+    return _backdrop_vis((a[..., :3] * 255.0 + 0.5).astype(np.uint8))
+
+
+# PUBLIC build: the pixel family (ph_sprite_prop, ph_turntable) is not in this pack -- the two small readers
+# Control Fit needs from it live here, word for word.
+BORDER_TOL = 3           # a flat backdrop: border colour +- this per channel
+LEG_BAND = 0.38          # the lower share of the figure's box that holds the legs (stride width)
+
+
+def _backdrop_vis(u8):
+    """A picture without alpha: everything that is not the flat colour of the picture's border."""
+    import numpy as np
+    edge = np.concatenate([u8[0], u8[-1], u8[:, 0], u8[:, -1]]).reshape(-1, 3)
+    cols, cnt = np.unique(edge, axis=0, return_counts=True)
+    bg = cols[int(np.argmax(cnt))]
+    return np.abs(u8.astype(np.int16) - bg.astype(np.int16)).max(-1) > BORDER_TOL
+
+
+def stride_widths(alphas):
+    """per frame (stride width, top row, foot row) of the visible figure; NaN where it is empty. Stride width =
+    the width of the lowest LEG_BAND of its box."""
+    import numpy as np
+    out = []
+    for a in alphas:
+        m = np.asarray(a) > 0.5
+        ys = np.nonzero(m.any(1))[0]
+        if not len(ys):
+            out.append((np.nan, np.nan, np.nan))
+            continue
+        top, bot = int(ys[0]), int(ys[-1])
+        y0 = int(round(bot - LEG_BAND * (bot - top)))
+        xs = np.nonzero(m[y0:bot + 1].any(0))[0]
+        out.append((float(xs[-1] - xs[0] + 1), float(top), float(bot)))
+    return np.array(out, dtype=np.float64).reshape(-1, 3)
+
+
+def match_plan(ctl, ref, ref_size, W, H):
+    """ctl / ref: figure_numbers of the control frames (source pixels) and of the reference (its own pixels,
+    ref_size = (w, h)). -> (scale, cx_src, foot_src, cx_dst, foot_dst): source x = cx_src + (X - cx_dst) / scale."""
+    sy, sx = H / float(ref_size[1]), W / float(ref_size[0])
+    scale = (ref["height"] * sy) / ctl["height"]
+    return scale, ctl["centre"], ctl["foot"] + 1.0, (ref["centre"] + 0.5) * sx - 0.5, (ref["foot"] + 1.0) * sy
+
+
+def warp_frames(x, plan, W, H, chunk=8):
+    """x (N,h,w,C) -> (N,H,W,C): scaled about the figure and moved by the plan; outside the source = 0."""
+    import torch
+    import torch.nn.functional as F
+    scale, cx_s, ft_s, cx_d, ft_d = plan
+    n, h, w, c = x.shape
+    X = (torch.arange(W, dtype=torch.float32) - cx_d) / scale + cx_s
+    Y = (torch.arange(H, dtype=torch.float32) + 0.5 - ft_d) / scale + ft_s - 0.5
+    gx = (X + 0.5) / w * 2.0 - 1.0
+    gy = (Y + 0.5) / h * 2.0 - 1.0
+    grid = torch.stack([gx[None, :].expand(H, W), gy[:, None].expand(H, W)], -1)[None]
+    out = torch.empty((n, H, W, c), dtype=torch.float32)
+    for a in range(0, n, chunk):
+        t = x[a:a + chunk].float().movedim(-1, 1)
+        out[a:a + chunk] = F.grid_sample(t, grid.expand(t.shape[0], H, W, 2), mode="bilinear",
+                                         padding_mode="zeros", align_corners=False).movedim(1, -1)
+    return out
+
+
+def cycle_numbers(vis, n_src_span, src_fps, dst_fps, looped):
+    """-> (cycle_frames, contact_frame, lines). cycle_frames: the output frames one pass of the source takes when
+    it is looped (0 = not looped). contact_frame: a frame with the widest stride of the figure (vis, the fitted
+    frames), at least two cycles into the clip and with a whole cycle after it -- the model has found its gait by
+    then; of several strides near the widest the EARLIEST of a cycle is taken, so every direction of one walk
+    starts on the same step. -1 = not known (no figure, no loop)."""
+    import numpy as np
+    if not looped or n_src_span < 2:
+        return 0, -1, []
+    per = n_src_span * float(dst_fps) / float(src_fps)
+    P = int(round(per))
+    lines = ["one pass of the source = %.2f output frames%s" % (per, "" if abs(per - P) < 1e-6 else
+             " -- not a whole number: the cycle drifts against the frames (pick a source rate that divides)")]
+    if vis is None or P < 2:
+        return P, -1, lines
+    n = int(vis.shape[0])
+    w = stride_widths(vis[:min(n, P)])[:, 0]
+    if not np.any(np.isfinite(w)):
+        return P, -1, lines
+    c0 = int(np.nonzero(np.nan_to_num(w, nan=-1.0) >= CONTACT_NEAR * np.nanmax(w))[0][0])
+    c = c0
+    while c < 2 * P:
+        c += P
+    while c + P > n and c - P >= 0:
+        c -= P
+    lines.append("contact (widest stride, %.0f px) at frame %d of the cycle -> contact_frame %d" % (w[c0], c0, c))
+    return P, c, lines
+
+
 def fit(images, src_fps, dst_fps, start_s, frames, grid, end, width, height, size_mode, multiple=32, mask=None,
-        block=0, block_index=0):
+        block=0, block_index=0, reference=None):
     """-> (images, mask or None, report dict)."""
     images, mask, blk = take_block(images, block, block_index, mask)
     n_src = int(images.shape[0])
@@ -173,15 +309,54 @@ def fit(images, src_fps, dst_fps, start_s, frames, grid, end, width, height, siz
             note = "one image repeated"
     h, w = int(images.shape[1]), int(images.shape[2])
     W, H = target_size(w, h, int(width), int(height), multiple)
-    out = resize_picked(images[..., :3], idx, W, H, size_mode)
-    m_out = None
-    if mask is not None:
-        mk = mask if mask.ndim == 3 else mask[None]
-        mi = [min(i, mk.shape[0] - 1) for i in idx]
-        m_out = resize_picked(mk[..., None], mi, W, H, size_mode)[..., 0]
+    match = None
+    if size_mode == SIZE_MATCH:
+        import numpy as np
+        import torch
+        if reference is None:
+            raise ValueError("[PLS] Control Fit: 'match the reference figure' needs the reference input -- the "
+                             "picture whose figure the control must stand on (e.g. the still of this direction).")
+        mk = None if mask is None else (mask if mask.ndim == 3 else mask[None])
+        if mk is not None and mk.shape[0] == n_src and bool((mk > 0.5).any()):
+            cvis, how = (mk > 0.5).cpu().numpy(), "its mask"
+        else:
+            cvis, how = (images[..., :3].amax(-1) > 0.04).cpu().numpy(), "its non-black pixels"
+        ctl = figure_numbers(cvis)
+        rv = reference_vis(reference)
+        ref = figure_numbers(rv)
+        if ctl is None or ref is None:
+            raise ValueError("[PLS] Control Fit: no figure found in the %s -- nothing to match."
+                             % ("control frames" if ctl is None else "reference"))
+        plan = match_plan(ctl, ref, (rv.shape[1], rv.shape[0]), W, H)
+        uniq = sorted(set(int(i) for i in idx))
+        pos = {i: k for k, i in enumerate(uniq)}
+        sel = torch.as_tensor(uniq, dtype=torch.long)
+        take = torch.as_tensor([pos[int(i)] for i in idx], dtype=torch.long)
+        out = warp_frames(images[sel][..., :3], plan, W, H)[take]
+        fig = warp_frames(torch.from_numpy(cvis[uniq].astype(np.float32))[..., None], plan, W, H)[..., 0]
+        m_out = fig[take] if mk is not None else None
+        got = figure_numbers((fig > 0.5).numpy())
+        want = {"height": ref["height"] * H / float(rv.shape[0]), "foot": (ref["foot"] + 1.0) * H / float(rv.shape[0]) - 1.0,
+                "centre": plan[3]}
+        match = {"scale": plan[0], "by": how, "control_height": ctl["height"], "want": want, "got": got,
+                 "fig": (fig > 0.5).numpy()[take.numpy()]}
+    else:
+        out = resize_picked(images[..., :3], idx, W, H, size_mode)
+        m_out = None
+        if mask is not None:
+            mk = mask if mask.ndim == 3 else mask[None]
+            mi = [min(i, mk.shape[0] - 1) for i in idx]
+            m_out = resize_picked(mk[..., None], mi, W, H, size_mode)[..., 0]
     rep = {"source_frames": n_src, "source_fps": float(src_fps) if src_fps else float(dst_fps), "fps": float(dst_fps),
            "frames": len(idx), "width": W, "height": H, "first": min(idx) if idx else 0, "last": max(idx) if idx else 0,
-           "note": note, "seconds": len(idx) / float(dst_fps), "block": blk}
+           "note": note, "seconds": len(idx) / float(dst_fps), "block": blk, "match": match}
+    sf = float(src_fps) if src_fps and src_fps > 0 else float(dst_fps)
+    k0 = int(math.floor(start_s * sf))
+    vis = match["fig"] if match else (None if m_out is None or not bool((m_out > 0.5).any()) else (m_out > 0.5).numpy())
+    rep["cycle_frames"], rep["contact_frame"], rep["cycle_lines"] = cycle_numbers(
+        vis, n_src - k0, sf, float(dst_fps), end == "loop" and n_src > 1 and len(idx) > 1)
+    if match:
+        match.pop("fig")
     return out, m_out, rep
 
 
@@ -754,6 +929,48 @@ def door_choices(folder, set_name, files=None):
     return out or ["(none)"]
 
 
+# ------------------------------------------------------------------------------ v1386: nothing picked
+# Frank's first led walk (24.11.) stopped at Apply Control: control_model stood on '(none)' as the workflow came,
+# and the node said "no Fun ControlNet Union file in models/model_patches" -- whether or not one was there. Now a
+# node with nothing picked takes the ONE control file on disk that fits the model, and says so; with none or
+# several it says which is the case and what to do.
+def control_family_of(name, label=""):
+    """The family a control file is for, read off its name (or its door label): 'video', 'image' or None."""
+    low = (str(name) + " " + str(label)).lower()
+    if "qwen" in low:
+        return "image"
+    if "minimax" in low or "h3" in low:
+        return "video"
+    return None
+
+
+def controls_on_disk(files=None):
+    """[(combo value, family guess)] of the control files that ARE on disk: the door's files of set 'control'
+    that are installed, then every other file ComfyUI lists in models/model_patches."""
+    WW = _ww()
+    files = _files("model_patches") if files is None else list(files)
+    reg = [n for n, sp in WW.REGISTRY.items() if sp.get("set") == "control"]
+    out = [(WW.label(n), control_family_of(n, WW.REGISTRY[n].get("label", ""))) for n in reg if WW.local_path(n)]
+    out += [(f, control_family_of(f)) for f in files if os.path.basename(f.replace("\\", "/")) not in reg]
+    return out
+
+
+def pick_control(family, on_disk):
+    """Nothing picked: the one file on disk that fits the model's family (a file whose family the name does not
+    tell counts for every family). -> the combo value; none or several -> ValueError that names the case."""
+    fits = [n for n, fam in on_disk if family is None or fam is None or fam == family]
+    who = ("a %s model" % family) if family else "this model"
+    if len(fits) == 1:
+        return fits[0]
+    if not fits:
+        raise ValueError("[PLS] Apply Control: no control file picked, and no Fun ControlNet Union for %s on disk "
+                         "(models/model_patches%s) -- the Download on the node's line fetches one, or put a file "
+                         "there and pick it in control_model."
+                         % (who, ("; there: " + ", ".join(n for n, _f in on_disk)) if on_disk else " holds none"))
+    raise ValueError("[PLS] Apply Control: no control file picked, and %d on disk fit %s -- pick one in "
+                     "control_model: %s" % (len(fits), who, ", ".join(fits)))
+
+
 def resolve_file(folder, value, node, what):
     """A combo value -> the file's path. Strips the door's label; a door file not on disk is refused with the
     way to the Download, '(none)' with what is missing."""
@@ -854,7 +1071,10 @@ class ULSControlFit:
                     "tooltip": "Target height. 0 = from the clip (or from width, keeping the aspect)."}),
                 "size_mode": (SIZE_MODES, {"default": SIZE_MODES[1],
                     "tooltip": "fit: whole clip inside, black bars. fill: fills the frame, crops the overhang. "
-                               "stretch: distorts to the size."}),
+                               "stretch: distorts to the size. match the reference figure: the control's figure "
+                               "(its mask, else its non-black pixels) is scaled and moved once for all frames so "
+                               "that it stands as tall, on the same floor line and on the same centre as the "
+                               "figure of the reference picture -- a rig's walk on the still it has to drive."}),
                 "multiple": ("INT", {"default": 32, "min": 1, "max": 128,
                     "tooltip": "Sides are rounded to a multiple of this (32 suits the video and image models)."}),
                 "block": ("INT", {"default": 0, "min": 0, "max": 100000,
@@ -865,15 +1085,25 @@ class ULSControlFit:
             },
             "optional": {
                 "fps": ("FLOAT", {"forceInput": True, "tooltip": "The clip's frame rate, e.g. from the Media Loader."}),
-                "mask": ("MASK", {"tooltip": "Goes the same way, frame for frame (inpainting: white = regenerate)."}),
+                "mask": ("MASK", {"tooltip": "Goes the same way, frame for frame (inpainting: white = regenerate). "
+                                             "With 'match the reference figure': white = the control's figure "
+                                             "(e.g. Mesh Ring Render's mask) -- it is measured on it."}),
+                "reference": ("IMAGE", {"tooltip": "For 'match the reference figure': the picture whose figure the "
+                                                   "control must match (alpha, or a flat backdrop). Its size is "
+                                                   "read as the target frame's."}),
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT", "INT", "FLOAT", "STRING")
-    RETURN_NAMES = ("images", "mask", "frame_count", "width", "height", "seconds", "info")
+    RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT", "INT", "FLOAT", "STRING", "INT", "INT")
+    RETURN_NAMES = ("images", "mask", "frame_count", "width", "height", "seconds", "info", "cycle_frames",
+                    "contact_frame")
     OUTPUT_TOOLTIPS = ("The fitted frames.", "The fitted mask (empty when none came in).",
                        "Frames -- e.g. for the latent length.", "Width.", "Height.",
-                       "Length at the target rate.", "What was taken and how.")
+                       "Length at the target rate.", "What was taken and how.",
+                       "Looped: the output frames one pass of the source takes (a walk cycle's length) -- e.g. for "
+                       "Turntable Pick's turn_frames. 0 = not looped.",
+                       "Looped, with a figure: a frame with the widest stride, two cycles into the clip -- e.g. for "
+                       "Turntable Pick's start_frame; the same for every direction of one walk. -1 = not known.")
     FUNCTION = "fit"
     CATEGORY = "Polyhedron/Control"
     DESCRIPTION = ("Fits a clip or an image to a model's video: re-timed to the target frame rate, a start offset, "
@@ -883,7 +1113,7 @@ class ULSControlFit:
                    "control templates and for inpainting sources.")
 
     def fit(self, images, target_fps, source_fps, start, frames, grid, at_the_end, width, height, size_mode,
-            multiple, block=0, block_index=0, fps=None, mask=None):
+            multiple, block=0, block_index=0, fps=None, mask=None, reference=None):
         import torch
         try:          # v1216: no control from the loader's empty frame
             from .uls_placeholder import refuse
@@ -892,7 +1122,8 @@ class ULSControlFit:
         refuse("Control Fit", "images", images)
         src = float(source_fps) if float(source_fps) > 0 else (float(fps) if fps else float(target_fps))
         out, m_out, rep = fit(images, src, float(target_fps), float(start), int(frames), grid, at_the_end,
-                              int(width), int(height), size_mode, int(multiple), mask, int(block), int(block_index))
+                              int(width), int(height), size_mode, int(multiple), mask, int(block), int(block_index),
+                              reference)
         if m_out is None:
             m_out = torch.zeros((out.shape[0], out.shape[1], out.shape[2]))
         info = ("Control Fit: %d frame(s) %dx%d at %.2f fps (%.3f s) from %d source frame(s) at %.2f fps, frames "
@@ -902,8 +1133,18 @@ class ULSControlFit:
         if rep["block"]:
             info += "; block %d of %d (source frames %d-%d)" % (rep["block"][0], rep["block"][1], rep["block"][2],
                                                                  rep["block"][3] - 1)
-        print("[PLS] " + info)
-        return (out, m_out, rep["frames"], rep["width"], rep["height"], rep["seconds"], info)
+        mt = rep.get("match")
+        if mt:
+            g, wt = mt["got"], mt["want"]
+            info += ("\n  matched to the reference figure (measured on %s): scale %.3f (control %.0f px -> %.0f px "
+                     "high); after the fit: height %.0f (reference %.0f), floor line row %.0f (%.0f), centre column "
+                     "%.1f (%.1f)" % (mt["by"], mt["scale"], mt["control_height"], wt["height"], g["height"],
+                                      wt["height"], g["foot"], wt["foot"], g["centre"], wt["centre"]))
+        for l in rep.get("cycle_lines") or []:
+            info += "\n  " + l
+        print("[PLS] " + info.replace("\n", "\n[PLS] "))
+        return (out, m_out, rep["frames"], rep["width"], rep["height"], rep["seconds"], info,
+                int(rep["cycle_frames"]), int(rep["contact_frame"]))
 
 
 class ULSControlMap:
@@ -1072,9 +1313,11 @@ class ULSApplyControl:
         if float(end) < float(start):
             raise ValueError("[PLS] Apply Control: end (%.2f) lies before start (%.2f)." % (end, start))
         control, mask, source = pick_frame(int(pick), control, mask, source)
+        took = ""
         if control_patch is None:
-            if _ww().strip(control_model) in ("(none)", "", None):
-                raise ValueError("[PLS] Apply Control: no Fun ControlNet Union file in models/model_patches.")
+            if not _ww().strip(control_model) or _ww().strip(control_model).startswith("("):
+                control_model = pick_control(model_family(model), controls_on_disk())        # v1386
+                took = "control_model was not picked: took the one fitting file on disk, %s -- " % _ww().strip(control_model)
             control_patch = load_patch(control_model)
         m, rep = apply(model, control_patch, vae, float(strength), float(start), float(end), control, mask, source)
         what = describe_patch(control_patch)
@@ -1089,5 +1332,7 @@ class ULSApplyControl:
                 info += " (fitted to the latent's length at run time: cut, or the last frame held)"
                 if rep["frames"] != snap_count(rep["frames"], GRIDS[0]):
                     info += " -- %d frames are off the 17n+5 grid (Control Fit snaps them)" % rep["frames"]
+        if took:
+            info = info.replace("Apply Control: ", "Apply Control: " + took, 1)
         print("[PLS] " + info)
         return (m, info)

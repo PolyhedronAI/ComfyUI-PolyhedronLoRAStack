@@ -29,8 +29,8 @@ ULSFilter	exposure,temperature,tint,contrast,gamma,shadows,highlights,saturation
 ULSFreeVRAM	value,mode
 ULSH3LatentUpscale	upscaler,size_mode,scale,width,height,megapixels,align,temporal_chunking,free_vram_first
 ULSH3SemanticBridge	adapter,alpha,magnitude_match
-ULSImagePickFrame	frame_index,mode,count
-ULSImageReference	prompt,negative_prompt,family,ref_size,inpaint_grow,inpaint_feather,blank_picture,blank_start,blank_end
+ULSImagePickFrame	frame_index,mode,count,name
+ULSImageReference	prompt,negative_prompt,family,ref_size,inpaint_grow,inpaint_feather,blank_picture,blank_start,blank_end,blank_strength,blank_colour,blank_anchor
 ULSInspector	
 ULSInt	value,preset_config
 ULSInterpolate	ckpt_name,rate_mode,multiplier,source_fps,target_fps,precision,ensemble,fast_mode,scale_factor,static_skip,cut_guard,audio_mode

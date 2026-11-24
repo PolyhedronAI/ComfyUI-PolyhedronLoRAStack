@@ -718,7 +718,7 @@ Model-agnostic backend: WAN 2.1 / 2.2, FLUX, SDXL, SD 1.5 — no model-specific 
 | ⬡ Polyhedron Token Counter | UMT5-XXL token estimate vs. WAN's hard 512-token limit, with actionable report |
 | ⬡ Polyhedron Select Model Switch | Central model selector (6 slots), docks onto any COMBO loader input |
 | ⬡ Polyhedron Wan Bridge (→ / ←) | Type bridges MODEL ↔ WANVIDEOMODEL for kijai's WanVideoWrapper |
-| ⬡ Polyhedron Wan Frame Inflate / Pick Frame | Workaround for kijai issue #1827 (T2I LoRAs without effect) |
+| ⬡ Polyhedron Wan Frame Inflate / Pick Frame | Workaround for kijai issue #1827 (T2I LoRAs without effect); Pick Frame also takes single frames of a batch -- by index, or by name from a wired names list -- with the matching mask |
 | ⬡ Polyhedron Sigma Curve / Dual Sigma Curve | Model-agnostic SIGMAS generators; Dual = HIGH/LOW split with exact handoff. The node draws its curve, computed by the same code the run uses. |
 | ⬡ Polyhedron Sigma List | An explicit SIGMAS grid -- a trained schedule from a preset, or your own list -- with shift and terminal zero; the node draws the grid the run will use and shows a typo as the run's own refusal. |
 | ⬡ Polyhedron Noise Schedule | Deprecated original sigma node, kept for backwards compatibility |
@@ -1499,6 +1499,11 @@ what a first -> last frame run made.
 **Control Fit** brings any clip or picture to the run: its length (the video
 latent grid, 17n+5), its size (fill / fit / stretch, a multiple of 32), its
 frame rate, a start and a window. A shorter clip holds its last frame or loops.
+With `size_mode` **match the reference figure** and a picture on `reference`, the
+control's figure is scaled and moved once for all frames so that it stands as
+tall as the figure in that picture, on its floor line and on its centre;
+`cycle_frames` and `contact_frame` tell where a looped walk repeats and where
+its stride is widest.
 
 **Control Map** turns the fitted frames into a control: **pose** (SDPose,
 whole body with hands), **depth** (Depth Anything 3), **canny**, **gray**,
@@ -1510,6 +1515,8 @@ map itself; any Save node keeps it.
 and `end` (as a share of the steps -- an end of 0.6 leaves the last 40 % free
 for detail), `pick` for one frame of a clip. The control and first/last frame
 keyframes share one run. Needs a current ComfyUI (master).
+With no control file picked the node takes the one file on disk that fits the
+model and names it in its info.
 
 **Models through the download door.** The three files these nodes read --
 the Fun ControlNet Union (models/model_patches), the SDPose checkpoint
@@ -1578,7 +1585,7 @@ one of them out without touching the others.
 | **⬡ Polyhedron MiniMax Drift Control** | For a continued scene: the motion of the scene before carries on, the look may change. Patches the model. |
 | **⬡ Polyhedron H3 Latent Upscale** | The learned H3 latent upscaler: sample small, lift the latent here, then a short second pass at the target size. Weights (LBH-123-AI, MIT) offered by the node's Download. |
 | **⬡ Polyhedron MiniMax Second Pass Hold** | The second pass of a continued scene: puts the carried head back at full size and holds it. Between H3 Latent Upscale and the second sampler. |
-| **⬡ Polyhedron Image Reference** | One reference-image conditioning node for every family that takes pictures next to its prompt. The family is measured on the loaded text encoder, not guessed from a file name, and each family gets its own Core recipe: Qwen-Image 2.1, Qwen-Image-Edit, MiniMax H3 (handed to MiniMax Reference) and MiniMax H3 Image, every other family through Core's reference latents. For H3 Image without a picture it can place a **blank picture** (black, mid grey or white) in front of the prompt for an early window of the run (`blank_picture`, `blank_start`, `blank_end`) -- it softens the distilled model's hard text-to-image look. A wired `inpaint_mask` turns the latent output into image_1 with that mask, so the sampler repaints only the masked part. `prompt_in` takes a wired text. |
+| **⬡ Polyhedron Image Reference** | One reference-image conditioning node for every family that takes pictures next to its prompt. The family is measured on the loaded text encoder, not guessed from a file name, and each family gets its own Core recipe: Qwen-Image 2.1, Qwen-Image-Edit, MiniMax H3 (handed to MiniMax Reference) and MiniMax H3 Image, every other family through Core's reference latents. For H3 Image without a picture it can place a **blank picture** (black, mid grey, white or any colour) in front of the prompt for an early window of the run (`blank_picture`, `blank_start`, `blank_end`) -- it softens the distilled model's hard text-to-image look. `blank_strength` mixes it in (1 = beside the prompt, 2 = twice the change the blank makes; every value but 1 runs the model twice a step inside the window), `blank_colour` is the colour for the tone `colour`, and `blank_anchor` hands the blank over as a real picture -- vision rows and reference latent, needs the VAE. A wired `inpaint_mask` turns the latent output into image_1 with that mask, so the sampler repaints only the masked part. `prompt_in` takes a wired text. |
 | **⬡ Polyhedron Show Text** | Shows any text that reaches it (an info output, a resolved prompt) on the canvas, sized to its content, with the Note's colour row. |
 | **⬡ Polyhedron Reference Board** | Up to 9 images, 3 videos and 3 audios as cards in one node -- tag, role, retention, budget -- instead of loose wires. Its `refs` output fills MiniMax Reference's free slots; `definitions` drafts the official subject/retention lines. Files go through ComfyUI's own upload. |
 

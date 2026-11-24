@@ -181,26 +181,36 @@ class ULSImagePickFrame:
                 "count": ("INT", {"default": 1, "min": 1, "max": 4096,
                                   "step": 1,
                                   "tooltip": _pf.COUNT_TOOLTIP}),
-            }
+                # v1385: APPENDED -- a view by its name.
+                "name": ("STRING", {"default": "", "multiline": False,
+                                    "tooltip": _pf.NAME_TOOLTIP}),
+            },
+            "optional": {
+                "names": ("STRING", {"forceInput": True,
+                                     "tooltip": _pf.NAMES_TOOLTIP}),
+                "mask": ("MASK", {"tooltip": _pf.MASK_TOOLTIP}),
+            },
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
+    RETURN_TYPES = ("IMAGE", "MASK")
+    RETURN_NAMES = ("image", "mask")
     FUNCTION = "pick"
     CATEGORY = "Polyhedron/Wan"
     DESCRIPTION = (
-        "Picks one frame from a video batch. Companion to "
-        "ULSWanFrameInflate. -1 picks the middle frame."
+        "Picks frames from an image batch: the middle, first or last one, "
+        "one by index, a range, every Nth -- or one by its NAME from a "
+        "wired names list (a turnaround's view E). A mask follows. "
+        "Companion to ULSWanFrameInflate: -1 picks the middle frame."
     )
 
-    def pick(self, images, frame_index, mode=None, count=1):
+    def pick(self, images, frame_index, mode=None, count=1, name="", names=None, mask=None):
         # v902: the selection itself lives in nodes/uls_pick_frame_core.py
         # so this class and the V3 class cannot drift apart (v898 lesson).
         if mode is None:
             mode = _pf.MODES[0]
-        picked, note = _pf.select(images, mode, frame_index, count)
+        picked, note, got = _pf.select(images, mode, frame_index, count, names, name, True)
         print(f"[ULSImagePickFrame] ✓ {note}")
-        return (picked,)
+        return (picked, _pf.select_mask(mask, got, picked) if got else mask)
 
 
 # Node registration is centralised in the top-level __init__.py — these

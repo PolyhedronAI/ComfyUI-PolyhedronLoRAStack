@@ -307,13 +307,13 @@ class ULSImageReference:
                                             "outward only -- the masked part itself is always fully "
                                             "repainted."}),
                 # v1338 (Frank 17.11.): appended LAST -- saved graphs keep every slot.
-                "blank_picture": (["off", "black", "mid grey", "white"], {"default": "off",
+                "blank_picture": (["off", "black", "mid grey", "white", "colour"], {"default": "off",
                                   "tooltip":
                                   "Text to image only (no reference wired): a blank picture of this tone "
                                   "stands in front of the prompt for the window below -- it softens the hard, "
                                   "over-rendered look of a distilled text-to-image run. For families that read "
                                   "pictures in their text encoder; the info says when a family does not take "
-                                  "it. off = plain text, as before."}),
+                                  "it. off = plain text, as before. colour = the colour of blank_colour."}),
                 "blank_start": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001,
                                 "tooltip":
                                 "blank_picture: start of the window, as a share of the full run (0 = the "
@@ -324,6 +324,26 @@ class ULSImageReference:
                               "steps 0.25 covers steps 1-2, 0.4 steps 1-3; on 8 steps 0.25 covers steps 1-3. "
                               "A step exactly on the edge sees both conditionings averaged; the info names the "
                               "steps and says so."}),
+                # v1354 (Frank 21.11., after WAS' Blank Guidance): appended LAST -- saved graphs keep every slot,
+                # and their defaults give the v1338 result bit for bit.
+                "blank_strength": ("FLOAT", {"default": 1.0, "min": -2.0, "max": 6.0, "step": 0.05,
+                                   "tooltip":
+                                   "blank_picture: how far the window's steps go toward the blank. Each step "
+                                   "inside the window = plain + strength x (blank - plain). 1 = the prompt beside "
+                                   "the blank (as before, one pass a step); 2 = twice the change the blank makes "
+                                   "(\"subtraction\": with the window on the first steps it pushes past the "
+                                   "blank); 0.5 = halfway. Every value but 1 runs the model twice a step inside "
+                                   "the window."}),
+                "blank_colour": ("STRING", {"default": "#808080",
+                                 "tooltip":
+                                 "blank_picture = colour: the blank's colour as #rrggbb -- #808080 mid grey, "
+                                 "#000000 black, #1a2440 a night blue. Ignored for the other tones."}),
+                "blank_anchor": ("BOOLEAN", {"default": False,
+                                 "tooltip":
+                                 "blank_picture: off = the blank's text-encoder rows (512 px) in front of the "
+                                 "prompt, as before. on = the blank as a REAL picture, the way Core reads one: "
+                                 "1024 px, encoded together with the prompt AND anchored in the model as a "
+                                 "reference latent (needs the VAE). MiniMax H3 Image only."}),
                 # v1341 (Frank 17.11.): a wired text gets its OWN socket row. Wiring the prompt FIELD's socket
                 # put that dot on top of another row (clip in Frank's frontend, the negative field in 1.59.1) --
                 # a hidden field has no row of its own any more. Appended last; a socket, not a widget.
@@ -366,7 +386,8 @@ class ULSImageReference:
     def build(self, clip, prompt, negative_prompt, family=FAMILY_AUTO,
               ref_size=1024, vae=None, latent=None, inpaint_mask=None,
               inpaint_grow=16, inpaint_feather=8, blank_picture="off",
-              blank_start=0.0, blank_end=0.25, prompt_in=None, **opt):
+              blank_start=0.0, blank_end=0.25, prompt_in=None, blank_strength=1.0,
+              blank_colour="#808080", blank_anchor=False, **opt):
         if prompt_in is not None:            # v1341: the wired text wins over the field
             prompt = str(prompt_in)
         vae_class = type(getattr(vae, "first_stage_model", None)).__name__ if vae is not None else ""
@@ -385,7 +406,8 @@ class ULSImageReference:
         if fam == FAMILY_MINIMAX_IMAGE:
             return self._minimax_image(clip, vae, latent, prompt, refs, how, vae_class,
                                        blank, blank_start, blank_end, inpaint_mask,
-                                       int(inpaint_grow), int(inpaint_feather))
+                                       int(inpaint_grow), int(inpaint_feather),
+                                       float(blank_strength), blank_colour, bool(blank_anchor))
         if fam == FAMILY_MINIMAX:
             out = self._minimax(clip, vae, latent, prompt, negative_prompt,
                                 refs, how)
@@ -417,7 +439,8 @@ class ULSImageReference:
 
     def _minimax_image(self, clip, vae, latent, prompt, refs, how, vae_class,
                        blank="off", blank_start=0.0, blank_end=0.25, inpaint_mask=None,
-                       inpaint_grow=16, inpaint_feather=8):
+                       inpaint_grow=16, inpaint_feather=8, blank_strength=1.0, blank_colour="#808080",
+                       blank_anchor=False):
         """v1325: MiniMax H3 Image / p-h3-image -- Core's own recipe (h3_image.encode), one H3 Image recipe
         in the tree. The canvas: a wired latent (Empty Latent, type MiniMax H3 Image) sets the size;
         without one Core decides (image_1 after its reference scaling, without pictures the model's own
@@ -432,7 +455,8 @@ class ULSImageReference:
         batch = [k for k, v in refs if int(v.shape[0]) > 1]
         refs = [(k, HI.flatten_alpha(v[:1])) for k, v in refs]
         pos, lat = HI.encode(clip, prompt, w, h, vae, {k: v for k, v in refs}, var)
-        prime = self._blank_prime(HI, clip, pos, refs, blank, blank_start, blank_end, var, prompt)
+        prime = self._blank_prime(HI, clip, pos, refs, blank, blank_start, blank_end, var, prompt,
+                                  blank_strength, blank_colour, blank_anchor, vae, w, h)
         pos = prime[0]
         neg = HI.zero_out(pos)
         lw, lh = HI.latent_px(lat["samples"])
@@ -462,27 +486,53 @@ class ULSImageReference:
         return (pos, neg, lat, info, prompt)
 
     @staticmethod
-    def _blank_prime(HI, clip, pos, refs, blank, start, end, variant=None, prompt=""):
+    def _blank_prime(HI, clip, pos, refs, blank, start, end, variant=None, prompt="", strength=1.0,
+                     colour="#808080", anchor=False, vae=None, w=0, h=0):
         """v1338: (positive, info tail). The blank picture only stands in for MISSING pictures: with a
         reference wired it is not used, and the info says so. v1343: p-h3-image gets its own label and ONE
-        joint encode (its text connector puts a sink on the first row of every encode); 8 steps."""
+        joint encode (its text connector puts a sink on the first row of every encode); 8 steps.
+        v1354: strength (plain + s x (blank - plain) inside the window, through Core's cond strengths), any
+        colour, and the anchor (the blank as a real picture: Core's own encode of prompt + 1024 px blank)."""
         if blank == "off":
             return pos, ""
+        rgb = HI.parse_colour(colour) if blank == HI.TONE_COLOUR else None
+        name = HI.colour_name(blank, rgb)
         if refs:
-            return pos, " | blank_picture %s NOT used: %d reference(s) wired" % (blank, len(refs))
+            return pos, " | blank_picture %s NOT used: %d reference(s) wired" % (name, len(refs))
         win = HI.blank_window(start, end)
         if win is None:
-            return pos, " | blank_picture %s NOT used: empty window %.3f-%.3f" % (blank, start, end)
+            return pos, " | blank_picture %s NOT used: empty window %.3f-%.3f" % (name, start, end)
+        s = float(strength)
+        if s == 0.0:
+            return pos, " | blank_picture %s NOT used: blank_strength 0" % name
         n = HI.steps_for(variant)
         pic, shared = HI.steps_covered(win[0], win[1], n)
-        if variant == HI.VARIANT_PH3:
-            pos = HI.prime_joint(pos, HI.joint_block(clip, prompt, blank), *win)
+        plain = pos
+        if anchor and variant == HI.VARIANT_PH3:
+            raise ValueError("[PLS] Image Reference: blank_anchor is for MiniMax H3 Image -- p-h3-image's own "
+                             "node turns every picture into an edit (\"Edit <Picture 1>.\"). Switch the anchor "
+                             "off for p-h3-image.")
+        if anchor and vae is None:
+            raise ValueError("[PLS] Image Reference: blank_anchor needs the VAE wired -- the blank is anchored "
+                             "as a reference latent.")
+        if anchor:
+            img = HI.blank_image(blank, rgb, HI.ANCHOR_SIDE)
+            # only the conditioning is taken: the canvas stays the plain run's (Core would size it from the blank)
+            bpos, _ = HI.encode(clip, prompt, w, h, vae, {"image_1": img}, variant)
+            pos = HI.prime_window(pos, bpos, *win)
+            how = "anchored: Core's own encode of prompt + %d px blank, vision rows + reference latent" % (
+                HI.ANCHOR_SIDE)
+        elif variant == HI.VARIANT_PH3:
+            pos = HI.prime_joint(pos, HI.joint_block(clip, prompt, blank, rgb), *win)
             how = "one joint encode, label <Picture 1>, ModelSamplingMiniMaxH3 1.0/1.0"
         else:
-            pos = HI.prime_blank_picture(pos, HI.picture_block(clip, blank), *win)
+            pos = HI.prime_blank_picture(pos, HI.picture_block(clip, blank, rgb), *win)
             how = ""
+        pos = HI.weigh_window(pos, win[0], win[1], s, plain)
         tail = " | blank_picture %s %.3f-%.3f = step(s) %s of %d on the model's own grid" % (
-            blank, win[0], win[1], ",".join(str(k) for k in pic) or "none", n)
+            name, win[0], win[1], ",".join(str(k) for k in pic) or "none", n)
+        if s != 1.0:
+            tail += " | blank_strength %g: plain + %g x (blank - plain), two passes a step in the window" % (s, s)
         # v1346: a wired sigma curve moves this -- the window is a SIGMA range, not a step count; the
         # Sampler prints the steps it really covers (Frank 19.11.: 1-4 of 8 on the HyperFlow curve)
         tail += " (a curve on the Sampler's sigmas moves this: the Sampler names the real steps)"

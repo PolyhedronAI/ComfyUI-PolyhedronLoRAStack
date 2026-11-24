@@ -27,7 +27,27 @@ MODES = [
     "index",
     "range",
     "every Nth",
+    "name",
 ]
+
+NAME_TOOLTIP = (
+    "For mode 'name': which frame to take, by its NAME in the list wired "
+    "to `names` (e.g. Turntable Pick's direction_names 'S, SE, E, ...': "
+    "name E takes the E view). Upper and lower case do not matter. A name "
+    "the list does not hold is an error that shows the list. Ignored by "
+    "the other modes."
+)
+
+NAMES_TOOLTIP = (
+    "For mode 'name': the names of the batch's frames, in order, separated "
+    "by commas -- one per frame (e.g. from Turntable Pick, Camera Ring or "
+    "Mesh Ring Render)."
+)
+
+MASK_TOOLTIP = (
+    "Optional: a mask batch that goes the same way -- the same frame(s) "
+    "are taken from it."
+)
 
 MODE_TOOLTIP = (
     "Which frame(s) to take. 'middle (legacy)' is this node's original "
@@ -39,7 +59,9 @@ MODE_TOOLTIP = (
     "'index' is 0-based and accepts negatives the way Core does (-1 last, "
     "-2 second to last). 'range' takes `count` frames starting at "
     "frame_index. 'every Nth' takes every count-th frame from the whole "
-    "batch -- a contact sheet from a video."
+    "batch -- a contact sheet from a video. 'name' takes the frame called "
+    "`name` in the list wired to `names` -- a view of a turnaround by its "
+    "direction instead of by its number."
 )
 
 COUNT_TOOLTIP = (
@@ -94,12 +116,70 @@ def plan(n, mode, frame_index, count):
     return [i], "explicit %d of %d" % (i, n)
 
 
-def select(images, mode, frame_index, count):
-    """Apply plan() to a real image batch. Returns (images, message)."""
+def names_list(text):
+    """'S, SE, E' (commas or line breaks) -> ['S', 'SE', 'E']."""
+    return [x.strip() for x in str(text or "").replace("\n", ",").split(",") if x.strip()]
+
+
+def by_name(n, names, name):
+    """The index of `name` in the list `names` (v1385). The list must name every frame of the batch -- a list
+    of another length would pick a wrong view without a word."""
+    lst = names_list(names)
+    want = str(name or "").strip()
+    if not lst:
+        raise ValueError("[PLS] Pick Frame: mode 'name' needs the frames' names -- wire a names list (e.g. Turntable "
+                         "Pick's direction_names) into `names`.")
+    if not want:
+        raise ValueError("[PLS] Pick Frame: mode 'name' -- `name` is empty; the list holds: %s" % ", ".join(lst))
+    if len(lst) != int(n):
+        raise ValueError("[PLS] Pick Frame: %d name(s) (%s) for %d frame(s) -- the list must name every frame."
+                         % (len(lst), ", ".join(lst), int(n)))
+    low = [x.lower() for x in lst]
+    if want.lower() not in low:
+        raise ValueError("[PLS] Pick Frame: no frame is called '%s' -- the list holds: %s" % (want, ", ".join(lst)))
+    if low.count(want.lower()) > 1:
+        raise ValueError("[PLS] Pick Frame: '%s' is in the list %d times (%s) -- names must be unique."
+                         % (want, low.count(want.lower()), ", ".join(lst)))
+    return low.index(want.lower())
+
+
+def take(batch, got):
+    """The frames `got` of a batch: a contiguous run stays a slice (no copy), anything else is gathered."""
+    if got == list(range(got[0], got[-1] + 1)):
+        return batch[got[0]:got[-1] + 1]
+    import torch
+    return torch.cat([batch[i:i + 1] for i in got], dim=0)
+
+
+def select_mask(mask, got, like):
+    """The mask that goes with the picked frames (v1385): the same frames of a mask batch of the same length, a
+    single mask as it is; none wired -> an empty one of the picked frames' size."""
+    if mask is None:
+        if len(tuple(getattr(like, "shape", ()))) < 3:   # not an image batch (a stand-in): nothing to size it by
+            return None
+        import torch
+        return torch.zeros((int(like.shape[0]), int(like.shape[1]), int(like.shape[2])), dtype=torch.float32)
+    m = mask if mask.dim() == 3 else mask.unsqueeze(0)
+    if m.shape[0] == 1:
+        return m
+    if max(got) >= m.shape[0]:
+        raise ValueError("[PLS] Pick Frame: the mask has %d frame(s), frame %d was picked -- wire the mask that "
+                         "belongs to the images." % (int(m.shape[0]), max(got)))
+    return take(m, got)
+
+
+def select(images, mode, frame_index, count, names=None, name="", with_indices=False):
+    """Apply plan() to a real image batch. Returns (images, message) -- with_indices: (images, message, indices)."""
     n = int(images.shape[0])
     if n == 0:
-        return images, "empty image batch -- passing through"
+        return (images, "empty image batch -- passing through", []) if with_indices else (images, "empty image batch -- passing through")
 
+    if str(mode) == "name":                              # v1385: a view by its name
+        i = by_name(n, names, name)
+        got, note = [i], "'%s' = frame %d of %d" % (str(name).strip(), i, n)
+        out = images[i:i + 1]
+        msg = "%s -> 1 frame(s) [name]" % note
+        return (out, msg, got) if with_indices else (out, msg)
     got, note = plan(n, mode, frame_index, count)
 
     # Contiguous runs stay a slice (no copy); anything else is gathered.
@@ -108,4 +188,5 @@ def select(images, mode, frame_index, count):
     else:
         import torch
         out = torch.cat([images[i:i + 1] for i in got], dim=0)
-    return out, "%s -> %d frame(s) [%s]" % (note, len(got), mode)
+    msg = "%s -> %d frame(s) [%s]" % (note, len(got), mode)
+    return (out, msg, got) if with_indices else (out, msg)

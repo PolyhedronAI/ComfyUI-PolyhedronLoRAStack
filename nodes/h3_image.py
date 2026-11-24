@@ -126,16 +126,87 @@ def steps_for(variant):
     return PH3_STEPS if variant == VARIANT_PH3 else GRID_STEPS
 
 
-def blank_image(tone):
-    """[1, BLANK_SIDE, BLANK_SIDE, 3] in the tone's value."""
+def blank_image(tone, colour=None, side=BLANK_SIDE):
+    """[1, side, side, 3] in the tone's value; tone "colour" takes the (r, g, b) in 0..1 of `colour`."""
     import torch
-    return torch.full((1, BLANK_SIDE, BLANK_SIDE, 3), float(TONE_VALUE[tone]))
+    if tone == TONE_COLOUR:
+        rgb = torch.tensor([float(v) for v in colour], dtype=torch.float32)
+        return rgb.view(1, 1, 1, 3).expand(1, int(side), int(side), 3).contiguous()
+    return torch.full((1, int(side), int(side), 3), float(TONE_VALUE[tone]))
 
 
-def joint_block(clip, prompt, tone):
+# ---- v1354: strength, any colour, the blank as a real picture (Frank 21.11., after WAS' reply) ------------
+# READ in WAS Node Suite (MIT, modules/sampling/h3_blank.py, commit 44aec45) and in Core master
+# (comfy_extras/nodes_minimax_h3.py, MiniMaxH3ImageConditioning + _image_refs); our own implementation.
+#   strength  WAS mixes the two predictions on the guided steps: plain + s * (blank - plain); s = 2 on the first
+#             two steps is his "subtraction". We need no guider of our own for it: Core's calc_cond_batch sums
+#             every active cond as output * strength and divides by the summed strengths. Two conds in the
+#             window, the blank one at strength s and the plain one at strength 1 - s, sum to 1 -> exactly
+#             plain + s * (blank - plain), with ANY sampler. s = 1 leaves the plain one out (one pass a step,
+#             the v1338 result bit for bit); every other s costs two passes a step inside the window.
+#   colour    any colour, "#rrggbb" or "#rgb".
+#   anchor    Core reads a real picture twice: its vision rows in front of the prompt (ONE encode, short edge
+#             1024) AND the VAE latent as a reference block of the DiT (minimax_refs, short edge 1024..2048).
+#             v1338 put only 512-px vision rows in front. With the anchor on, the blank IS a picture to Core:
+#             Core's own class encodes prompt + a 1024 px blank with the VAE -- WAS builds the same by hand.
+TONE_COLOUR = "colour"
+BLANK_CHOICES = BLANK_TONES + [TONE_COLOUR]
+ANCHOR_SIDE = 1024          # Core: IMAGE_REF_SHORT_EDGE (vision) = lower clamp of the VAE side
+
+
+def parse_colour(text):
+    """(r, g, b) in 0..1 from "#rrggbb" / "#rgb" (the "#" optional). Raises ValueError by name."""
+    s = str(text or "").strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join(ch * 2 for ch in s)
+    if len(s) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in s):
+        raise ValueError("[PLS] Image Reference: blank_colour %r is not a colour -- write #rrggbb, e.g. "
+                         "#808080 (mid grey) or #1a2440 (night blue)." % (text,))
+    return tuple(int(s[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+
+def colour_name(tone, colour=None):
+    """The blank's name for the info: the tone, or the colour as #rrggbb."""
+    if tone != TONE_COLOUR:
+        return tone
+    return "#%02x%02x%02x" % tuple(int(round(v * 255)) for v in colour)
+
+
+def weigh_window(out, start, end, strength, plain):
+    """v1354: entries of `out` inside [start, end] (the blank ones) get strength s; with s != 1 the plain
+    conditioning joins them in the window at strength 1 - s. Core then mixes plain + s * (blank - plain)."""
+    s = float(strength)
+    if s == 1.0:
+        return out
+    res = []
+    for c, d in out:
+        if d.get("start_percent") == float(start) and d.get("end_percent") == float(end):
+            res.append([c, dict(d, strength=s * float(d.get("strength", 1.0)))])
+        else:
+            res.append([c, d])
+    for c, d in plain:
+        res.append([c, dict(d, start_percent=float(start), end_percent=float(end),
+                            strength=(1.0 - s) * float(d.get("strength", 1.0)))])
+    return res
+
+
+def prime_window(conditioning, blank_cond, start, end):
+    """v1354 (anchor): the blank conditioning as a whole (rows, tags, minimax_refs -- Core's own encode of
+    prompt + picture) during [start, end], the plain one outside."""
+    out = []
+    for (c, d), (bc, bd) in zip(conditioning, blank_cond):
+        out.append([bc.to(c.device, c.dtype), dict(bd, start_percent=float(start), end_percent=float(end))])
+        if start > 0.0:
+            out.append([c, dict(d, start_percent=0.0, end_percent=float(start))])
+        if end < 1.0:
+            out.append([c, dict(d, start_percent=float(end), end_percent=1.0)])
+    return out
+
+
+def joint_block(clip, prompt, tone, colour=None):
     """[rows, dict] of "<Picture 1>: <vision> prompt" encoded in ONE pass (p-h3-image: one sink)."""
     return clip.encode_from_tokens_scheduled(
-        clip.tokenize(prompt, images=[blank_image(tone)], picture_label=PH3_PICTURE_LABEL))[0]
+        clip.tokenize(prompt, images=[blank_image(tone, colour)], picture_label=PH3_PICTURE_LABEL))[0]
 
 
 def prime_joint(conditioning, block, start, end):
@@ -179,10 +250,10 @@ def steps_covered(start, end, steps=GRID_STEPS):
     return pic, shared
 
 
-def picture_block(clip, tone):
+def picture_block(clip, tone, colour=None):
     """[rows, dict] of a blank picture alone: the label and its vision block, no text."""
     return clip.encode_from_tokens_scheduled(
-        clip.tokenize("", images=[blank_image(tone)], picture_label=PICTURE_LABEL))[0]
+        clip.tokenize("", images=[blank_image(tone, colour)], picture_label=PICTURE_LABEL))[0]
 
 
 def prime_blank_picture(conditioning, block, start, end):

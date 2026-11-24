@@ -137,7 +137,11 @@ opt = src[src.index('"optional": {'):src.index("RETURN_TYPES")]
 keys = re.findall(r'^\s{16}"(\w+)": \(', opt, re.M)
 # AMENDED v1341: the socket prompt_in (forceInput, no widget) is appended after them -- widgets only here
 keys = [k for k in keys if k != "prompt_in"]
-_need(keys[-3:] == ["blank_picture", "blank_start", "blank_end"], "three new widgets appended LAST: %s" % keys[-4:])
+# AMENDED v1354: blank_strength / blank_colour / blank_anchor appended after them (the law) -- pinned in test_v1354
+i = keys.index("blank_picture") if "blank_picture" in keys else -1
+_need(keys[i:i + 3] == ["blank_picture", "blank_start", "blank_end"] and keys[i + 3:] in
+      ([], ["blank_strength", "blank_colour", "blank_anchor"]),
+      "three new widgets appended in order, only v1354's after them: %s" % keys[-7:])
 _need('"default": "off"' in opt[opt.index('"blank_picture"'):], "blank_picture defaults to off")
 _need("NOT used: %d reference(s) wired" in src, "with references the prime is refused in the info")
 _need("does not take it" in src, "other families say so in the info")

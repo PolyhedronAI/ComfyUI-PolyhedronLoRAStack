@@ -131,7 +131,7 @@ check('name: "polyhedron.modelRelocate"' in js and "loadedGraphNode(node)" in js
 check('cls.startsWith("ULS")' in js and "if (!isOurs(node)) return;" in js, "R3 Polyhedron nodes only")
 check("return hits.length === 1 ? hits[0] : undefined;" in js, "R3 one match or nothing")
 check("if (!MODEL_FILE.test(bare)) return undefined;" in js, "R3 model files only")
-check("model found at a new place" in js and "console.info" in js, "R3 says what moved")
+check("console.info" in js and "model moved" in js, "R3 says what moved (console; v1347: no bubble for a working move)")
 node_bin = shutil.which("node")
 if node_bin:
     tmp = tempfile.mkdtemp(prefix="pls1326_")

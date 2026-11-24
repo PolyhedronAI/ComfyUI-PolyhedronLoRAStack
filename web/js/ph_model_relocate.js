@@ -13,7 +13,10 @@
  * be the silent-wrong-model bug). Mirrors nodes/ph_model_path.py, which does
  * the same for a queued prompt.
  *
- * What moved is said once per load, top right, in the house bubble.
+ * v1347: no bubble any more (Frank, 20.11.: "entweder laeuft es, dann ist es doch egal").
+ * A working move and an unresolved file are both said in the console only: the node
+ * shows the file it will use, and a file that cannot be resolved stops the run with
+ * Core's own message -- a bubble on load also fired for slots that never run.
  */
 
 import { app } from "../../scripts/app.js";
@@ -57,71 +60,43 @@ export function relocated(options, value) {
     return hits.length === 1 ? hits[0] : undefined;
 }
 
+// v1347: how many offered entries carry the stored value's file name (0 = missing, 2+ = ambiguous)
+export function sameNameCount(options, value) {
+    if (!Array.isArray(options)) return 0;
+    const want = fileName(value);
+    const seen = new Set();
+    for (const o of options) {
+        if (typeof o !== "string" || fileName(o) !== want) continue;
+        seen.add(stripSize(o).split(/[\\/]+/).filter(Boolean).join("/").toLowerCase());
+    }
+    return seen.size;
+}
+
 function isOurs(node) {
     const cls = String(node?.comfyClass || node?.type || "");
     const mod = String(node?.constructor?.nodeData?.python_module || "");
     return cls.startsWith("ULS") || mod.includes("PolyhedronLoRAStack");
 }
 
-// Returns the moves made on this node: [{ from, to }]
-export function relocateNode(node) {
+// Returns the moves made on this node: [{ from, to }]. v1347: a stored model file that stays
+// unresolved goes into `missing` (when given) as { value, count } -- count 0 = not found, 2+ = ambiguous.
+export function relocateNode(node, missing) {
     const moves = [];
     for (const w of node?.widgets || []) {
         const opts = w && w.options && w.options.values;
         if (!Array.isArray(opts) || typeof w.value !== "string") continue;
         if (opts.includes(w.value)) continue;
         const hit = relocated(opts, w.value);
-        if (hit === undefined || hit === w.value) continue;
+        if (hit === undefined) {
+            if (Array.isArray(missing) && MODEL_FILE.test(stripSize(w.value)))
+                missing.push({ value: stripSize(w.value), count: sameNameCount(opts, w.value) });
+            continue;
+        }
+        if (hit === w.value) continue;
         if (stripSize(hit) !== stripSize(w.value)) moves.push({ from: stripSize(w.value), to: stripSize(hit) });
         w.value = hit;
     }
     return moves;
-}
-
-let _css = false;
-let _pending = [];
-let _timer = null;
-
-function ensureCSS() {
-    if (_css) return;
-    _css = true;
-    const st = document.createElement("style");
-    st.textContent = ""
-        + ".ph-relocate-toast { position:fixed; top:16px; right:16px; z-index:10000;"
-        + " max-width:460px; padding:10px 12px; border-radius:8px; background:#1d1d1f;"
-        + " border:1px solid #3a3a3d; box-shadow:0 6px 24px rgba(0,0,0,.45);"
-        + " font:12px/1.35 system-ui,sans-serif; color:#ddd; }"
-        + ".ph-relocate-toast h4 { margin:0 0 4px; font-size:12px; color:#ff8c00; }"
-        + ".ph-relocate-toast p { margin:0 0 2px; color:#bbb; word-break:break-all; }";
-    document.head.appendChild(st);
-}
-
-function flush() {
-    _timer = null;
-    const moves = _pending;
-    _pending = [];
-    if (!moves.length) return;
-    try {
-        ensureCSS();
-        const box = document.createElement("div");
-        box.className = "ph-relocate-toast";
-        box.setAttribute("data-ph-overlay", "1");
-        const h = document.createElement("h4");
-        h.textContent = "\u2b21 " + moves.length + (moves.length === 1 ? " model found at a new place" : " models found at a new place");
-        box.appendChild(h);
-        for (const m of moves.slice(0, 6)) {
-            const p = document.createElement("p");
-            p.textContent = m.from + "  \u2192  " + m.to;
-            box.appendChild(p);
-        }
-        if (moves.length > 6) {
-            const p = document.createElement("p");
-            p.textContent = "... and " + (moves.length - 6) + " more";
-            box.appendChild(p);
-        }
-        document.body.appendChild(box);
-        setTimeout(() => { try { box.remove(); } catch (e) { } }, 12000);
-    } catch (e) { /* never break the ui */ }
 }
 
 app.registerExtension({
@@ -129,12 +104,12 @@ app.registerExtension({
     loadedGraphNode(node) {
         try {
             if (!isOurs(node)) return;
-            const moves = relocateNode(node);
-            if (!moves.length) return;
+            const missing = [];
+            const moves = relocateNode(node, missing);
+            // v1347: console only. A working move needs no word on screen; an unresolved file stops the run, and
+            // Core names it there ("Value not in list") -- a bubble on load also fired for slots that never run.
             for (const m of moves) console.info("[PLS] model moved: " + m.from + " -> " + m.to);
-            _pending.push(...moves);
-            if (_timer) clearTimeout(_timer);
-            _timer = setTimeout(flush, 400);
+            for (const m of missing) console.info("[PLS] model not found: " + m.value + (m.count > 1 ? " (" + m.count + " files of this name)" : "") + " -- only matters if this widget is used");
         } catch (e) { /* never break the ui */ }
     },
 });

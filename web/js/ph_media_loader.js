@@ -50,6 +50,11 @@ const PAUSE_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="
 // gracefully (wrapping bar, shrinkable selection) as a second line of defense.
 const MIN_NODE_W = 360;
 const MIN_NODE_H = 320;
+
+// v1361: two spellings of one folder are one folder: D:\\x\\input, D:/x/input, d:\\x\\input\\ -- the Selection
+// keeps the folder it was saved with, the grid the one it browses; a byte compare let them miss each other.
+function _folderKey(p) { return String(p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }
+function _sameFolder(a, b) { return !!a && !!b && _folderKey(a) === _folderKey(b); }
 // v683: one page of tiles. Shared by renderGrid and _syncDims so the
 // dimensions fetched are exactly the tiles that get drawn.
 const GRID_PAGE = 20;
@@ -2294,7 +2299,27 @@ class MediaLoaderUI {
     _fileURL(f) { return this._fileURLFor(this.folder, f); }
     _fileURLFor(folder, f) {
         return api.apiURL("/uls/media/file?folder=" + encodeURIComponent(folder || "") +
-            "&file=" + encodeURIComponent(f.name) + "&t=" + Math.floor(f.mtime || 0));
+            "&file=" + encodeURIComponent(f.name) + "&t=" + this._stampOf(folder, f));
+    }
+
+    // v1360: the cache stamp of a preview URL. A selection restored from a workflow carries the mtime the workflow
+    // was saved with (a built template: 0). Two workflows that name the same file then ask for the same URL, and
+    // the browser hands back the picture it cached for the first -- Frank, 22.11.: the Selection showed a 1872 x 3408
+    // still that had been overwritten on disk by a 704 x 1280 one of the same name. The listing of the folder knows
+    // the file as it is NOW (mtime + size): when it holds the file, its stamp wins; otherwise the stored one.
+    _stampOf(folder, f) {
+        if (_sameFolder(folder, this._filesFolder)) {   // v1361: not by spelling (\ or /, case, a trailing separator)
+            const x = (this._files || []).find((y) => y.name === f.name);
+            if (x && x.mtime) return Math.floor(x.mtime) + "_" + (x.size ?? "");
+        }
+        return String(Math.floor(f.mtime || 0));
+    }
+
+    // v1360: a listing that arrives after the preview was drawn re-draws it when the selection's stamp moved.
+    _refreshStaleSelection() {
+        const s = this.state;
+        if (!s || !s.file || this._shownStamp == null) return;
+        if (this._stampOf(s.folder, { name: s.file, mtime: s.mtime }) !== this._shownStamp) this._renderPreview();
     }
 
     // GIFs are kind "image" (a still to the loader), but in previews/thumbnails we
@@ -2336,6 +2361,7 @@ class MediaLoaderUI {
         }
         this.previewMediaEl.style.flex = "";   // a visual is present -> the visual area fills again
         const f = { name: s.file, mtime: s.mtime || 0 };
+        this._shownStamp = this._stampOf(s.folder, f);   // v1360: what this preview was drawn from
         const fobj = (this._files || []).find((x) => x.name === s.file);   // backend w/h for an instant badge
         if (s.kind === "video") {
             const v = document.createElement("video");
@@ -2381,7 +2407,21 @@ class MediaLoaderUI {
                 e.title = "The file could not be decoded as an image. Pick another tile to clear this.";
                 if (img.isConnected) img.replaceWith(e);
             };
-            img.onload = () => { if (!usingThumb && img.naturalWidth) this._setPrevDim(img.naturalWidth, img.naturalHeight); };
+            // v1361: the counter-check. A picture whose size differs from the size the listing reports for the
+            // file NOW is an old one of the same name (the page keeps every picture it loaded under its URL and
+            // does not ask the server again) -- load it once more under a fresh URL instead of showing it.
+            let refetched = false;
+            img.onload = () => {
+                if (usingThumb || !img.naturalWidth) return;
+                const now = (this._files || []).find((x) => x.name === s.file);
+                if (!refetched && _sameFolder(s.folder, this._filesFolder) && now && now.w && now.h &&
+                    (now.w !== img.naturalWidth || now.h !== img.naturalHeight)) {
+                    refetched = true;
+                    img.src = this._fileURLFor(s.folder, f) + "&r=" + Date.now();
+                    return;
+                }
+                this._setPrevDim(img.naturalWidth, img.naturalHeight);
+            };
             img.src = this._fileURLFor(s.folder, f);
             this.previewMediaEl.appendChild(img);
             if (fobj && fobj.w && fobj.h) this._setPrevDim(fobj.w, fobj.h);   // instant from the listing (true source dims)
@@ -2432,7 +2472,7 @@ class MediaLoaderUI {
 
     _thumbURLFor(folder, f) {
         return api.apiURL("/uls/media/thumb?folder=" + encodeURIComponent(folder || "") +
-            "&file=" + encodeURIComponent(f.name) + "&t=" + Math.floor(f.mtime || 0));
+            "&file=" + encodeURIComponent(f.name) + "&t=" + this._stampOf(folder, f));
     }
 
     // ── v458: audio companion pane (collapsible, below the visual preview) ───────
@@ -3698,6 +3738,7 @@ class MediaLoaderUI {
             const gone = this._pruneVanished();
             this.renderGrid();
             if (gone.length) { this._renderPreview(); this._announceVanished(gone); }
+            else this._refreshStaleSelection();   // v1360
             if (this._fallbackNote) {   // v1247: keep the note while the fallback folder is the one shown
                 this._fallbackBanner = { folder: target, text: this._fallbackNote };
                 this._fallbackNote = "";
@@ -3736,6 +3777,7 @@ class MediaLoaderUI {
         const gone = this._pruneVanished();
         this.renderGrid();
         if (gone.length) { this._renderPreview(); this._announceVanished(gone); }
+        else this._refreshStaleSelection();   // v1360
     }
 
     // v683 — DEFERRED DIMENSIONS. The listing itself no longer opens a single
@@ -4294,8 +4336,7 @@ class MediaLoaderUI {
         let media;
         if (f && f.kind === "video") {
             media = document.createElement("video");
-            media.src = api.apiURL("/uls/media/file?folder=" + encodeURIComponent(this.folder) +
-                "&file=" + encodeURIComponent(f.name) + "&t=" + Math.floor(f.mtime || 0));
+            media.src = this._fileURL(f);   // v1360: the same stamp as every other preview
             media.poster = this._thumbURL(f);   // real first frame while loading / if unplayable
             media.muted = true; media.loop = true; media.autoplay = true; media.playsInline = true;
             const p = media.play && media.play(); if (p && p.catch) p.catch(() => {});

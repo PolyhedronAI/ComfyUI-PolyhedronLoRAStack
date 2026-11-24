@@ -33,6 +33,13 @@
  * selected group is not aligned a second time. The group frame moves with
  * skipChildren, the members are moved here -- one rule, not the frontend's
  * children list plus ours.
+ *
+ * v1355 (Frank 21.11.): the bar can be parked in the top bar -- the last
+ * button of the bar; flush in the tab row left of the user button, kept as a
+ * ComfyUI setting (Polyhedron > Align), so it stays there after a restart.
+ * v1356: a floating bar is placed only when it really moved (v1355 pulled it
+ * back on every tick, also while dragging); released over the tab row, the
+ * dragged bar parks there (a blue frame says so while it is over the row).
  */
 import { app } from "../../scripts/app.js";
 import { boundsOf, containsRect, setPhGroup, isPhGroup } from "./ph_groups_core.js";
@@ -354,24 +361,158 @@ function writePos(p) {
 
 let BAR = null;
 
+// ---------------------------------------------- parked in the top bar (v1355)
+// Frank 21.11.: "die Align-Node auch oben in den ComfyUI-Kopf parken ... dort
+// verbleibt sie auch fest, auch nach Neustart" -- and flush with the row.
+// Measured in 1.49.6 and 1.53.10 (and seen in Frank's 1.58.5): the tab row
+// (.workflow-tabs-container.pointer-events-auto, 38 px) ends in a right-hand
+// group (.ml-auto) holding the user button (32 px). Parked, the bar sits first
+// in that group, left of the user button, as flat as the row: no frame, no
+// shadow, buttons 26 px. No tab row (another layout) = the bar floats as
+// before. The state is a ComfyUI setting (Polyhedron > Align), which the
+// server keeps in the user's settings -- it survives a restart of ComfyUI and
+// of the browser; localStorage only mirrors it for a frontend without the
+// settings API. The rule "no Align node, no bar" stays.
+export const PARK_SETTING = "Polyhedron.Align.ParkInTopBar";
+const PARK_KEY = "ph_align_parked";
+const TIP_PARK = "Park the bar in the top bar (it stays there, also after a restart)";
+const TIP_UNPARK = "Take the bar back onto the canvas";
+const ICON_PARK = '<path d="M2 3h16"/><path d="M10 17V7M6 10.5L10 6.5l4 4"/>';
+const ICON_UNPARK = '<path d="M2 3h16"/><path d="M10 6.5v10M6 13l4 4 4-4"/>';
+const FLOAT_CSS = "position:fixed;z-index:1000;align-items:center;gap:3px;padding:4px 5px 4px 3px;"
+    + "background:#202024;border:1px solid #3c3c44;border-radius:7px;box-shadow:0 3px 12px rgba(0,0,0,.45);"
+    + "user-select:none;font:12px Arial,sans-serif";
+const PARK_CSS = "position:static;align-items:center;gap:2px;padding:0 4px 0 0;height:32px;flex-shrink:0;"
+    + "background:transparent;border:none;border-radius:0;box-shadow:none;"
+    + "user-select:none;font:12px Arial,sans-serif";
+
+// Where the parked bar goes: {parent, first} -- first = as the first child of
+// the right-hand group; else at the end of the tab row. null = no tab row.
+export function tabRow(root) {
+    if (!root || typeof root.querySelector !== "function") return null;
+    return root.querySelector(".workflow-tabs-container.pointer-events-auto");
+}
+
+export function parkHost(root) {
+    const row = tabRow(root);
+    if (!row) return null;
+    const inner = row.querySelector(".workflow-tabs-container.flex") || row.querySelector(".workflow-tabs-container");
+    if (!inner) return null;
+    const kids = Array.from(inner.children || []);
+    const right = kids.find((k) => /(^|\s)ml-auto(\s|$)/.test(String(k.className || "")));
+    return right ? { parent: right, first: true } : { parent: inner, first: false };
+}
+
+function settingApi() {
+    try { return (app.extensionManager && app.extensionManager.setting) || null; } catch (e) { return null; }
+}
+
+export function readParked() {
+    const s = settingApi();
+    try {
+        if (s && typeof s.get === "function") { const v = s.get(PARK_SETTING); if (v === true || v === false) return v; }
+    } catch (e) { /* next */ }
+    try {
+        const u = app.ui && app.ui.settings;
+        if (u && typeof u.getSettingValue === "function") { const v = u.getSettingValue(PARK_SETTING); if (v === true || v === false) return v; }
+    } catch (e) { /* next */ }
+    try { return localStorage.getItem(PARK_KEY) === "1"; } catch (e) { return false; }
+}
+
+export function writeParked(on) {
+    on = !!on;
+    try { if (on) localStorage.setItem(PARK_KEY, "1"); else localStorage.removeItem(PARK_KEY); } catch (e) { /* not kept */ }
+    const s = settingApi();
+    try {
+        if (s && typeof s.set === "function") {
+            const p = s.set(PARK_SETTING, on);
+            if (p && typeof p.catch === "function") p.catch(() => {});
+            return;
+        }
+    } catch (e) { /* next */ }
+    try {
+        const u = app.ui && app.ui.settings;
+        if (u && typeof u.setSettingValue === "function") u.setSettingValue(PARK_SETTING, on);
+    } catch (e) { /* not kept */ }
+}
+
+export function styleBar(bar, parked) {
+    const disp = bar.style.display || "none";
+    bar.style.cssText = parked ? PARK_CSS : FLOAT_CSS;
+    bar.style.display = disp;
+    bar.dataset.parked = parked ? "1" : "0";
+    const size = parked ? "26px" : "28px";
+    for (const b of bar.querySelectorAll("button")) { b.style.width = size; b.style.height = size; }
+    for (const s of bar.querySelectorAll(".ph-align-sep")) s.style.height = parked ? "18px" : "20px";
+    const h = bar.querySelector(".ph-align-handle");
+    if (h) {
+        h.style.cursor = parked ? "default" : "grab";
+        h.title = parked ? "Polyhedron Align -- parked in the top bar" : "Polyhedron Align -- drag to move";
+    }
+    const k = bar.querySelector(".ph-align-park");
+    if (k) { k.title = parked ? TIP_UNPARK : TIP_PARK; k.innerHTML = svg(parked ? ICON_UNPARK : ICON_PARK); }
+}
+
+// Put the bar where the setting says; returns {mode, moved}. Cheap enough for
+// every tick: the frontend may redraw the tab row and drop the bar.
+export function mountBar(bar, root, body) {
+    const host = readParked() ? parkHost(root) : null;
+    let moved = false;
+    if (host) {
+        const p = host.parent;
+        if (host.first ? p.firstElementChild !== bar : p.lastElementChild !== bar) {
+            if (host.first) p.insertBefore(bar, p.firstElementChild || null); else p.appendChild(bar);
+            moved = true;
+        }
+        if (moved || bar.dataset.parked !== "1") styleBar(bar, true);
+        return { mode: "parked", moved };
+    }
+    if (bar.parentNode !== body) { body.appendChild(bar); moved = true; }
+    if (moved || bar.dataset.parked !== "0") styleBar(bar, false);
+    return { mode: "floating", moved };
+}
+
+// v1356 (Frank 21.11.: "die Leiste ... springt auf der Canvas herum"): v1355
+// placed a floating bar on every tick -- during a drag that pulled it back to
+// its stored place (measured: y 50, 140, 50, 215, 230, 50 ...), and the
+// release then stored the pulled-back place. Placed only when it really moved
+// (unparked); a bar being dragged is not touched at all.
+export function needsPlace(m) {
+    return !!(m && m.mode === "floating" && m.moved);
+}
+
+// v1356: released over the tab row (by the pointer) = park.
+export function dropParks(rect, x, y) {
+    return !!(rect && rect.width > 0 && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom);
+}
+
+function remount(bar) {
+    if (bar.dataset.dragging === "1") return { mode: "dragging", moved: false };
+    const m = mountBar(bar, document, document.body);
+    if (needsPlace(m) && bar.style.display !== "none") place(bar);
+    return m;
+}
+
 function place(bar) {
+    if (bar.dataset && bar.dataset.parked === "1") return;     // v1355: the top bar holds it
     const r = bar.getBoundingClientRect();
     const p = barPlace(canvasBox(bar), { w: r.width || 450, h: r.height || 38 }, readPos());
     bar.style.left = p.x + "px";
     bar.style.top = p.y + "px";
 }
 
+// v1355: "reset" also takes a parked bar back onto the canvas.
 export function resetBarPosition() {
     writePos(null);
-    if (BAR) place(BAR);
+    writeParked(false);
+    if (BAR) { remount(BAR); place(BAR); }
 }
 
 function buildBar(toggle) {
     const bar = document.createElement("div");
     bar.className = "ph-align-bar";
-    bar.style.cssText = "position:fixed;z-index:1000;display:none;align-items:center;gap:3px;padding:4px 5px 4px 3px;"
-        + "background:#202024;border:1px solid #3c3c44;border-radius:7px;box-shadow:0 3px 12px rgba(0,0,0,.45);"
-        + "user-select:none;font:12px Arial,sans-serif";
+    bar.style.cssText = FLOAT_CSS;
+    bar.style.display = "none";
     const handle = document.createElement("div");
     handle.className = "ph-align-handle";
     handle.title = "Polyhedron Align -- drag to move";
@@ -409,22 +550,53 @@ function buildBar(toggle) {
         }
     });
 
-    // the hexagon drags the bar
+    // v1355: park in the top bar / back onto the canvas (not an align op: no data-op)
+    const sep = document.createElement("div");
+    sep.className = "ph-align-sep";
+    sep.style.cssText = "width:1px;height:20px;background:#4a4a55;margin:0 3px";
+    bar.appendChild(sep);
+    const park = document.createElement("button");
+    park.type = "button";
+    park.className = "ph-align-park";
+    park.title = TIP_PARK;
+    park.innerHTML = svg(ICON_PARK);
+    park.style.cssText = "width:28px;height:28px;background:#33333a;border:1px solid #44444e;border-radius:4px;"
+        + "padding:0;cursor:pointer;display:flex;align-items:center;justify-content:center";
+    park.onmouseenter = () => { park.style.background = "#2c3e5a"; };
+    park.onmouseleave = () => { park.style.background = "#33333a"; };
+    park.onpointerdown = (e) => e.stopPropagation();
+    park.onclick = (e) => {
+        e.stopPropagation();
+        try { writeParked(!readParked()); remount(bar); } catch (err) { console.warn("[PLS] ph_align:", err); }
+    };
+    bar.appendChild(park);
+
+    // the hexagon drags the bar (not while it is parked in the top bar)
     handle.addEventListener("pointerdown", (e) => {
+        if (bar.dataset.parked === "1") return;
         e.preventDefault();
         e.stopPropagation();
         const r = bar.getBoundingClientRect();
         const ox = e.clientX - r.left, oy = e.clientY - r.top;
         handle.style.cursor = "grabbing";
+        bar.dataset.dragging = "1";
         const box = canvasBox(bar) || { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+        const overRow = (ev) => {
+            const row = tabRow(document);
+            return !!row && dropParks(row.getBoundingClientRect(), ev.clientX, ev.clientY);
+        };
         const mv = (ev) => {
             const p = barPlace(box, { w: r.width, h: r.height }, { dx: ev.clientX - ox - box.left, dy: ev.clientY - oy - box.top });
             bar.style.left = p.x + "px"; bar.style.top = p.y + "px";
+            bar.style.outline = overRow(ev) ? "2px solid #4a8cff" : "";      // release here = park
         };
-        const up = () => {
+        const up = (ev) => {
             handle.style.cursor = "grab";
             window.removeEventListener("pointermove", mv);
             window.removeEventListener("pointerup", up);
+            bar.style.outline = "";
+            delete bar.dataset.dragging;
+            if (overRow(ev)) { writeParked(true); remount(bar); return; }
             const rr = bar.getBoundingClientRect();
             writePos({ dx: rr.left - box.left, dy: rr.top - box.top });
         };
@@ -508,14 +680,15 @@ export function makeAlignClass(LG) {
             ctx.arc(on ? tx + tw - th / 2 : tx + th / 2, ty + th / 2, th / 2 - 2, 0, Math.PI * 2);
             ctx.fill();
             ctx.fillStyle = muted || !on ? "#8a8a8a" : "#d6d9e2";
-            ctx.fillText(!on ? "Align bar: off" : (muted ? "Align bar: off (node muted / bypassed)" : "Align bar: on"),
+            ctx.fillText(!on ? "Align bar: off" : (muted ? "Align bar: off (node muted / bypassed)"
+                         : (readParked() ? "Align bar: on (top bar)" : "Align bar: on")),
                          tx + tw + 8, ty + th / 2);
             this._phToggle = { x: tx - 2, y: ty - 2, w: 200, h: th + 4 };
             const bw = 120, bx = 10, by = 28;
             ctx.fillStyle = "#2c3e5a";
             ctx.fillRect(bx, by, bw, 18);
             ctx.fillStyle = "#dddddd";
-            ctx.fillText("reset bar position", bx + 8, by + 9);
+            ctx.fillText("reset bar position", bx + 8, by + 9);     // v1355: also unparks
             ctx.restore();
             this._phHit = { x: bx, y: by, w: bw, h: 18 };
         }
@@ -538,13 +711,25 @@ export function makeAlignClass(LG) {
     AlignNode.title = ALIGN_TITLE;
     AlignNode.category = "Polyhedron/Utility";
     AlignNode.description = "Shows the Polyhedron Align bar while this node is in the graph and its switch is on "
-        + "(the switch, mute or bypass hide the bar, deleting the node removes it). Aligns, sizes and distributes the selected nodes and groups -- "
+        + "(the switch, mute or bypass hide the bar, deleting the node removes it). The bar's last button -- or dragging it onto the tab row -- parks it in the top bar "
+        + "(kept as a setting, also after a restart); reset puts it back onto the canvas. Aligns, sizes and distributes the selected nodes and groups -- "
         + "a group moves with everything inside it. Frontend only, never runs.";
     return AlignNode;
 }
 
 app.registerExtension({
     name: "polyhedron.align",
+    // v1355: kept by the server in the user's settings (survives a restart)
+    settings: [{
+        id: PARK_SETTING,
+        category: ["Polyhedron", "Align", "Park in the top bar"],
+        name: "Park the Align bar in the top bar",
+        tooltip: "The Polyhedron Align bar sits in the tab row, left of the user button, instead of floating on the canvas. "
+            + "It still shows only while the graph holds a Polyhedron Align node.",
+        type: "boolean",
+        defaultValue: false,
+        onChange: () => { try { if (BAR) remount(BAR); } catch (e) { /* next tick */ } },
+    }],
     beforeRegisterVueAppNodeDefs(defs) {
         try { patchFrontendDef(defs, ALIGN_TYPE, ALIGN_TITLE); } catch (e) { /* the badge stays the frontend's */ }
     },
@@ -571,9 +756,10 @@ app.registerExtension({
                 try { want = alignWanted(graphNodes()); } catch (e) { want = false; }
                 if (want !== shown) {
                     shown = want;
-                    if (want) { bar.style.display = "flex"; place(bar); } else bar.style.display = "none";
+                    if (want) { bar.style.display = "flex"; remount(bar); place(bar); } else bar.style.display = "none";
                 }
                 if (shown) {
+                    try { remount(bar); } catch (e) { /* keep where it is */ }
                     try { setEnabled(bar, enabledOps(itemsOf(selection(), titleH()))); } catch (e) { /* keep */ }
                 }
             }, 200);

@@ -75,6 +75,10 @@ class Host {
     _pruneVanished() { this.pruned = (this.pruned || 0) + 1; return []; }
     _renderPreview() { this.repainted = (this.repainted || 0) + 1; }
     _announceVanished() { this.announced = (this.announced || 0) + 1; }
+    // AMENDED v1360, declared like v906: a listing with nothing gone now asks whether the selection's stamp moved
+    // (the Selection showed a cached picture of the same name). Counted only, never re-draws here: this guard is
+    // about which RESPONSE wins, so the stand-in must not perturb the render count.
+    _refreshStaleSelection() { this.rechecked = (this.rechecked || 0) + 1; }
 }
 async function scenario(bumpDuringFlight, busy) {
     const h = new Host();

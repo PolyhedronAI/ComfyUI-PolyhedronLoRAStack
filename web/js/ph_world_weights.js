@@ -260,6 +260,19 @@ async function updatePick(node) {
             noticeMissing(m, node.title || "World", after, node);
         }, 150);
     }
+    // v1386: nothing picked, but the set's file IS on disk (Frank, 24.11.: Apply Control offered "Download 4.2 GB"
+    // for a file that lay in models/model_patches) -- no download then: one click picks it
+    if (st.kind === "none" && m.installed) {
+        line.show("No model picked -- " + m.title + " is on disk:", "#e0a030", "Use it", async () => {
+            const vals = (w.options && Array.isArray(w.options.values)) ? w.options.values : [];
+            const hit = vals.find((v) => stripLabel(v) === m.name) || m.label || m.name;
+            w.value = hit;
+            if (w.callback) { try { w.callback(w.value); } catch (e) { /* the label only */ } }
+            updatePick(node);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }, m.path || m.name);
+        return;
+    }
     const text = st.kind === "none" ? "No model picked -- " + who + " needs one. Pick a file, or:"
                                     : m.title + " not on disk --";
     line.show(text, "#e0a030", "Download " + m.size, async () => {
